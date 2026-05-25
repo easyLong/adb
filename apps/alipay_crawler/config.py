@@ -91,6 +91,7 @@ class Config:
     ADB_PATH = _env("ADB_PATH", str(PROJECT_DIR / "platform-tools" / "adb.exe"))
     DEVICE_SERIAL = _env("DEVICE_SERIAL", "")
     ALIPAY_PACKAGE = "com.eg.android.AlipayGphone"
+    AFWEALTH_PACKAGE = "com.antfortune.wealth"
 
     # Crawl behavior
     POST_DELAY_MIN = _env_float("POST_DELAY_MIN", 2.0)

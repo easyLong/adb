@@ -12,8 +12,9 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
-
-ALIPAY_PACKAGE = "com.eg.android.AlipayGphone"
+from apps.alipay_crawler.config import Config
+ALIPAY_PACKAGE = Config.ALIPAY_PACKAGE
+AFWEALTH_PACKAGE = Config.AFWEALTH_PACKAGE
 DEFAULT_CACHE_PATH = Path(__file__).resolve().parents[1] / ".alipay_scheme_cache.json"
 
 
@@ -47,10 +48,30 @@ def save_scheme_cache(cache: Dict[str, str], cache_path: Path = DEFAULT_CACHE_PA
     cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def build_direct_app_scheme(url: str) -> Optional[str]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    query_text = parsed.query
+    query = parse_qs(query_text)
+
+    # Ant Fortune community share links carry the full route in query params and do
+    # not expose a redirectable "scheme" parameter like ur.alipay.com short links.
+    if parsed.netloc.endswith("think.klv5qu.com") and query.get("appId") and query.get("url"):
+        return f"afwealth://platformapi/startapp?{query_text}"
+
+    return None
+
+
 def resolve_embedded_alipay_scheme(url: str, timeout: int = 15, use_cache: bool = True) -> Optional[str]:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         return None
+
+    direct_scheme = build_direct_app_scheme(url)
+    if direct_scheme:
+        return direct_scheme
 
     cache = load_scheme_cache() if use_cache else {}
     cached = cache.get(url)
@@ -87,7 +108,7 @@ def resolve_embedded_alipay_scheme(url: str, timeout: int = 15, use_cache: bool 
 def open_alipay_link(url: str, serial: Optional[str] = None) -> None:
     resolved_url = resolve_embedded_alipay_scheme(url) or url
     if resolved_url != url:
-        print("Resolved Alipay scheme from short link.")
+        print("Resolved app scheme from share link.")
 
     args = [
         "shell",
@@ -98,16 +119,21 @@ def open_alipay_link(url: str, serial: Optional[str] = None) -> None:
         "-d",
         shlex.quote(resolved_url),
     ]
-    if urlparse(resolved_url).scheme in {"alipays", "alipay"}:
-        args += ["-p", ALIPAY_PACKAGE]
+    target_package = {
+        "alipays": ALIPAY_PACKAGE,
+        "alipay": ALIPAY_PACKAGE,
+        "afwealth": AFWEALTH_PACKAGE,
+    }.get(urlparse(resolved_url).scheme)
+    if target_package:
+        args += ["-p", target_package]
     run_adb(args, serial=serial)
 
 
 def ensure_reasonable_url(url: str) -> None:
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https", "alipays"}:
-        raise ValueError("URL scheme must be http, https, or alipays")
-    if not parsed.netloc and parsed.scheme != "alipays":
+    if parsed.scheme not in {"http", "https", "alipays", "alipay", "afwealth"}:
+        raise ValueError("URL scheme must be http, https, alipay, alipays, or afwealth")
+    if not parsed.netloc and parsed.scheme not in {"alipays", "alipay", "afwealth"}:
         raise ValueError("URL must include a host")
 
 

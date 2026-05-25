@@ -9,6 +9,7 @@ import pymysql
 import pymysql.cursors
 
 from apps.alipay_crawler.config import Config
+from apps.alipay_crawler.utils.link_source import detect_link_source
 from apps.alipay_crawler.utils.logger import get_logger
 
 logger = get_logger("db")
@@ -85,6 +86,7 @@ def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS posts (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     url VARCHAR(700) NOT NULL UNIQUE,
+                    source_app VARCHAR(32) NOT NULL DEFAULT 'unknown',
                     post_time DATETIME NOT NULL,
                     doc_row_index INT NULL COMMENT 'Tencent sheet row number, 1-based',
                     doc_file_id VARCHAR(128) NULL,
@@ -144,6 +146,31 @@ def init_db() -> None:
             _ensure_column(cursor, "posts", "doc_sheet_id", "doc_sheet_id VARCHAR(128) NULL")
             _ensure_column(cursor, "posts", "last_seen_at", "last_seen_at DATETIME NULL")
             _ensure_column(cursor, "posts", "account_name", "account_name VARCHAR(255) NULL")
+            _ensure_column(
+                cursor,
+                "posts",
+                "source_app",
+                "source_app VARCHAR(32) NOT NULL DEFAULT 'unknown'",
+            )
+            cursor.execute(
+                """
+                UPDATE posts
+                SET source_app = CASE
+                    WHEN url LIKE 'afwealth://%%'
+                      OR url LIKE 'https://think.klv5qu.com/%%'
+                      OR url LIKE 'http://think.klv5qu.com/%%'
+                    THEN 'antfortune'
+                    WHEN url LIKE 'alipay://%%'
+                      OR url LIKE 'alipays://%%'
+                      OR url LIKE '%%alipay%%'
+                    THEN 'alipay'
+                    ELSE 'unknown'
+                END
+                WHERE source_app IS NULL
+                   OR source_app = ''
+                   OR source_app = 'unknown'
+                """
+            )
 
         conn.commit()
         logger.info("数据库初始化完成")
@@ -185,26 +212,29 @@ def upsert_post(
     row_index: int | None = None,
     file_id: str | None = None,
     sheet_id: str | None = None,
+    source_app: str | None = None,
 ) -> bool:
     """Insert or refresh a post. Returns True if a new row was inserted."""
     now = datetime.now()
+    source = source_app or detect_link_source(url)
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
             affected = cursor.execute(
                 """
                 INSERT INTO posts
-                    (url, post_time, doc_row_index, doc_file_id, doc_sheet_id,
+                    (url, source_app, post_time, doc_row_index, doc_file_id, doc_sheet_id,
                      fetched_at, last_seen_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
+                    source_app = VALUES(source_app),
                     post_time = VALUES(post_time),
                     doc_row_index = VALUES(doc_row_index),
                     doc_file_id = VALUES(doc_file_id),
                     doc_sheet_id = VALUES(doc_sheet_id),
                     last_seen_at = VALUES(last_seen_at)
                 """,
-                (url, post_time, row_index, file_id, sheet_id, now, now),
+                (url, source, post_time, row_index, file_id, sheet_id, now, now),
             )
         conn.commit()
         return affected == 1
@@ -224,7 +254,7 @@ def insert_post(url: str, post_time: datetime) -> bool:
 def get_eligible_posts(limit: int | None = None) -> list[dict[str, Any]]:
     cutoff = datetime.now() - timedelta(hours=Config.POST_ELIGIBLE_HOURS)
     sql = """
-        SELECT id, url, post_time, doc_row_index, check_status, batch_status
+        SELECT id, url, source_app, post_time, doc_row_index, check_status, batch_status
         FROM posts
         WHERE post_time <= %s
         ORDER BY post_time ASC
@@ -250,7 +280,7 @@ def get_pending_check_posts() -> list[dict[str, Any]]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, url, post_time, doc_row_index, check_retries
+                SELECT id, url, source_app, post_time, doc_row_index, check_retries
                 FROM posts
                 WHERE check_status = 'pending'
                   AND check_retries < %s
@@ -301,7 +331,7 @@ def get_pending_batch_posts(limit: int | None = None) -> list[dict[str, Any]]:
         cutoff = datetime.now() - timedelta(hours=Config.POST_ELIGIBLE_HOURS)
     check_clause = "AND check_status = 'success'" if Config.BATCH_REQUIRES_CHECK_SUCCESS else ""
     sql = f"""
-        SELECT id, url, post_time, doc_row_index
+        SELECT id, url, source_app, post_time, doc_row_index
         FROM posts
         WHERE post_time <= %s
           AND batch_status = 'pending'
@@ -391,7 +421,7 @@ def get_posts_by_date(target_date) -> list[dict[str, Any]]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, url, post_time, check_status, batch_status,
+                SELECT id, url, source_app, post_time, check_status, batch_status,
                        read_count, comment_count, screenshot_path
                 FROM posts
                 WHERE DATE(post_time) = %s

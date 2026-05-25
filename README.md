@@ -6,7 +6,7 @@
 
 | App | 位置 | 作用 |
 | --- | --- | --- |
-| `alipay_crawler` | `apps/alipay_crawler` | 从腾讯文档读取支付宝帖子链接，用 ADB/uiautomator2 打开支付宝详情页，完成初检、阅读数/评论数抓取和文档写回 |
+| `alipay_crawler` | `apps/alipay_crawler` | 从腾讯文档读取支付宝/蚂蚁财富帖子链接，按链接来源自动分流到支付宝或蚂蚁财富，完成初检、阅读数/评论数抓取和文档写回 |
 
 未来新增 `xxx_crawler`、`yyy_crawler` 时，放到 `apps/` 下与 `alipay_crawler` 平级。
 
@@ -14,7 +14,7 @@
 
 ```text
 apps/
-  alipay_crawler/          支付宝爬虫应用
+  alipay_crawler/          支付宝/蚂蚁财富爬虫应用
 docs/                      项目文档
 scripts/                   项目级运行脚本
 archive/                   历史验证脚本、旧文档、截图
@@ -49,7 +49,7 @@ pip install -r requirements.txt
 .\platform-tools\adb.exe devices
 ```
 
-运行支付宝应用单个任务：
+运行应用单个任务：
 
 ```powershell
 .\scripts\run.ps1 -App alipay_crawler -Task fetch
@@ -63,7 +63,7 @@ pip install -r requirements.txt
 .\scripts\run.ps1 -Task fetch
 ```
 
-启动支付宝应用常驻调度：
+启动应用常驻调度：
 
 ```powershell
 .\scripts\run.ps1 -App alipay_crawler -Task scheduler
@@ -88,7 +88,7 @@ python -m apps.alipay_crawler.app
 ## 文档索引
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：项目级多 App 架构。
-- [docs/ALIPAY_CRAWLER.md](docs/ALIPAY_CRAWLER.md)：支付宝爬虫应用流程。
+- [docs/ALIPAY_CRAWLER.md](docs/ALIPAY_CRAWLER.md)：支付宝/蚂蚁财富爬虫应用流程。
 - [docs/OPERATIONS.md](docs/OPERATIONS.md)：运行、测试、排障命令。
 
 ## 新增 App 约定

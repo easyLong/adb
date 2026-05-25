@@ -14,6 +14,7 @@ import requests
 
 from apps.alipay_crawler.config import Config
 from apps.alipay_crawler.storage.db import log_task, upsert_post
+from apps.alipay_crawler.utils.link_source import detect_link_source
 from apps.alipay_crawler.utils.logger import get_logger
 
 logger = get_logger("qq_docs")
@@ -214,7 +215,7 @@ def get_row_index_map() -> dict[str, int]:
         if len(row) <= Config.QQ_COL_URL:
             continue
         url = row[Config.QQ_COL_URL].strip()
-        if url.startswith(("http://", "https://", "alipay://", "alipays://")):
+        if url.startswith(("http://", "https://", "alipay://", "alipays://", "afwealth://")):
             # Tencent grid startRow is zero-based; sheet row number is one-based.
             mapping[url] = start_row + offset + 1
     return mapping
@@ -322,7 +323,7 @@ def _eligible_candidates(
         post_time = _parse_post_time(row[Config.QQ_COL_POST_TIME], sheet_title)
         if not url or not post_time:
             continue
-        if not url.startswith(("http://", "https://", "alipay://", "alipays://")):
+        if not url.startswith(("http://", "https://", "alipay://", "alipays://", "afwealth://")):
             continue
         if post_time > cutoff:
             continue
@@ -330,6 +331,7 @@ def _eligible_candidates(
         candidates.append(
             {
                 "url": url,
+                "source_app": detect_link_source(url),
                 "post_time": post_time,
                 "row_index": row_index,
                 "age_hours": round((now - post_time).total_seconds() / 3600, 2),
@@ -366,6 +368,7 @@ def fetch_and_save(limit: int | None = None) -> list[dict[str, Any]]:
         _save_latest_candidates(candidates)
 
         new_count = 0
+        by_source: dict[str, int] = {}
         for item in candidates:
             inserted = upsert_post(
                 item["url"],
@@ -373,14 +376,18 @@ def fetch_and_save(limit: int | None = None) -> list[dict[str, Any]]:
                 row_index=item["row_index"],
                 file_id=doc.file_id,
                 sheet_id=doc.sheet_id,
+                source_app=item["source_app"],
             )
+            by_source[item["source_app"]] = by_source.get(item["source_app"], 0) + 1
             if inserted:
                 new_count += 1
 
         duration = time.time() - start
+        source_summary = ", ".join(f"{key}={value}" for key, value in sorted(by_source.items())) or "none"
         msg = (
             f"eligible={len(candidates)}, new={new_count}, "
-            f"limit={task_limit or 'all'}, older_than={Config.POST_ELIGIBLE_HOURS}h"
+            f"limit={task_limit or 'all'}, older_than={Config.POST_ELIGIBLE_HOURS}h, "
+            f"sources={source_summary}"
         )
         logger.info("腾讯文档同步完成: %s", msg)
         log_task("fetch_docs", "success", msg, duration)

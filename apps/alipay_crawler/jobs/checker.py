@@ -22,6 +22,7 @@ from apps.alipay_crawler.storage.db import (
     log_task,
     update_check_result,
 )
+from apps.alipay_crawler.utils.link_source import detect_link_source
 from apps.alipay_crawler.utils.logger import get_logger
 
 logger = get_logger("checker")
@@ -45,8 +46,17 @@ def run_check() -> list[dict]:
     for idx, post in enumerate(posts, start=1):
         post_id = post["id"]
         url = post["url"]
+        source_app = post.get("source_app") or detect_link_source(url)
         row_index = post.get("doc_row_index")
-        logger.info("[%s/%s] 初检 id=%s row=%s %s", idx, total, post_id, row_index, url)
+        logger.info(
+            "[%s/%s] 初检 source=%s id=%s row=%s %s",
+            idx,
+            total,
+            source_app,
+            post_id,
+            row_index,
+            url,
+        )
 
         try:
             deep_link = resolve_short_url(url)
@@ -95,7 +105,9 @@ def run_check() -> list[dict]:
             error_count += 1
 
         result_with_post = dict(result)
-        result_with_post.update({"id": post_id, "url": url, "row_index": row_index})
+        result_with_post.update(
+            {"id": post_id, "url": url, "source_app": source_app, "row_index": row_index}
+        )
         results.append(result_with_post)
         time.sleep(random.uniform(Config.POST_DELAY_MIN, Config.POST_DELAY_MAX))
 

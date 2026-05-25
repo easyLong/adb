@@ -52,7 +52,27 @@ apps/<app_name>/
 
 `apps/alipay_crawler`
 
-支付宝帖子数据采集应用。详见 [ALIPAY_CRAWLER.md](ALIPAY_CRAWLER.md)。
+支付宝/蚂蚁财富帖子数据采集应用。详见 [ALIPAY_CRAWLER.md](ALIPAY_CRAWLER.md)。
+
+当前实现保持单 App 内聚，但在 App 内已经区分两条执行链路：
+
+- `alipay`：`ur.alipay.com`、`alipays://`、`alipay://`
+- `antfortune`：`think.klv5qu.com`、`afwealth://`
+
+两条链路共用同一套任务调度、ADB/uiautomator2 抓取、MySQL 落库和腾讯文档写回框架，只在链接识别和 App 唤起阶段分流。
+
+## 当前分层
+
+以 `apps/alipay_crawler` 为例，当前大致分成 6 层：
+
+| 层 | 位置 | 作用 |
+| --- | --- | --- |
+| 入口调度层 | `app.py` | `fetch/check/batch/report/scheduler` |
+| 配置层 | `config.py` | MySQL、腾讯文档、ADB、设备、目录配置 |
+| 集成层 | `integrations/qq_docs.py` | 读取/筛选/写回腾讯文档 |
+| 来源识别层 | `utils/link_source.py` | 将链接识别为 `alipay` / `antfortune` / `unknown` |
+| 执行引擎层 | `alipay/capture_engine.py` | deep link 转换、ADB 打开、页面采集 |
+| 任务与存储层 | `jobs/*`, `storage/db.py`, `services/report.py` | 初检、批处理、落库、日报 |
 
 ## 统一运行入口
 

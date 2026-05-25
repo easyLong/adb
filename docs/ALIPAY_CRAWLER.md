@@ -1,10 +1,10 @@
-﻿# 支付宝爬虫应用
+# 支付宝/蚂蚁财富爬虫应用
 
 位置：`apps/alipay_crawler`
 
 ## 目标
 
-从腾讯文档读取支付宝帖子链接，按发帖时间触发任务：
+从腾讯文档读取支付宝或蚂蚁财富帖子链接，按发帖时间触发任务：
 
 1. 初检帖子是否存在。
 2. 次日批量抓取阅读数和评论数。
@@ -18,6 +18,8 @@
   |
   v
 integrations/qq_docs.py
+  |
+  +--> utils/link_source.py -> source_app=alipay/antfortune/unknown
   |
   v
 storage/db.py
@@ -49,6 +51,18 @@ https://docs.qq.com/sheet/DY1hCSG96TkVySmp1?tab=BB08J2
 | P | 15 | 评论数 |
 | Q | 16 | 批处理状态 |
 
+## 来源识别
+
+当前会在 `fetch` 入库时识别帖子来源，并写入 `posts.source_app`：
+
+| 来源 | 典型链接 |
+| --- | --- |
+| `alipay` | `ur.alipay.com`、`alipays://...`、`alipay://...` |
+| `antfortune` | `think.klv5qu.com`、`afwealth://...` |
+| `unknown` | 暂未识别的其他分享链接 |
+
+识别逻辑位置：`apps/alipay_crawler/utils/link_source.py`
+
 ## post_time 生成规则
 
 `post_time` 由 sheet 名称和 J 列拼接：
@@ -62,6 +76,16 @@ https://docs.qq.com/sheet/DY1hCSG96TkVySmp1?tab=BB08J2
 3. 拼接为最终发帖时间：
    - `2026-05-22 10:30:00`
 
+## 深链分流
+
+两条链路在任务层共用 `open_url()`、`check_post_exists_and_account()`、`scrape_post_content()`，
+但在唤起前会先做 deep link 分流：
+
+- 支付宝链路：优先把外部分享链接解析成 `alipays://...`
+- 蚂蚁财富链路：把 `think.klv5qu.com` 分享链接改写成 `afwealth://platformapi/startapp?...`
+
+实际处理位置：`apps/alipay_crawler/alipay/capture_engine.py`
+
 ## 任务拆分
 
 ### fetch
@@ -72,6 +96,7 @@ https://docs.qq.com/sheet/DY1hCSG96TkVySmp1?tab=BB08J2
 
 - 读取腾讯文档。
 - 按文档顺序筛选超过 2 小时的帖子。
+- 按链接域名/scheme 区分 `alipay` 和 `antfortune`。
 - 写入或更新 MySQL `posts` 表。
 
 测试时 `FETCH_LIMIT=10`，生产全量可设置为 `0`。
@@ -88,7 +113,8 @@ https://docs.qq.com/sheet/DY1hCSG96TkVySmp1?tab=BB08J2
 
 职责：
 
-- 用 ADB 打开支付宝链接。
+- 用 ADB 打开对应来源的链接。
+- 支付宝链接走支付宝链路，`think.klv5qu.com` / `afwealth://` 走蚂蚁财富链路。
 - 判断帖子是否存在。
 - 存在：L 列写发帖账号。
 - 不存在：L 列写 `N`，并把 L 单元格标黄。
@@ -104,6 +130,7 @@ https://docs.qq.com/sheet/DY1hCSG96TkVySmp1?tab=BB08J2
 - 抓取阅读数和评论数。
 - 写回 O/P/Q 列。
 - 更新 MySQL 抓取结果。
+- 结果会保留 `source_app`，便于后续按链路排查和统计。
 
 `BATCH_LIMIT=0` 表示全量。
 
@@ -123,11 +150,12 @@ https://docs.qq.com/sheet/DY1hCSG96TkVySmp1?tab=BB08J2
 | `app.py` | 调度入口 |
 | `config.py` | 配置 |
 | `integrations/qq_docs.py` | 腾讯文档读取、筛选、写回 |
+| `utils/link_source.py` | 链接来源识别 |
 | `storage/db.py` | MySQL 表初始化和任务读写 |
 | `jobs/checker.py` | 初检 |
 | `jobs/batch.py` | 次日批量抓取 |
 | `alipay/capture_engine.py` | ADB/uiautomator2 底层能力 |
-| `alipay/crawler.py` | 支付宝页面状态、账号、阅读数、评论数解析 |
+| `alipay/crawler.py` | 支付宝/蚂蚁财富页面状态、账号、阅读数、评论数解析 |
 | `services/report.py` | 报告 |
 
 ## 运行命令
