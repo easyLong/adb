@@ -96,7 +96,7 @@ class Config:
     # Crawl behavior
     POST_DELAY_MIN = _env_float("POST_DELAY_MIN", 2.0)
     POST_DELAY_MAX = _env_float("POST_DELAY_MAX", 4.5)
-    SCROLL_TIMES = _env_int("SCROLL_TIMES", 15)
+    SCROLL_TIMES = _env_int("SCROLL_TIMES", 2)
     PAGE_LOAD_WAIT = _env_float("PAGE_LOAD_WAIT", 4.0)
 
     # Files

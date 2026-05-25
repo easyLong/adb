@@ -25,6 +25,7 @@ $env:FETCH_LIMIT = "10"
 $env:BATCH_LIMIT = "0"
 $env:BATCH_TIME = "10:00"
 $env:REPORT_TIME = "11:30"
+$env:SCROLL_TIMES = "2"
 
 # Zero-based column indexes in the test sheet:
 # J=post time, L=account/check result, N=post URL, O=read count, P=comment count, Q=batch status.
