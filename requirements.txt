@@ -1,0 +1,5 @@
+requests>=2.31.0
+pymysql>=1.1.0
+schedule>=1.2.0
+uiautomator2>=3.0.0
+pillow>=10.0.0
