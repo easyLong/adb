@@ -8,6 +8,7 @@ to be hard-coded in the repository.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 
@@ -30,6 +31,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not value:
         return default
     return value.lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _default_adb_path(project_dir: Path) -> str:
+    bundled = project_dir / "platform-tools" / "adb.exe"
+    if bundled.exists():
+        return str(bundled)
+    return shutil.which("adb") or "adb"
 
 
 class Config:
@@ -106,13 +114,14 @@ class Config:
     CRAWL_ACTIVE_END = _env("CRAWL_ACTIVE_END", "")
 
     # ADB / device
-    ADB_PATH = _env("ADB_PATH", str(PROJECT_DIR / "platform-tools" / "adb.exe"))
+    ADB_PATH = _env("ADB_PATH", _default_adb_path(PROJECT_DIR))
     DEVICE_SERIAL = _env("DEVICE_SERIAL", "")
     DEVICE_CHECK_TIMEOUT = _env_int("DEVICE_CHECK_TIMEOUT", 8)
     DEVICE_HEALTH_CACHE_SECONDS = _env_float("DEVICE_HEALTH_CACHE_SECONDS", 8.0)
     DEVICE_PREPARE_INTERVAL_SECONDS = _env_float("DEVICE_PREPARE_INTERVAL_SECONDS", 120.0)
     ALIPAY_PACKAGE = "com.eg.android.AlipayGphone"
     AFWEALTH_PACKAGE = "com.antfortune.wealth"
+    TENPAY_PACKAGE = _env("TENPAY_PACKAGE", "com.tencent.fortuneplat")
 
     # Crawl behavior
     POST_DELAY_MIN = _env_float("POST_DELAY_MIN", 2.0)

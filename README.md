@@ -28,7 +28,11 @@ requirements.txt           Python 依赖
 apps/<app_name>/
   app.py                   调度入口，支持 --once
   config.py                该 App 的配置
-  integrations/            外部系统接入
+  domain/                  通用领域对象和 source/crawler/sink 接口
+  sources/                 数据源适配，例如腾讯文档、本地 Excel
+  sinks/                   结果写回适配，例如腾讯文档写回、Excel 回填
+  workflows/               业务编排，例如 fetch、initial check、batch crawl
+  integrations/            外部系统底层 API 客户端
   jobs/                    定时任务和批处理任务
   storage/                 数据库访问
   services/                业务服务
@@ -82,9 +86,18 @@ python -m apps.alipay_crawler.app --once fetch
 python -m apps.alipay_crawler.app
 ```
 
+单链接调试：
+
+```powershell
+python .\scripts\crawl_one_link.py "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=202604232026170116723608&sharefm=app"
+```
+
 ## 当前能力
 
-- 支持支付宝和蚂蚁财富链接分流、deep link 解析和缓存。
+- 支持支付宝、蚂蚁财富、财付通/腾讯理财通链接分流、deep link 解析和缓存。
+- 财付通/腾讯理财通 `tencentwm.com` 链接默认通过包名 `com.tencent.fortuneplat` 打开。
+- 新增通用 source/crawler/sink 边界，以及 `crawl_*` 框架表，便于后续接入本地 Excel、其他在线文档和更多 App。
+- 初检和批处理结果会保留旧 `posts` 更新，同时双写到 `crawl_results` / `crawl_writebacks`。
 - 初检、批量采集、报告生成和 supervisor 看护模式。
 - ADB 设备断连/未授权/离线检测，异常时中止任务并告警。
 - 批量采集按需滚动：首屏优先，信息缺失时最多采集 3 屏。

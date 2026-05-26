@@ -13,12 +13,12 @@ from typing import Any
 import schedule
 
 from apps.alipay_crawler.config import Config
-from apps.alipay_crawler.integrations.qq_docs import fetch_and_save
 from apps.alipay_crawler.jobs.batch import run_batch
 from apps.alipay_crawler.services.alerts import send_alert
 from apps.alipay_crawler.services.report import generate_report
 from apps.alipay_crawler.storage.db import init_db, log_task
 from apps.alipay_crawler.utils.logger import get_logger
+from apps.alipay_crawler.workflows.tencent_docs_fetch import fetch_and_save
 
 logger = get_logger("scheduler")
 

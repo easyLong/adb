@@ -9,6 +9,10 @@ import pymysql
 import pymysql.cursors
 
 from apps.alipay_crawler.config import Config
+from apps.alipay_crawler.storage.framework_db import (
+    ensure_framework_tables,
+    upsert_legacy_post_task_tx,
+)
 from apps.alipay_crawler.utils.link_source import detect_link_source
 from apps.alipay_crawler.utils.logger import get_logger
 
@@ -140,6 +144,8 @@ def init_db() -> None:
                 """
             )
 
+            ensure_framework_tables(cursor)
+
             # Lightweight migrations for older local databases.
             _ensure_column(cursor, "posts", "doc_row_index", "doc_row_index INT NULL")
             _ensure_column(cursor, "posts", "doc_file_id", "doc_file_id VARCHAR(128) NULL")
@@ -160,6 +166,11 @@ def init_db() -> None:
                       OR url LIKE 'https://think.klv5qu.com/%%'
                       OR url LIKE 'http://think.klv5qu.com/%%'
                     THEN 'antfortune'
+                    WHEN url LIKE 'tenpay://%%'
+                      OR url LIKE 'tencentwm://%%'
+                      OR url LIKE 'https://%%tencentwm.com/%%'
+                      OR url LIKE 'http://%%tencentwm.com/%%'
+                    THEN 'tenpay'
                     WHEN url LIKE 'alipay://%%'
                       OR url LIKE 'alipays://%%'
                       OR url LIKE '%%alipay%%'
@@ -227,6 +238,7 @@ def upsert_post(
                      fetched_at, last_seen_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
+                    id = LAST_INSERT_ID(id),
                     source_app = VALUES(source_app),
                     post_time = VALUES(post_time),
                     doc_row_index = VALUES(doc_row_index),
@@ -236,6 +248,18 @@ def upsert_post(
                 """,
                 (url, source, post_time, row_index, file_id, sheet_id, now, now),
             )
+            post_id = int(cursor.lastrowid or 0)
+            if post_id:
+                upsert_legacy_post_task_tx(
+                    cursor,
+                    post_id=post_id,
+                    url=url,
+                    post_time=post_time,
+                    row_index=row_index,
+                    file_id=file_id,
+                    sheet_id=sheet_id,
+                    source_app=source,
+                )
         conn.commit()
         return affected == 1
     except Exception as exc:

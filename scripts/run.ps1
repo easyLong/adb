@@ -53,7 +53,12 @@ if (-not $env:TENCENT_DOC_SHEET_ID) {
     $env:TENCENT_DOC_SHEET_ID = "BB08J2"
 }
 if (-not $env:ADB_PATH) {
-    $env:ADB_PATH = Join-Path $Root "platform-tools\adb.exe"
+    $BundledAdb = Join-Path $Root "platform-tools\adb.exe"
+    if (Test-Path -LiteralPath $BundledAdb) {
+        $env:ADB_PATH = $BundledAdb
+    } else {
+        $env:ADB_PATH = "adb"
+    }
 }
 
 Set-Location $Root
@@ -66,3 +71,5 @@ if ($Task -eq "scheduler") {
 } else {
     & $Python -m $Module --once $Task
 }
+
+exit $LASTEXITCODE

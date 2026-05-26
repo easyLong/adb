@@ -120,7 +120,7 @@ def process_row(ws, row: int, header_map: dict[str, int]) -> dict[str, object]:
             "error": check_result.get("error"),
         }
 
-    scrape_result = scrape_post_content(row)
+    scrape_result = scrape_post_content(row, source_app="antfortune")
     account_name = check_result.get("account_name") or ""
     ws.cell(row, header_map[ACCOUNT_HEADER]).value = account_name
     ws.cell(row, header_map[READ_HEADER]).value = scrape_result.get("read_count") or 0

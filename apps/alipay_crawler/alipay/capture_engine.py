@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 from apps.alipay_crawler.config import Config
 ALIPAY_PACKAGE = Config.ALIPAY_PACKAGE
 AFWEALTH_PACKAGE = Config.AFWEALTH_PACKAGE
+TENPAY_PACKAGE = Config.TENPAY_PACKAGE
 DEFAULT_CACHE_PATH = Path(__file__).resolve().parents[1] / ".alipay_scheme_cache.json"
 _SCHEME_CACHE_LOCK = threading.Lock()
 _RAPIDOCR_ENGINE: Any = None
@@ -37,6 +38,47 @@ def run_adb(args: List[str], serial: Optional[str] = None, timeout: int = 20) ->
         errors="replace",
     )
     return result.stdout.strip()
+
+
+def run_adb_bytes(args: List[str], serial: Optional[str] = None, timeout: int = 20) -> bytes:
+    cmd = [Config.ADB_PATH or "adb"]
+    if serial:
+        cmd += ["-s", serial]
+    cmd += args
+    result = subprocess.run(
+        cmd,
+        check=True,
+        capture_output=True,
+        timeout=timeout,
+    )
+    return result.stdout
+
+
+def screenshot_exec_out(image_path: Path, serial: Optional[str] = None, timeout: int = 15) -> None:
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    data = run_adb_bytes(["exec-out", "screencap", "-p"], serial=serial, timeout=timeout)
+    png_header = b"\x89PNG\r\n\x1a\n"
+    start = data.find(png_header)
+    if start < 0:
+        raise RuntimeError("adb exec-out screencap did not return PNG data")
+    image_path.write_bytes(data[start:])
+
+
+def save_screenshot(device, image_path: Path, serial: Optional[str] = None) -> str:
+    try:
+        screenshot_exec_out(image_path, serial=serial)
+        return "adb_exec_out"
+    except Exception as exc:
+        print(f"adb exec-out screenshot failed; fallback to uiautomator2: {exc}", file=sys.stderr)
+        device.screenshot(str(image_path))
+        return "uiautomator2"
+
+
+def is_package_installed(package_name: str, serial: Optional[str] = None) -> bool:
+    try:
+        return bool(run_adb(["shell", "pm", "path", package_name], serial=serial, timeout=8))
+    except Exception:
+        return False
 
 
 def load_scheme_cache(cache_path: Path = DEFAULT_CACHE_PATH) -> Dict[str, str]:
@@ -129,21 +171,28 @@ def open_alipay_link(url: str, serial: Optional[str] = None) -> None:
         "-d",
         shlex.quote(resolved_url),
     ]
+    parsed = urlparse(resolved_url)
     target_package = {
         "alipays": ALIPAY_PACKAGE,
         "alipay": ALIPAY_PACKAGE,
         "afwealth": AFWEALTH_PACKAGE,
-    }.get(urlparse(resolved_url).scheme)
+        "tenpay": TENPAY_PACKAGE,
+        "tencentwm": TENPAY_PACKAGE,
+    }.get(parsed.scheme)
+    if not target_package and parsed.netloc.lower().endswith("tencentwm.com"):
+        target_package = TENPAY_PACKAGE
     if target_package:
+        if not is_package_installed(target_package, serial=serial):
+            raise RuntimeError(f"target app package is not installed: {target_package}")
         args += ["-p", target_package]
     run_adb(args, serial=serial)
 
 
 def ensure_reasonable_url(url: str) -> None:
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https", "alipays", "alipay", "afwealth"}:
-        raise ValueError("URL scheme must be http, https, alipay, alipays, or afwealth")
-    if not parsed.netloc and parsed.scheme not in {"alipays", "alipay", "afwealth"}:
+    if parsed.scheme not in {"http", "https", "alipays", "alipay", "afwealth", "tenpay", "tencentwm"}:
+        raise ValueError("URL scheme must be http, https, alipay, alipays, afwealth, tenpay, or tencentwm")
+    if not parsed.netloc and parsed.scheme not in {"alipays", "alipay", "afwealth", "tenpay", "tencentwm"}:
         raise ValueError("URL must include a host")
 
 
@@ -200,6 +249,7 @@ def wait_for_page_ready(
     min_wait: float,
     timeout: float,
     interval: float,
+    serial: Optional[str] = None,
     on_retry=None,
     max_retries: int = 0,
 ) -> Dict[str, Any]:
@@ -217,7 +267,7 @@ def wait_for_page_ready(
             xml_text = device.dump_hierarchy(compressed=True)
             last_xml = xml_text
             check_path = output_dir / f"_ready_check_{attempt}.png"
-            device.screenshot(str(check_path))
+            save_screenshot(device, check_path, serial=serial)
             stats = screenshot_stats(check_path)
 
             has_title = "理财盘友圈" in xml_text
@@ -425,6 +475,7 @@ def capture_pages(
     dynamic_wait: bool,
     ready_timeout: float,
     ready_check_interval: float,
+    serial: Optional[str] = None,
     retry_open=None,
     ready_retries: int = 0,
 ) -> Dict[str, Any]:
@@ -445,6 +496,7 @@ def capture_pages(
             min_wait=wait_after_open,
             timeout=ready_timeout,
             interval=ready_check_interval,
+            serial=serial,
             on_retry=retry_open,
             max_retries=ready_retries,
         )
@@ -466,7 +518,7 @@ def capture_pages(
         xml_path = output_dir / f"page_{page_index:03d}.xml"
         screenshot_path = output_dir / f"page_{page_index:03d}.png"
         save_text(xml_path, xml_text)
-        device.screenshot(str(screenshot_path))
+        save_screenshot(device, screenshot_path, serial=serial)
 
         ui_records = collect_ui_records(xml_text, page_index)
         new_ui_records = []
@@ -594,6 +646,7 @@ def main() -> int:
         dynamic_wait=not args.no_dynamic_wait,
         ready_timeout=args.ready_timeout,
         ready_check_interval=args.ready_check_interval,
+        serial=args.serial,
         retry_open=None if args.skip_open else open_current_link,
         ready_retries=args.ready_retries,
     )

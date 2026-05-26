@@ -61,6 +61,11 @@ def _configured_doc() -> DocInfo:
     return parse_doc_url(Config.QQ_DOC_URL)
 
 
+def configured_doc() -> DocInfo:
+    """Return the configured Tencent Docs file and sheet identifiers."""
+    return _configured_doc()
+
+
 def _load_token_cache() -> dict[str, Any]:
     if Config.TOKEN_CACHE_FILE.exists():
         try:
@@ -378,6 +383,15 @@ def _eligible_candidates(
     return candidates
 
 
+def eligible_candidates(
+    rows: list[list[str]],
+    start_row: int,
+    sheet_title: str = "",
+) -> list[dict[str, Any]]:
+    """Build eligible crawl candidates from sheet rows."""
+    return _eligible_candidates(rows, start_row, sheet_title)
+
+
 def _save_latest_candidates(candidates: list[dict[str, Any]]) -> None:
     serializable = []
     for item in candidates:
@@ -389,6 +403,11 @@ def _save_latest_candidates(candidates: list[dict[str, Any]]) -> None:
         json.dumps(serializable, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def save_latest_candidates(candidates: list[dict[str, Any]]) -> None:
+    """Persist the latest candidate snapshot for debugging."""
+    _save_latest_candidates(candidates)
 
 
 def fetch_and_save(limit: int | None = None) -> list[dict[str, Any]]:
