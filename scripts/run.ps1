@@ -1,7 +1,7 @@
 param(
     [string]$App = "alipay_crawler",
 
-    [ValidateSet("scheduler", "db", "fetch", "check", "batch", "report")]
+    [ValidateSet("scheduler", "supervisor", "db", "fetch", "check", "batch", "report")]
     [string]$Task = "scheduler",
 
     [string]$Python = "python",
@@ -61,6 +61,8 @@ $Module = "apps.$App.app"
 
 if ($Task -eq "scheduler") {
     & $Python -m $Module
+} elseif ($Task -eq "supervisor") {
+    & $Python -m $Module --supervise
 } else {
     & $Python -m $Module --once $Task
 }

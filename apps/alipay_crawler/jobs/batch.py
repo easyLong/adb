@@ -2,21 +2,34 @@
 
 from __future__ import annotations
 
-import random
 import time
+import random
 
-from apps.alipay_crawler.alipay.crawler import open_url, resolve_short_url, scrape_post_content
+from apps.alipay_crawler.alipay.crawler import (
+    open_url,
+    reset_device_session,
+    resolve_short_url,
+    scrape_post_content,
+)
 from apps.alipay_crawler.config import Config
-from apps.alipay_crawler.integrations.qq_docs import get_row_index_map, write_back_row
+from apps.alipay_crawler.integrations.qq_docs import (
+    fetch_grid,
+    resolve_row_index_for_url,
+    write_back_rows,
+)
+from apps.alipay_crawler.services.alerts import send_alert
 from apps.alipay_crawler.services.report import generate_report
 from apps.alipay_crawler.storage.db import (
     get_pending_batch_posts,
     log_task,
-    mark_written_back,
+    mark_written_back_many,
     update_batch_result,
 )
+from apps.alipay_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.alipay_crawler.utils.link_source import detect_link_source
 from apps.alipay_crawler.utils.logger import get_logger
+from apps.alipay_crawler.utils.rate_limiter import OperationBudget, TaskBudgetExceeded
+from apps.alipay_crawler.utils.url_resolver import resolve_urls
 
 logger = get_logger("batch")
 
@@ -34,42 +47,65 @@ def _empty_result(status: str = "error", error: str | None = None) -> dict:
 
 def run_batch(limit: int | None = None) -> list[dict]:
     start_time = time.time()
-    task_limit = limit or Config.BATCH_LIMIT
+    budget = OperationBudget("batch")
+    task_limit = Config.BATCH_LIMIT if limit is None else limit
     posts = get_pending_batch_posts(task_limit)
+    posts = budget.limit_items(posts)
     total = len(posts)
-    logger.info("批处理开始，待处理 %s 条，limit=%s", total, task_limit)
+    logger.info("batch started: total=%s limit=%s", total, task_limit)
 
     if not posts:
         log_task("batch", "success", "no pending posts", time.time() - start_time)
         return []
 
-    try:
-        row_index_map = get_row_index_map()
-    except Exception as exc:
-        logger.warning("构建腾讯文档行号映射失败，本轮仍会落库但可能无法写回: %s", exc)
-        row_index_map = {}
+    budget.check()
 
+    try:
+        assert_device_ready()
+    except DeviceUnavailable as exc:
+        reset_device_session()
+        send_alert("ADB device unavailable", str(exc), dedupe_key="device_unavailable")
+        log_task("batch", "error", str(exc), time.time() - start_time)
+        raise
+
+    try:
+        sheet_rows, start_row = fetch_grid()
+    except Exception as exc:
+        send_alert("Tencent Docs row snapshot failed", str(exc), level="warning", dedupe_key="docs_snapshot")
+        logger.warning("failed to load Tencent Docs row snapshot; writeback will be skipped: %s", exc)
+        sheet_rows, start_row = [], 0
+
+    deep_links = resolve_urls(posts, resolve_short_url, logger)
     results: list[dict] = []
-    success_count = 0
-    deleted_count = 0
-    error_count = 0
+    writebacks: list[dict] = []
+    written_post_ids: list[int] = []
+    stop_reason: str | None = None
 
     for idx, post in enumerate(posts, start=1):
+        try:
+            budget.check()
+        except TaskBudgetExceeded as exc:
+            stop_reason = str(exc)
+            logger.warning("batch stopped by runtime budget: %s", stop_reason)
+            break
         post_id = post["id"]
         url = post["url"]
         source_app = post.get("source_app") or detect_link_source(url)
-        logger.info("[%s/%s] 抓取 source=%s id=%s %s", idx, total, source_app, post_id, url)
+        logger.info("[%s/%s] scrape source=%s id=%s", idx, total, source_app, post_id)
+        item_start = time.perf_counter()
+        open_duration = 0.0
 
         try:
-            deep_link = resolve_short_url(url)
-            open_url(deep_link)
+            open_start = time.perf_counter()
+            open_url(deep_links.get(post_id, url))
+            open_duration = time.perf_counter() - open_start
             result = scrape_post_content(post_id)
-        except RuntimeError as exc:
-            result = _empty_result("error", str(exc))
-            logger.warning("抓取失败 id=%s: %s", post_id, exc)
+        except DeviceUnavailable:
+            reset_device_session()
+            raise
         except Exception as exc:
             result = _empty_result("error", str(exc))
-            logger.exception("抓取异常 id=%s", post_id)
+            logger.exception("scrape failed id=%s", post_id)
 
         update_batch_result(
             post_id=post_id,
@@ -80,52 +116,92 @@ def run_batch(limit: int | None = None) -> list[dict]:
             screenshot_path=result.get("screenshot_path"),
             error=result.get("error"),
         )
+        budget.record_status(result["status"])
+        logger.info(
+            "batch timing id=%s status=%s open=%.2fs scrape_total=%.2fs pages=%s ocr=%s",
+            post_id,
+            result["status"],
+            open_duration,
+            time.perf_counter() - item_start,
+            result.get("capture_pages"),
+            result.get("ocr_attempted"),
+        )
 
-        if result["status"] == "success":
-            success_count += 1
-        elif result["status"] == "deleted":
-            deleted_count += 1
-        else:
-            error_count += 1
-
-        row_index = post.get("doc_row_index") or row_index_map.get(url)
-        if row_index:
+        row_index = None
+        if sheet_rows:
             try:
-                write_back_row(
-                    row_index=row_index,
-                    read_count=result.get("read_count") or 0,
-                    comment_count=result.get("comment_count") or 0,
-                    batch_status=result["status"],
+                row_index = resolve_row_index_for_url(
+                    url,
+                    preferred_row_index=post.get("doc_row_index"),
+                    rows=sheet_rows,
+                    start_row=start_row,
                 )
-                mark_written_back(post_id)
             except Exception as exc:
-                logger.warning("写回腾讯文档失败 id=%s row=%s: %s", post_id, row_index, exc)
+                logger.warning("unsafe batch writeback skipped id=%s: %s", post_id, exc)
+
+        if row_index:
+            writebacks.append(
+                {
+                    "row_index": row_index,
+                    "read_count": result.get("read_count") or 0,
+                    "comment_count": result.get("comment_count") or 0,
+                    "batch_status": result["status"],
+                    "screenshot_path": result.get("screenshot_path"),
+                }
+            )
+            written_post_ids.append(post_id)
         else:
-            logger.warning("找不到腾讯文档行号，跳过写回 id=%s", post_id)
+            logger.warning("row not found; skipped Tencent Docs writeback id=%s", post_id)
 
         result_with_post = dict(result)
         result_with_post.update(
             {"id": post_id, "url": url, "source_app": source_app, "row_index": row_index}
         )
         results.append(result_with_post)
+        time.sleep(
+            random.uniform(
+                max(Config.BATCH_POST_DELAY_MIN, 0),
+                max(Config.BATCH_POST_DELAY_MAX, Config.BATCH_POST_DELAY_MIN),
+            )
+        )
 
-        time.sleep(random.uniform(Config.POST_DELAY_MIN, Config.POST_DELAY_MAX))
+    if writebacks:
+        try:
+            write_back_rows(writebacks)
+            mark_written_back_many(written_post_ids)
+        except Exception as exc:
+            send_alert("Tencent Docs batch writeback failed", str(exc), dedupe_key="docs_batch_writeback")
+            logger.warning("batch writeback failed: %s", exc)
 
+    success_count = sum(1 for item in results if item["status"] == "success")
+    deleted_count = sum(1 for item in results if item["status"] == "deleted")
+    error_count = sum(1 for item in results if item["status"] == "error")
     duration = time.time() - start_time
     msg = (
         f"total={total}, success={success_count}, deleted={deleted_count}, "
         f"error={error_count}, duration={duration:.1f}s"
     )
-    logger.info("批处理完成: %s", msg)
+    if stop_reason:
+        msg = f"{msg}, stopped={stop_reason}"
+    logger.info("batch finished: %s", msg)
     log_task("batch", "success", msg, duration)
+
+    if error_count:
+        send_alert("Batch crawl has errors", msg, level="warning", dedupe_key="batch_errors")
+    if stop_reason:
+        send_alert("Batch stopped by budget", stop_reason, level="warning", dedupe_key="batch_budget")
 
     try:
         generate_report()
     except Exception as exc:
-        logger.warning("报告生成失败: %s", exc)
+        send_alert("Report generation failed", str(exc), level="warning", dedupe_key="report_failed")
+        logger.warning("report generation failed: %s", exc)
 
     return results
 
 
 if __name__ == "__main__":
-    run_batch()
+    try:
+        run_batch()
+    except TaskBudgetExceeded as exc:
+        logger.warning("batch stopped by runtime budget: %s", exc)

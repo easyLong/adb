@@ -1,8 +1,10 @@
-"""Command-line entrypoint and scheduler."""
+"""Command-line entrypoint, scheduler, and supervisor."""
 
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
 import time
 import traceback
 from collections.abc import Callable
@@ -13,6 +15,7 @@ import schedule
 from apps.alipay_crawler.config import Config
 from apps.alipay_crawler.integrations.qq_docs import fetch_and_save
 from apps.alipay_crawler.jobs.batch import run_batch
+from apps.alipay_crawler.services.alerts import send_alert
 from apps.alipay_crawler.services.report import generate_report
 from apps.alipay_crawler.storage.db import init_db, log_task
 from apps.alipay_crawler.utils.logger import get_logger
@@ -25,21 +28,32 @@ def safe_run(func: Callable[[], Any], task_name: str) -> Any:
     start = time.time()
     try:
         result = func()
-        logger.info("任务完成: %s, %.1fs", task_name, time.time() - start)
+        duration = time.time() - start
+        logger.info("task completed: %s, %.1fs", task_name, duration)
         return result
     except Exception as exc:
         duration = time.time() - start
-        logger.error("任务异常: %s, %s", task_name, exc)
+        logger.error("task failed: %s, %s", task_name, exc)
         logger.error(traceback.format_exc())
         log_task(task_name, "error", str(exc), duration)
+        send_alert(
+            f"Task failed: {task_name}",
+            str(exc),
+            dedupe_key=f"task_failed:{task_name}",
+            extra={"duration": round(duration, 2)},
+        )
         return None
+
+
+def heartbeat() -> None:
+    logger.info("scheduler heartbeat")
 
 
 def _register_jobs() -> None:
     schedule.every(Config.FETCH_INTERVAL_MINUTES).minutes.do(
         safe_run, fetch_and_save, "fetch_docs"
     )
-    logger.info("已注册：每 %s 分钟同步腾讯文档", Config.FETCH_INTERVAL_MINUTES)
+    logger.info("registered fetch every %s minutes", Config.FETCH_INTERVAL_MINUTES)
 
     if Config.ENABLE_CHECKER:
         from apps.alipay_crawler.jobs.checker import run_check
@@ -47,32 +61,73 @@ def _register_jobs() -> None:
         schedule.every(Config.CHECK_INTERVAL_MINUTES).minutes.do(
             safe_run, run_check, "check"
         )
-        logger.info("已注册：每 %s 分钟初检帖子", Config.CHECK_INTERVAL_MINUTES)
+        logger.info("registered check every %s minutes", Config.CHECK_INTERVAL_MINUTES)
 
     schedule.every().day.at(Config.BATCH_TIME).do(safe_run, run_batch, "batch")
-    logger.info("已注册：每天 %s 批量抓取，limit=%s", Config.BATCH_TIME, Config.BATCH_LIMIT)
+    logger.info("registered batch daily at %s, limit=%s", Config.BATCH_TIME, Config.BATCH_LIMIT)
 
     schedule.every().day.at(Config.REPORT_TIME).do(
         safe_run, generate_report, "report"
     )
-    logger.info("已注册：每天 %s 生成报告", Config.REPORT_TIME)
+    logger.info("registered report daily at %s", Config.REPORT_TIME)
+
+    if Config.HEARTBEAT_INTERVAL_MINUTES > 0:
+        schedule.every(Config.HEARTBEAT_INTERVAL_MINUTES).minutes.do(
+            safe_run, heartbeat, "heartbeat"
+        )
+        logger.info("registered heartbeat every %s minutes", Config.HEARTBEAT_INTERVAL_MINUTES)
 
 
 def run_forever() -> None:
-    logger.info("支付宝采集调度服务启动")
+    logger.info("Alipay crawler scheduler starting")
     init_db()
     _register_jobs()
 
-    logger.info("启动时先同步一次腾讯文档")
+    logger.info("sync Tencent Docs once on startup")
     safe_run(fetch_and_save, "fetch_docs_init")
 
-    logger.info("调度器运行中，Ctrl+C 停止")
-    try:
-        while True:
-            schedule.run_pending()
-            time.sleep(10)
-    except KeyboardInterrupt:
-        logger.info("调度器已停止")
+    logger.info("scheduler running; press Ctrl+C to stop")
+    while True:
+        schedule.run_pending()
+        time.sleep(10)
+
+
+def run_supervisor() -> int:
+    restarts = 0
+    logger.info("scheduler supervisor starting")
+    while True:
+        child = subprocess.Popen([sys.executable, "-m", "apps.alipay_crawler.app"])
+        try:
+            exit_code = child.wait()
+        except KeyboardInterrupt:
+            child.terminate()
+            try:
+                child.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+            logger.info("scheduler supervisor stopped")
+            return 0
+
+        if exit_code == 0:
+            logger.info("scheduler exited cleanly")
+            return 0
+
+        restarts += 1
+        message = f"scheduler process exited with code {exit_code}; restart #{restarts}"
+        logger.error(message)
+        send_alert(
+            "Scheduler crashed",
+            message,
+            dedupe_key="scheduler_crashed",
+            extra={"exit_code": exit_code, "restarts": restarts},
+        )
+
+        if Config.SUPERVISOR_MAX_RESTARTS and restarts >= Config.SUPERVISOR_MAX_RESTARTS:
+            logger.error("supervisor restart limit reached")
+            return exit_code
+
+        time.sleep(Config.SUPERVISOR_RESTART_DELAY_SECONDS)
 
 
 def main() -> int:
@@ -80,9 +135,17 @@ def main() -> int:
     parser.add_argument(
         "--once",
         choices=["db", "fetch", "check", "batch", "report"],
-        help="只执行一个任务后退出，便于测试",
+        help="run one task and exit",
+    )
+    parser.add_argument(
+        "--supervise",
+        action="store_true",
+        help="run scheduler in a parent process that restarts it after crashes",
     )
     args = parser.parse_args()
+
+    if args.supervise:
+        return run_supervisor()
 
     if args.once == "db":
         init_db()
@@ -108,8 +171,11 @@ def main() -> int:
         print(generate_report())
         return 0
 
-    run_forever()
-    return 0
+    try:
+        run_forever()
+    except KeyboardInterrupt:
+        logger.info("scheduler stopped")
+        return 0
 
 
 if __name__ == "__main__":

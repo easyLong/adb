@@ -415,6 +415,27 @@ def mark_written_back(post_id: int) -> None:
         conn.close()
 
 
+def mark_written_back_many(post_ids: list[int]) -> None:
+    if not post_ids:
+        return
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE posts
+                SET written_back = 1,
+                    written_back_at = %s
+                WHERE id IN %s
+                """,
+                (datetime.now(), tuple(post_ids)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_posts_by_date(target_date) -> list[dict[str, Any]]:
     conn = get_conn()
     try:

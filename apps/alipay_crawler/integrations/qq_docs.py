@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
 import requests
+from PIL import Image
 
 from apps.alipay_crawler.config import Config
 from apps.alipay_crawler.storage.db import log_task, upsert_post
@@ -20,6 +23,7 @@ from apps.alipay_crawler.utils.logger import get_logger
 logger = get_logger("qq_docs")
 
 BASE_URL = "https://docs.qq.com/openapi/spreadsheet/v3"
+IMAGE_UPLOAD_URL = "https://docs.qq.com/openapi/resources/v2/images"
 
 
 @dataclass(frozen=True)
@@ -219,6 +223,39 @@ def get_row_index_map() -> dict[str, int]:
             # Tencent grid startRow is zero-based; sheet row number is one-based.
             mapping[url] = start_row + offset + 1
     return mapping
+
+
+def resolve_row_index_for_url(
+    url: str,
+    preferred_row_index: int | None = None,
+    rows: list[list[str]] | None = None,
+    start_row: int | None = None,
+) -> int | None:
+    """Resolve the current sheet row for a URL and guard against stale rows."""
+    if rows is None or start_row is None:
+        rows, start_row = fetch_grid()
+
+    target = (url or "").strip()
+    if not target:
+        return None
+
+    if Config.VALIDATE_DOC_ROW_BEFORE_WRITE and preferred_row_index:
+        offset = preferred_row_index - start_row - 1
+        if 0 <= offset < len(rows):
+            row = rows[offset]
+            if len(row) > Config.QQ_COL_URL and row[Config.QQ_COL_URL].strip() == target:
+                return preferred_row_index
+
+    matches: list[int] = []
+    for offset, row in enumerate(rows):
+        if len(row) <= Config.QQ_COL_URL:
+            continue
+        if row[Config.QQ_COL_URL].strip() == target:
+            matches.append(start_row + offset + 1)
+
+    if len(matches) > 1:
+        raise RuntimeError(f"duplicate URL in Tencent Docs, skip unsafe writeback: {target}")
+    return matches[0] if matches else None
 
 
 def _parse_sheet_date(sheet_title: str) -> tuple[int, int, int] | None:
@@ -436,7 +473,194 @@ def _cell_request(
     }
 
 
-def write_back_row(
+def _multipart_headers() -> dict[str, str]:
+    headers = _headers()
+    headers.pop("Content-Type", None)
+    return headers
+
+
+def _screenshot_cell_value(path_text: str | None) -> str:
+    if not path_text:
+        return ""
+
+    path = Path(path_text)
+    if Config.SCREENSHOT_PUBLIC_BASE_URL:
+        try:
+            relative = path.resolve().relative_to(Config.CAPTURE_DIR.resolve())
+            return f"{Config.SCREENSHOT_PUBLIC_BASE_URL.rstrip('/')}/{relative.as_posix()}"
+        except ValueError:
+            return f"{Config.SCREENSHOT_PUBLIC_BASE_URL.rstrip('/')}/{path.name}"
+    return str(path)
+
+
+def _screenshot_cell_request(row_index: int, path_text: str | None) -> dict[str, Any]:
+    value = _screenshot_cell_value(path_text)
+    if value.startswith(("http://", "https://")):
+        cell = {
+            "cellValue": {
+                "link": {
+                    "text": "截图",
+                    "url": value,
+                }
+            }
+        }
+    else:
+        cell = {"cellValue": {"text": value}}
+
+    return {
+        "updateRangeRequest": {
+            "sheetId": _configured_doc().sheet_id,
+            "gridData": {
+                "startRow": row_index - 1,
+                "startColumn": Config.QQ_COL_SCREENSHOT,
+                "rows": [{"values": [cell]}],
+            },
+        }
+    }
+
+
+def _can_upload_screenshot(path_text: str | None) -> bool:
+    if not Config.QQ_UPLOAD_SCREENSHOTS or Config.QQ_COL_SCREENSHOT < 0 or not path_text:
+        return False
+    path = Path(path_text)
+    return path.exists() and path.is_file()
+
+
+def _image_display_size(path: Path) -> tuple[float, float]:
+    width = Config.QQ_IMAGE_INSERT_WIDTH
+    height = Config.QQ_IMAGE_INSERT_HEIGHT
+    if width > 0 and height > 0:
+        return width, height
+
+    with Image.open(path) as image:
+        original_width, original_height = image.size
+
+    if original_width <= 0 or original_height <= 0:
+        return 160.0, 300.0
+
+    if width > 0:
+        return width, round(width * original_height / original_width, 2)
+    if height > 0:
+        return round(height * original_width / original_height, 2), height
+    return float(original_width), float(original_height)
+
+
+def upload_image(image_path: str | Path) -> str:
+    path = Path(image_path)
+    if not path.exists():
+        raise FileNotFoundError(f"screenshot not found: {path}")
+
+    mime_type = mimetypes.guess_type(path.name)[0] or "image/png"
+    with path.open("rb") as file:
+        response = requests.post(
+            IMAGE_UPLOAD_URL,
+            headers=_multipart_headers(),
+            files={"image": (path.name, file, mime_type)},
+            timeout=Config.QQ_IMAGE_UPLOAD_TIMEOUT,
+        )
+    response.raise_for_status()
+    data = response.json()
+    _check_response(data)
+
+    payload = data.get("data", data)
+    image_id = payload.get("imageID") or payload.get("imageId")
+    if not image_id:
+        raise RuntimeError(f"Tencent Docs upload image response missing imageID: {data}")
+    return str(image_id)
+
+
+def _screenshot_image_request(row_index: int, path_text: str) -> dict[str, Any]:
+    path = Path(path_text)
+    image_id = upload_image(path)
+    width, height = _image_display_size(path)
+    return {
+        "insertImageRequest": {
+            "sheetId": _configured_doc().sheet_id,
+            "imageData": [
+                {
+                    "type": 1,
+                    "imageId": image_id,
+                    "row": row_index,
+                    "col": Config.QQ_COL_SCREENSHOT + 1,
+                    "width": width,
+                    "height": height,
+                }
+            ],
+        }
+    }
+
+
+def _post_screenshot_images(rows: list[tuple[int, str]]) -> list[dict[str, Any]]:
+    requests_with_fallback: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    fallback_requests: list[dict[str, Any]] = []
+
+    for row_index, path_text in rows:
+        try:
+            requests_with_fallback.append(
+                (
+                    _screenshot_image_request(row_index, path_text),
+                    _screenshot_cell_request(row_index, path_text),
+                )
+            )
+            logger.info("Tencent Docs uploaded screenshot row=%s path=%s", row_index, path_text)
+            if Config.QQ_IMAGE_UPLOAD_DELAY > 0:
+                time.sleep(Config.QQ_IMAGE_UPLOAD_DELAY)
+        except Exception as exc:
+            logger.warning("Tencent Docs screenshot upload failed row=%s: %s", row_index, exc)
+            fallback_requests.append(_screenshot_cell_request(row_index, path_text))
+
+    if not requests_with_fallback:
+        return fallback_requests
+
+    doc = _configured_doc()
+    url = f"{BASE_URL}/files/{doc.file_id}/batchUpdate"
+    chunk_size = max(Config.QQ_BATCH_UPDATE_SIZE, 1)
+    for index in range(0, len(requests_with_fallback), chunk_size):
+        chunk = requests_with_fallback[index : index + chunk_size]
+        try:
+            response = requests.post(
+                url,
+                headers=_headers(),
+                json={"requests": [request for request, _ in chunk]},
+                timeout=20,
+            )
+            response.raise_for_status()
+            data = response.json()
+            _check_response(data)
+            logger.info("Tencent Docs inserted screenshot images requests=%s", len(chunk))
+            time.sleep(Config.QQ_WRITE_DELAY)
+        except Exception as exc:
+            logger.warning("Tencent Docs insert screenshot images failed: %s", exc)
+            fallback_requests.extend(fallback for _, fallback in chunk)
+
+    return fallback_requests
+
+
+def _row_cells_request(
+    row_index: int,
+    start_col_index: int,
+    values: list[Any],
+) -> dict[str, Any]:
+    return {
+        "updateRangeRequest": {
+            "sheetId": _configured_doc().sheet_id,
+            "gridData": {
+                "startRow": row_index - 1,
+                "startColumn": start_col_index,
+                "rows": [
+                    {
+                        "values": [
+                            {"cellValue": {"text": "" if value is None else str(value)}}
+                            for value in values
+                        ]
+                    }
+                ],
+            },
+        }
+    }
+
+
+def _legacy_single_write_back_row(
     row_index: int,
     check_status: str | None = None,
     read_count: int | None = None,
@@ -472,7 +696,7 @@ def write_back_row(
     time.sleep(Config.QQ_WRITE_DELAY)
 
 
-def write_initial_check_result(
+def _legacy_single_initial_check_result(
     row_index: int,
     exists: bool,
     account_name: str | None = None,
@@ -509,6 +733,141 @@ def write_initial_check_result(
     _check_response(data)
     logger.info("initial check writeback row=%s exists=%s account=%s", row_index, exists, account_name)
     time.sleep(Config.QQ_WRITE_DELAY)
+
+def _post_batch_update(requests_payload: list[dict[str, Any]], log_context: str) -> None:
+    if not requests_payload:
+        return
+
+    doc = _configured_doc()
+    url = f"{BASE_URL}/files/{doc.file_id}/batchUpdate"
+    chunk_size = max(Config.QQ_BATCH_UPDATE_SIZE, 1)
+    for index in range(0, len(requests_payload), chunk_size):
+        chunk = requests_payload[index : index + chunk_size]
+        response = requests.post(
+            url,
+            headers=_headers(),
+            json={"requests": chunk},
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+        _check_response(data)
+        logger.info("Tencent Docs batchUpdate %s requests=%s", log_context, len(chunk))
+        time.sleep(Config.QQ_WRITE_DELAY)
+
+
+def write_back_rows(rows: list[dict[str, Any]]) -> None:
+    requests_payload: list[dict[str, Any]] = []
+    screenshot_upload_rows: list[tuple[int, str]] = []
+    for item in rows:
+        row_index = int(item["row_index"])
+        screenshot_path = item.get("screenshot_path")
+        should_upload_screenshot = _can_upload_screenshot(screenshot_path)
+        has_batch_row = (
+            item.get("read_count") is not None
+            and item.get("comment_count") is not None
+            and item.get("batch_status") is not None
+            and Config.QQ_COL_COMMENT_COUNT == Config.QQ_COL_READ_COUNT + 1
+            and Config.QQ_COL_BATCH_STATUS == Config.QQ_COL_COMMENT_COUNT + 1
+        )
+        if has_batch_row:
+            values = [item["read_count"], item["comment_count"], item["batch_status"]]
+            screenshot_written_with_row = (
+                Config.QQ_COL_SCREENSHOT == Config.QQ_COL_BATCH_STATUS + 1
+                and bool(screenshot_path)
+                and not Config.SCREENSHOT_PUBLIC_BASE_URL
+                and not should_upload_screenshot
+            )
+            if screenshot_written_with_row:
+                values.append(_screenshot_cell_value(screenshot_path))
+            requests_payload.append(
+                _row_cells_request(
+                    row_index,
+                    Config.QQ_COL_READ_COUNT,
+                    values,
+                )
+            )
+            if should_upload_screenshot:
+                screenshot_upload_rows.append((row_index, str(screenshot_path)))
+            elif Config.QQ_COL_SCREENSHOT >= 0 and screenshot_path and not screenshot_written_with_row:
+                requests_payload.append(_screenshot_cell_request(row_index, screenshot_path))
+            continue
+        if item.get("check_status") is not None:
+            requests_payload.append(_cell_request(row_index, Config.QQ_COL_CHECK_STATUS, item["check_status"]))
+        if item.get("read_count") is not None:
+            requests_payload.append(_cell_request(row_index, Config.QQ_COL_READ_COUNT, item["read_count"]))
+        if item.get("comment_count") is not None:
+            requests_payload.append(_cell_request(row_index, Config.QQ_COL_COMMENT_COUNT, item["comment_count"]))
+        if item.get("batch_status") is not None:
+            requests_payload.append(_cell_request(row_index, Config.QQ_COL_BATCH_STATUS, item["batch_status"]))
+        if should_upload_screenshot:
+            screenshot_upload_rows.append((row_index, str(screenshot_path)))
+        elif Config.QQ_COL_SCREENSHOT >= 0 and screenshot_path:
+            requests_payload.append(_screenshot_cell_request(row_index, screenshot_path))
+
+    _post_batch_update(requests_payload, "write_back_rows")
+    fallback_requests = _post_screenshot_images(screenshot_upload_rows)
+    _post_batch_update(fallback_requests, "screenshot_fallback")
+
+
+def write_back_row(
+    row_index: int,
+    check_status: str | None = None,
+    read_count: int | None = None,
+    comment_count: int | None = None,
+    batch_status: str | None = None,
+) -> None:
+    write_back_rows(
+        [
+            {
+                "row_index": row_index,
+                "check_status": check_status,
+                "read_count": read_count,
+                "comment_count": comment_count,
+                "batch_status": batch_status,
+            }
+        ]
+    )
+
+
+def write_initial_check_results(rows: list[dict[str, Any]]) -> None:
+    requests_payload: list[dict[str, Any]] = []
+    yellow = {"red": 255, "green": 255, "blue": 0, "alpha": 255}
+    red_bold = {
+        "bold": True,
+        "color": {"red": 255, "green": 0, "blue": 0, "alpha": 255},
+    }
+
+    for item in rows:
+        row_index = int(item["row_index"])
+        exists = bool(item["exists"])
+        if exists:
+            requests_payload.append(
+                _cell_request(row_index, Config.QQ_COL_ACCOUNT_NAME, item.get("account_name") or "")
+            )
+        else:
+            requests_payload.append(
+                _cell_request(
+                    row_index,
+                    Config.QQ_COL_ACCOUNT_NAME,
+                    "N",
+                    background_color=yellow,
+                    text_format=red_bold,
+                )
+            )
+
+    _post_batch_update(requests_payload, "initial_check")
+
+
+def write_initial_check_result(
+    row_index: int,
+    exists: bool,
+    account_name: str | None = None,
+) -> None:
+    write_initial_check_results(
+        [{"row_index": row_index, "exists": exists, "account_name": account_name}]
+    )
+
 
 if __name__ == "__main__":
     candidates = fetch_and_save()

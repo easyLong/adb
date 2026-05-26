@@ -1,9 +1,9 @@
-"""ADB crawler wrapper built on the validated alipay_capture.py flow."""
+"""ADB crawler wrapper built on the validated capture flow."""
 
 from __future__ import annotations
 
-import json
 import os
+import random
 import re
 import time
 from datetime import datetime
@@ -11,20 +11,28 @@ from pathlib import Path
 from typing import Any
 
 from apps.alipay_crawler.alipay.capture_engine import (
-    capture_pages,
+    append_jsonl,
     collect_ui_records,
     connect_uiautomator,
+    current_screen_signature,
     is_lockscreen_showing,
     open_alipay_link,
     resolve_embedded_alipay_scheme,
+    save_text,
+    scroll_forward,
     set_device_awake,
+    stable_key,
+    try_ocr,
 )
 from apps.alipay_crawler.config import Config
+from apps.alipay_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.alipay_crawler.utils.logger import get_logger
 
 logger = get_logger("crawler")
 
 _device = None
+_device_serial: str | None = None
+_last_device_prepare_at = 0.0
 
 NOT_FOUND_KEYWORDS = [
     "内容不存在",
@@ -57,18 +65,41 @@ def _prepare_adb_path() -> None:
         os.environ["PATH"] = adb_dir + os.pathsep + os.environ.get("PATH", "")
 
 
+def reset_device_session() -> None:
+    global _device, _device_serial
+    _device = None
+    _device_serial = None
+
+
 def device():
-    global _device
-    if _device is None:
-        _device = connect_uiautomator(Config.DEVICE_SERIAL or None)
-        info = _device.info
+    global _device, _device_serial
+    serial = assert_device_ready()
+    if _device is None or _device_serial != serial:
+        _device_serial = serial
+        _device = connect_uiautomator(serial)
+        try:
+            info = _device.info
+        except Exception as exc:
+            reset_device_session()
+            raise DeviceUnavailable(f"uiautomator2 device session is unavailable: {exc}") from exc
         logger.info(
-            "设备连接成功: %s (%sx%s)",
+            "device connected: %s (%sx%s)",
             info.get("productName", "unknown"),
             info.get("displayWidth"),
             info.get("displayHeight"),
         )
     return _device
+
+
+def _prepare_device_if_needed(serial: str) -> None:
+    global _last_device_prepare_at
+    now = time.monotonic()
+    if now - _last_device_prepare_at < Config.DEVICE_PREPARE_INTERVAL_SECONDS:
+        return
+    set_device_awake(serial)
+    if is_lockscreen_showing(serial):
+        raise RuntimeError("device is locked; unlock the phone and retry")
+    _last_device_prepare_at = now
 
 
 def resolve_short_url(short_url: str) -> str:
@@ -79,10 +110,8 @@ def resolve_short_url(short_url: str) -> str:
 
 def open_url(url: str) -> None:
     _prepare_adb_path()
-    serial = Config.DEVICE_SERIAL or None
-    set_device_awake(serial)
-    if is_lockscreen_showing(serial):
-        raise RuntimeError("手机已锁屏，请手动解锁后重试")
+    serial = assert_device_ready()
+    _prepare_device_if_needed(serial)
     open_alipay_link(url, serial=serial)
     time.sleep(Config.PAGE_LOAD_WAIT)
 
@@ -114,7 +143,7 @@ def detect_page_status() -> tuple[str, str | None]:
             return "error", keyword
     if any(keyword in joined for keyword in OK_KEYWORDS) or len(texts) >= 5:
         return "success", None
-    return "error", "页面状态未知或控件内容过少"
+    return "error", "page status is unknown or too few controls were found"
 
 
 def extract_account_name(texts: list[str]) -> str:
@@ -182,7 +211,6 @@ def extract_account_name(texts: list[str]) -> str:
 
 
 def check_post_exists_and_account(post_id: int) -> dict[str, Any]:
-    # Give Alipay WebView a moment after open_url().
     time.sleep(1.0)
     status, error_msg = detect_page_status()
     if status == "not_found":
@@ -201,37 +229,281 @@ def take_screenshot(post_id: int) -> str | None:
         device().screenshot(str(path))
         return str(path)
     except Exception as exc:
-        logger.warning("截图失败: %s", exc)
+        logger.warning("screenshot failed: %s", exc)
         return None
 
 
-def parse_numbers(texts: list[str]) -> tuple[int, int]:
+def _parse_count_token(raw: str) -> int:
+    text = re.sub(r"\s+", "", raw.replace(",", "")).lower()
+    match = re.fullmatch(r"(?P<num>\d+(?:\.\d+)?)(?P<unit>[万wk千]?)", text)
+    if not match:
+        return 0
+
+    value = float(match.group("num"))
+    unit = match.group("unit")
+    if unit in {"万", "w"}:
+        value *= 10000
+    elif unit == "k":
+        value *= 1000
+    elif unit == "千":
+        value *= 1000
+    return int(value)
+
+
+def _number_candidates(texts: list[str]) -> list[str]:
+    candidates: list[str] = []
+    cleaned = [item.strip() for item in texts if item and item.strip()]
+    candidates.extend(cleaned)
+    for index in range(max(len(cleaned) - 1, 0)):
+        candidates.append("".join(cleaned[index : index + 2]))
+    return candidates
+
+
+def _current_post_scope_texts(texts: list[str]) -> list[str]:
+    scope: list[str] = []
+    after_latest_count: int | None = None
+    for text in texts:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            continue
+        scope.append(cleaned)
+        if "暂无评论" in cleaned or "点击抢首评" in cleaned or "说说你的想法" in cleaned:
+            break
+        if after_latest_count is not None:
+            after_latest_count += 1
+            if after_latest_count >= 4:
+                break
+        if cleaned == "最新":
+            after_latest_count = 0
+    return scope
+
+
+def _is_post_content_stop(text: str) -> bool:
+    if text in {"评论", "转发", "热度", "最新", "点赞", "返回", "更多"}:
+        return True
+    return any(
+        text.startswith(prefix)
+        for prefix in (
+            "来自以下讨论区",
+            "风险提示",
+            "暂无评论",
+            "点击抢首评",
+            "说说你的想法",
+        )
+    )
+
+
+def _is_post_content_noise(text: str) -> bool:
+    if text in {"头像", "关注", "已关注", "阅读", "浏览", "查看", "评论", "转发", "点赞"}:
+        return True
+    if re.fullmatch(r"\d{1,2}:\d{2}", text):
+        return True
+    if re.fullmatch(r"\d{1,2}[-/]\d{1,2}\s*\d{1,2}:\d{2}", text):
+        return True
+    if re.fullmatch(r"\d+", text):
+        return True
+    if len(text) <= 3 and text in {"北京", "上海", "天津", "重庆", "福建", "广东", "江苏", "浙江", "山东", "四川", "河南", "河北", "湖南", "湖北"}:
+        return True
+    return False
+
+
+def extract_post_content(texts: list[str]) -> str:
+    content_parts: list[str] = []
+    for text in _current_post_scope_texts(texts):
+        cleaned = (text or "").strip()
+        if not cleaned:
+            continue
+        if _is_post_content_stop(cleaned):
+            break
+        if _is_post_content_noise(cleaned):
+            continue
+        # The first long/business text after author metadata is the post body.
+        if len(cleaned) < 8 and not content_parts:
+            continue
+        content_parts.append(cleaned)
+    return "\n".join(dict.fromkeys(content_parts))
+
+
+def _normalize_count_text(text: str) -> str:
+    compact = re.sub(r"\s+", "", text)
+    labels = "\u9605\u8bfb|\u6d4f\u89c8|\u67e5\u770b|\u8bc4\u8bba|\u56de\u590d|\u7559\u8a00"
+    return re.sub(
+        rf"(?:\d{{1,2}}[-/]\d{{1,2}})?(?P<time>\d{{1,2}}:\d{{2}})(?P<num>\d+(?:[,.]\d+)*(?:\.\d+)?\s*[涓噖WwKk鍗僝]?)(?=(?:{labels}))",
+        lambda match: match.group("num"),
+        compact,
+    )
+
+
+def parse_numbers_with_presence(texts: list[str]) -> tuple[int, int, bool, bool]:
+    scoped_texts = _current_post_scope_texts(texts)
     read_count = 0
     comment_count = 0
-    for text in texts:
+    read_found = False
+    no_comments = any(
+        "暂无评论" in text or "点击抢首评" in text or "说说你的想法" in text
+        for text in scoped_texts
+    )
+    comment_found = no_comments
+    number = r"(?P<num>\d+(?:[,.]\d+)*(?:\.\d+)?\s*[万wWkK千]?)"
+    for text in _number_candidates(scoped_texts):
+        compact = _normalize_count_text(text)
         for pattern in (
-            r"(?P<num>\d+)\s*阅读",
-            r"阅读\s*(?P<num>\d+)",
-            r"(?P<num>\d+)\s*浏览",
-            r"浏览\s*(?P<num>\d+)",
-            r"(?P<num>\d+)\s*查看",
-            r"查看\s*(?P<num>\d+)",
+            rf"{number}(?:次)?(?:阅读|浏览|查看|阅)",
+            rf"(?:阅读|浏览|查看|阅)(?:量|数)?{number}",
         ):
-            match = re.search(pattern, text)
+            match = re.search(pattern, compact)
             if match:
-                read_count = max(read_count, int(match.group("num")))
+                prefix = compact[: match.start()]
+                if any(word in prefix for word in ("评论", "回复", "留言")):
+                    continue
+                read_found = True
+                read_count = max(read_count, _parse_count_token(match.group("num")))
         for pattern in (
-            r"(?P<num>\d+)\s*评论",
-            r"评论\s*(?P<num>\d+)",
-            r"(?P<num>\d+)\s*回复",
-            r"回复\s*(?P<num>\d+)",
-            r"(?P<num>\d+)\s*留言",
-            r"留言\s*(?P<num>\d+)",
+            rf"{number}(?:条)?(?:评论|回复|留言|评)",
+            rf"(?:评论|回复|留言|评)(?:数|量)?{number}",
         ):
-            match = re.search(pattern, text)
+            match = re.search(pattern, compact)
             if match:
-                comment_count = max(comment_count, int(match.group("num")))
+                prefix = compact[: match.start()]
+                suffix = compact[match.end() :]
+                if any(word in prefix for word in ("阅读", "浏览", "查看")):
+                    continue
+                if any(word in suffix for word in ("阅读", "浏览", "查看")):
+                    continue
+                if (
+                    match.start() == 0
+                    and match.end() == len(compact)
+                    and re.search(r"[万wWkK千]", match.group("num"))
+                ):
+                    continue
+                comment_found = True
+                comment_count = max(comment_count, _parse_count_token(match.group("num")))
+    if no_comments:
+        comment_count = 0
+    return read_count, comment_count, read_found, comment_found
+
+
+def parse_numbers(texts: list[str]) -> tuple[int, int]:
+    read_count, comment_count, _, _ = parse_numbers_with_presence(texts)
     return read_count, comment_count
+
+
+def _record_texts(records: list[dict[str, Any]]) -> list[str]:
+    texts: list[str] = []
+    for record in records:
+        if record.get("package") == "com.android.systemui":
+            continue
+        for key in ("text", "content_desc"):
+            value = (record.get(key) or "").strip()
+            if value:
+                texts.append(value)
+    return texts
+
+
+def _adaptive_capture_pages(post_id: int, output_dir: Path) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ui_jsonl = output_dir / "ui_records.jsonl"
+    ocr_jsonl = output_dir / "ocr_records.jsonl"
+    seen_record_keys: set[str] = set()
+    seen_screen_signatures: set[str] = set()
+    all_texts: list[str] = []
+    total_ui_records = 0
+    total_ocr_records = 0
+    pages_captured = 0
+    read_count = 0
+    comment_count = 0
+    read_found = False
+    comment_found = False
+    ocr_attempted = False
+    ocr_available = None
+
+    max_pages = max(1, min(Config.BATCH_MAX_CAPTURE_PAGES, Config.SCROLL_TIMES + 1))
+    current_device = device()
+
+    for page_index in range(max_pages):
+        xml_text = current_device.dump_hierarchy(compressed=False, pretty=True)
+        signature = current_screen_signature(xml_text)
+
+        xml_path = output_dir / f"page_{page_index:03d}.xml"
+        screenshot_path = output_dir / f"page_{page_index:03d}.png"
+        save_text(xml_path, xml_text)
+        current_device.screenshot(str(screenshot_path))
+        pages_captured += 1
+
+        records = collect_ui_records(xml_text, page_index)
+        new_records = []
+        for record in records:
+            key = stable_key(record)
+            if key in seen_record_keys:
+                continue
+            seen_record_keys.add(key)
+            new_records.append(record)
+
+        append_jsonl(ui_jsonl, new_records)
+        total_ui_records += len(new_records)
+        all_texts.extend(_record_texts(new_records))
+
+        read_count, comment_count, read_found, comment_found = parse_numbers_with_presence(all_texts)
+        if Config.BATCH_ENABLE_OCR and ocr_available is not False and not (read_found and comment_found):
+            ocr_attempted = True
+            ocr_records = try_ocr(screenshot_path)
+            if ocr_records is None:
+                ocr_available = False
+            else:
+                ocr_available = True
+                filtered_ocr = []
+                for row in ocr_records:
+                    if float(row.get("confidence", -1)) < Config.OCR_MIN_CONFIDENCE:
+                        continue
+                    bounds = row.get("bounds") or {}
+                    if int(bounds.get("top") or 0) < 140:
+                        continue
+                    row["page_index"] = page_index
+                    row["screenshot"] = screenshot_path.name
+                    filtered_ocr.append(row)
+                append_jsonl(ocr_jsonl, filtered_ocr)
+                total_ocr_records += len(filtered_ocr)
+                all_texts.extend(row["text"] for row in filtered_ocr)
+                read_count, comment_count, read_found, comment_found = parse_numbers_with_presence(all_texts)
+
+        logger.info(
+            "adaptive capture post=%s page=%s/%s ui_new=%s ocr_total=%s read_found=%s comment_found=%s",
+            post_id,
+            page_index + 1,
+            max_pages,
+            len(new_records),
+            total_ocr_records,
+            read_found,
+            comment_found,
+        )
+        if read_found and comment_found:
+            break
+        if page_index >= max_pages - 1:
+            break
+        if signature in seen_screen_signatures:
+            logger.info("adaptive capture stopped: repeated screen post=%s", post_id)
+            break
+        seen_screen_signatures.add(signature)
+        if not scroll_forward(current_device):
+            logger.info("adaptive capture stopped: no more scrollable content post=%s", post_id)
+            break
+        time.sleep(Config.BATCH_SCROLL_WAIT)
+
+    return {
+        "output_dir": str(output_dir),
+        "ui_records": total_ui_records,
+        "ocr_records": total_ocr_records,
+        "ui_jsonl": str(ui_jsonl),
+        "ocr_jsonl": str(ocr_jsonl) if ocr_jsonl.exists() else None,
+        "texts": all_texts,
+        "read_count": read_count,
+        "comment_count": comment_count,
+        "read_found": read_found,
+        "comment_found": comment_found,
+        "pages_captured": pages_captured,
+        "ocr_attempted": ocr_attempted,
+        "ocr_available": ocr_available,
+    }
 
 
 def scrape_post_content(post_id: int) -> dict[str, Any]:
@@ -253,40 +525,39 @@ def scrape_post_content(post_id: int) -> dict[str, Any]:
         result.update({"status": "error", "error": error_msg})
         return result
 
-    summary = capture_pages(
-        device=device(),
-        output_dir=output_dir,
-        max_scrolls=Config.SCROLL_TIMES,
-        wait_after_open=0,
-        wait_after_scroll=Config.POST_DELAY_MIN,
-        enable_ocr=False,
-        dynamic_wait=False,
-        ready_timeout=0,
-        ready_check_interval=0,
-    )
-
-    jsonl_path = Path(summary["ui_jsonl"])
-    texts: list[str] = []
-    if jsonl_path.exists():
-        for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            for key in ("text", "content_desc"):
-                value = (row.get(key) or "").strip()
-                if value:
-                    texts.append(value)
-
-    read_count, comment_count = parse_numbers(texts)
+    summary = _adaptive_capture_pages(post_id, output_dir)
+    texts = summary["texts"]
+    read_count = summary["read_count"]
+    comment_count = summary["comment_count"]
+    content = extract_post_content(texts)
+    if not content and not summary["read_found"] and not summary["comment_found"]:
+        result.update(
+            {
+                "status": "error",
+                "error": "post content was not detected; page may be blank or not the target post",
+                "capture_pages": summary["pages_captured"],
+                "read_found": summary["read_found"],
+                "comment_found": summary["comment_found"],
+                "ocr_attempted": summary["ocr_attempted"],
+                "ocr_available": summary["ocr_available"],
+                "ocr_records": summary["ocr_records"],
+            }
+        )
+        return result
     screenshot = next(output_dir.glob("page_000.png"), None)
     result.update(
         {
             "status": "success",
-            "content": "\n".join(dict.fromkeys(texts)),
+            "content": content,
             "read_count": read_count,
             "comment_count": comment_count,
             "screenshot_path": str(screenshot) if screenshot else None,
+            "capture_pages": summary["pages_captured"],
+            "read_found": summary["read_found"],
+            "comment_found": summary["comment_found"],
+            "ocr_attempted": summary["ocr_attempted"],
+            "ocr_available": summary["ocr_available"],
+            "ocr_records": summary["ocr_records"],
         }
     )
     return result

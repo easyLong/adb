@@ -67,12 +67,13 @@ apps/<app_name>/
 
 | 层 | 位置 | 作用 |
 | --- | --- | --- |
-| 入口调度层 | `app.py` | `fetch/check/batch/report/scheduler` |
+| 入口调度层 | `app.py` | `fetch/check/batch/report/scheduler/supervisor` |
 | 配置层 | `config.py` | MySQL、腾讯文档、ADB、设备、目录配置 |
-| 集成层 | `integrations/qq_docs.py` | 读取/筛选/写回腾讯文档 |
+| 集成层 | `integrations/qq_docs.py` | 读取/筛选/写回腾讯文档，上传和插入截图 |
 | 来源识别层 | `utils/link_source.py` | 将链接识别为 `alipay` / `antfortune` / `unknown` |
-| 执行引擎层 | `alipay/capture_engine.py` | deep link 转换、ADB 打开、页面采集 |
-| 任务与存储层 | `jobs/*`, `storage/db.py`, `services/report.py` | 初检、批处理、落库、日报 |
+| 执行引擎层 | `alipay/capture_engine.py` | deep link 转换、ADB 打开、页面采集、RapidOCR |
+| 任务与存储层 | `jobs/*`, `storage/db.py`, `services/*` | 初检、批处理、落库、日报、告警 |
+| 运行保护层 | `utils/device_health.py`, `utils/rate_limiter.py`, `utils/url_resolver.py` | 设备健康检查、任务预算、批量链接解析 |
 
 ## 统一运行入口
 

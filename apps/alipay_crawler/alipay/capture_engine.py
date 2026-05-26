@@ -4,6 +4,7 @@ import json
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -16,10 +17,13 @@ from apps.alipay_crawler.config import Config
 ALIPAY_PACKAGE = Config.ALIPAY_PACKAGE
 AFWEALTH_PACKAGE = Config.AFWEALTH_PACKAGE
 DEFAULT_CACHE_PATH = Path(__file__).resolve().parents[1] / ".alipay_scheme_cache.json"
+_SCHEME_CACHE_LOCK = threading.Lock()
+_RAPIDOCR_ENGINE: Any = None
+_RAPIDOCR_UNAVAILABLE = False
 
 
 def run_adb(args: List[str], serial: Optional[str] = None, timeout: int = 20) -> str:
-    cmd = ["adb"]
+    cmd = [Config.ADB_PATH or "adb"]
     if serial:
         cmd += ["-s", serial]
     cmd += args
@@ -73,7 +77,11 @@ def resolve_embedded_alipay_scheme(url: str, timeout: int = 15, use_cache: bool 
     if direct_scheme:
         return direct_scheme
 
-    cache = load_scheme_cache() if use_cache else {}
+    if use_cache:
+        with _SCHEME_CACHE_LOCK:
+            cache = load_scheme_cache()
+    else:
+        cache = {}
     cached = cache.get(url)
     if cached:
         print("Resolved Alipay scheme from cache.")
@@ -99,8 +107,10 @@ def resolve_embedded_alipay_scheme(url: str, timeout: int = 15, use_cache: bool 
     schemes = query.get("scheme") or []
     if schemes and schemes[0].startswith(("alipays://", "alipay://")):
         if use_cache:
-            cache[url] = schemes[0]
-            save_scheme_cache(cache)
+            with _SCHEME_CACHE_LOCK:
+                cache = load_scheme_cache()
+                cache[url] = schemes[0]
+                save_scheme_cache(cache)
         return schemes[0]
     return None
 
@@ -333,43 +343,45 @@ def append_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 
 def try_ocr(image_path: Path) -> Optional[List[Dict[str, Any]]]:
-    try:
-        from PIL import Image
-        import pytesseract
-    except ImportError:
+    global _RAPIDOCR_ENGINE, _RAPIDOCR_UNAVAILABLE
+    if _RAPIDOCR_UNAVAILABLE:
         return None
 
-    image = Image.open(image_path)
     try:
-        data = pytesseract.image_to_data(
-            image,
-            lang="chi_sim+eng",
-            output_type=pytesseract.Output.DICT,
-        )
+        if _RAPIDOCR_ENGINE is None:
+            from rapidocr_onnxruntime import RapidOCR
+
+            _RAPIDOCR_ENGINE = RapidOCR()
+        result, _ = _RAPIDOCR_ENGINE(str(image_path))
     except Exception as exc:
-        print(f"OCR skipped for {image_path.name}: {exc}", file=sys.stderr)
+        _RAPIDOCR_UNAVAILABLE = True
+        print(f"RapidOCR skipped for {image_path.name}: {exc}", file=sys.stderr)
         return None
 
     rows: List[Dict[str, Any]] = []
-    count = len(data.get("text", []))
-    for index in range(count):
-        text = (data["text"][index] or "").strip()
+    for item in result or []:
+        if len(item) < 3:
+            continue
+        points, text, confidence = item[0], str(item[1] or "").strip(), item[2]
         if not text:
             continue
-        try:
-            confidence = float(data["conf"][index])
-        except ValueError:
-            confidence = -1.0
+        xs = [float(point[0]) for point in points]
+        ys = [float(point[1]) for point in points]
+        left = int(min(xs))
+        top = int(min(ys))
+        right = int(max(xs))
+        bottom = int(max(ys))
         rows.append(
             {
                 "text": text,
-                "confidence": confidence,
+                "confidence": float(confidence) * 100.0,
                 "bounds": {
-                    "left": int(data["left"][index]),
-                    "top": int(data["top"][index]),
-                    "width": int(data["width"][index]),
-                    "height": int(data["height"][index]),
+                    "left": left,
+                    "top": top,
+                    "width": max(0, right - left),
+                    "height": max(0, bottom - top),
                 },
+                "engine": "rapidocr",
             }
         )
     return rows
@@ -470,7 +482,7 @@ def capture_pages(
         if enable_ocr:
             ocr_records = try_ocr(screenshot_path)
             if ocr_records is None:
-                print("OCR skipped: install pillow, pytesseract, and Tesseract OCR binary.", file=sys.stderr)
+                print("OCR skipped: install rapidocr-onnxruntime.", file=sys.stderr)
                 enable_ocr = False
             else:
                 for row in ocr_records:
@@ -539,7 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ready-timeout", type=float, default=12.0, help="Max seconds to wait for Alipay page content.")
     parser.add_argument("--ready-check-interval", type=float, default=0.6, help="Seconds between page readiness checks.")
     parser.add_argument("--ready-retries", type=int, default=1, help="How many times to reopen the link if readiness times out.")
-    parser.add_argument("--ocr", action="store_true", help="Enable OCR from screenshots via pytesseract.")
+    parser.add_argument("--ocr", action="store_true", help="Enable OCR from screenshots via RapidOCR.")
     parser.add_argument("--skip-open", action="store_true", help="Do not send intent; capture the current screen.")
     parser.add_argument("--no-dynamic-wait", action="store_true", help="Use fixed wait-after-open instead of readiness checks.")
     parser.add_argument("--no-stay-awake", action="store_true", help="Do not wake the device or enable stay-awake while plugged in.")

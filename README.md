@@ -69,12 +69,28 @@ pip install -r requirements.txt
 .\scripts\run.ps1 -App alipay_crawler -Task scheduler
 ```
 
+生产常驻建议使用带崩溃恢复的看护模式：
+
+```powershell
+.\scripts\run.ps1 -App alipay_crawler -Task supervisor
+```
+
 直接使用 Python 模块入口：
 
 ```powershell
 python -m apps.alipay_crawler.app --once fetch
 python -m apps.alipay_crawler.app
 ```
+
+## 当前能力
+
+- 支持支付宝和蚂蚁财富链接分流、deep link 解析和缓存。
+- 初检、批量采集、报告生成和 supervisor 看护模式。
+- ADB 设备断连/未授权/离线检测，异常时中止任务并告警。
+- 批量采集按需滚动：首屏优先，信息缺失时最多采集 3 屏。
+- WebView 内容可通过 RapidOCR 识别阅读数和评论数。
+- 腾讯文档写回前按 URL 校验行号，避免行号漂移写错。
+- 阅读数、评论数、状态合并批量写回，首屏截图上传到腾讯文档并插入截图列。
 
 ## 凭证
 
