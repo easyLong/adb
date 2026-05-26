@@ -7,6 +7,7 @@ apps/*/logs/
 apps/*/reports/
 apps/*/exports/
 apps/*/screenshots/
+apps/*/.app_scheme_cache.json
 apps/*/.alipay_scheme_cache.json
 apps/*/.qq_token_cache.json
 

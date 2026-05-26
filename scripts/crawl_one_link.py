@@ -14,13 +14,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from apps.alipay_crawler.alipay.crawler import (  # noqa: E402
+from apps.finance_crawler.mobile.crawler import (  # noqa: E402
     check_post_exists_and_account,
     open_url,
     resolve_short_url,
     scrape_post_content,
 )
-from apps.alipay_crawler.utils.link_source import detect_link_source  # noqa: E402
+from apps.finance_crawler.utils.link_source import resolve_source_app  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     post_id = args.post_id or int(datetime.now().strftime("%m%d%H%M%S"))
-    source_app = detect_link_source(args.url)
+    source_app = resolve_source_app(None, args.url)
     started = time.perf_counter()
 
     deep_link = args.url

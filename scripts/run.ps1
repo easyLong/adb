@@ -1,5 +1,5 @@
 param(
-    [string]$App = "alipay_crawler",
+    [string]$App = "finance_crawler",
 
     [ValidateSet("scheduler", "supervisor", "db", "fetch", "check", "batch", "report")]
     [string]$Task = "scheduler",

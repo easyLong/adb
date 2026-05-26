@@ -1,2 +1,0 @@
-"""Alipay crawler service package."""
-

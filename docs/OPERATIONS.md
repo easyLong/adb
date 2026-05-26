@@ -1,4 +1,4 @@
-﻿# 运行和排障
+# 运行和排障
 
 ## 安装依赖
 
@@ -45,23 +45,23 @@ XXXXXXXXXXXXX    unauthorized
 使用统一脚本：
 
 ```powershell
-.\scripts\run.ps1 -App alipay_crawler -Task db
-.\scripts\run.ps1 -App alipay_crawler -Task fetch
-.\scripts\run.ps1 -App alipay_crawler -Task check
-.\scripts\run.ps1 -App alipay_crawler -Task batch
-.\scripts\run.ps1 -App alipay_crawler -Task report
-.\scripts\run.ps1 -App alipay_crawler -Task scheduler
-.\scripts\run.ps1 -App alipay_crawler -Task supervisor
+.\scripts\run.ps1 -App finance_crawler -Task db
+.\scripts\run.ps1 -App finance_crawler -Task fetch
+.\scripts\run.ps1 -App finance_crawler -Task check
+.\scripts\run.ps1 -App finance_crawler -Task batch
+.\scripts\run.ps1 -App finance_crawler -Task report
+.\scripts\run.ps1 -App finance_crawler -Task scheduler
+.\scripts\run.ps1 -App finance_crawler -Task supervisor
 ```
 
 直接运行模块：
 
 ```powershell
-python -m apps.alipay_crawler.app --once fetch
-python -m apps.alipay_crawler.app --once check
-python -m apps.alipay_crawler.app --once batch
-python -m apps.alipay_crawler.app
-python -m apps.alipay_crawler.app --supervise
+python -m apps.finance_crawler.app --once fetch
+python -m apps.finance_crawler.app --once check
+python -m apps.finance_crawler.app --once batch
+python -m apps.finance_crawler.app
+python -m apps.finance_crawler.app --supervise
 ```
 
 ## 可靠性配置
@@ -79,7 +79,7 @@ python -m apps.alipay_crawler.app --supervise
 告警默认写入：
 
 ```text
-apps/alipay_crawler/logs/alerts.jsonl
+apps/finance_crawler/logs/alerts.jsonl
 ```
 
 配置 `ALERT_WEBHOOK_URL` 后，任务失败、设备断连、写回失败、报告失败、调度器崩溃等事件会同时 POST 到该地址。
@@ -114,7 +114,7 @@ $env:TENCENT_DOC_COL_SCREENSHOT = "17"
 
 默认会优先调用腾讯文档开放平台上传图片接口，把截图作为文档资源插入到截图列，不需要配置
 `SCREENSHOT_PUBLIC_BASE_URL`。如果上传或插入失败，会自动降级写入本机路径。
-如果已经把 `apps/alipay_crawler/captures/` 暴露成可访问的静态文件服务，也可以配置
+如果已经把 `apps/finance_crawler/captures/` 暴露成可访问的静态文件服务，也可以配置
 `SCREENSHOT_PUBLIC_BASE_URL`，降级写回值会变成在线链接。
 
 ```powershell
@@ -214,19 +214,19 @@ $env:BATCH_ENABLE_OCR = "true"
 查看最近一次控件采集文件：
 
 ```text
-apps/alipay_crawler/captures/post_xxx/ui_records.jsonl
+apps/finance_crawler/captures/post_xxx/ui_records.jsonl
 ```
 
 如果控件树读不到 WebView 内容，再查看 OCR 结果：
 
 ```text
-apps/alipay_crawler/captures/post_xxx/ocr_records.jsonl
+apps/finance_crawler/captures/post_xxx/ocr_records.jsonl
 ```
 
 确认阅读数字格式后再调整：
 
 ```text
-apps/alipay_crawler/alipay/crawler.py
+apps/finance_crawler/mobile/crawler.py
 ```
 
 重点函数：`parse_numbers_with_presence()`。

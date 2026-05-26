@@ -13,13 +13,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from apps.alipay_crawler.alipay.crawler import (
+from apps.finance_crawler.mobile.crawler import (
     check_post_exists_and_account,
     open_url,
     resolve_short_url,
     scrape_post_content,
 )
-from apps.alipay_crawler.config import Config
+from apps.finance_crawler.config import Config
 
 
 ACCOUNT_HEADER = "发帖账号"
