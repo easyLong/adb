@@ -15,15 +15,17 @@ from apps.finance_crawler.config import Config
 from apps.finance_crawler.services.alerts import send_alert
 from apps.finance_crawler.services.report import generate_report
 from apps.finance_crawler.sinks.tencent_docs import TencentDocsSink
-from apps.finance_crawler.storage.db import (
-    get_pending_batch_posts,
-    log_task,
-    mark_written_back_many,
-    update_batch_result,
+from apps.finance_crawler.storage.crawl_repository import (
+    PendingWriteback,
+    get_pending_batch_records,
+    mark_writebacks_done,
+    record_crawl_result,
+    record_pending_writebacks,
+    record_sink_writeback,
+    save_batch_result,
 )
-from apps.finance_crawler.services.framework_events import (
-    record_crawl_result_for_post,
-    record_sink_writeback_for_post,
+from apps.finance_crawler.storage.db import (
+    log_task,
 )
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.link_source import resolve_source_app
@@ -50,7 +52,7 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
     budget = OperationBudget("batch")
     sink = TencentDocsSink()
     task_limit = Config.BATCH_LIMIT if limit is None else limit
-    posts = get_pending_batch_posts(task_limit)
+    posts = get_pending_batch_records(task_limit)
     posts = budget.limit_items(posts)
     total = len(posts)
     logger.info("batch started: total=%s limit=%s", total, task_limit)
@@ -79,7 +81,7 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
     deep_links = resolve_urls(posts, resolve_short_url, logger)
     results: list[dict] = []
     writebacks: list[dict] = []
-    writeback_records: list[dict] = []
+    writeback_records: list[PendingWriteback] = []
     written_post_ids: list[int] = []
     stop_reason: str | None = None
 
@@ -110,7 +112,7 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
             result = _empty_result("error", str(exc))
             logger.exception("scrape failed id=%s", post_id)
 
-        update_batch_result(
+        save_batch_result(
             post_id=post_id,
             status=result["status"],
             content=result.get("content"),
@@ -143,7 +145,7 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
             except Exception as exc:
                 logger.warning("unsafe batch writeback skipped id=%s: %s", post_id, exc)
 
-        task_id, result_id = record_crawl_result_for_post(
+        task_id, result_id = record_crawl_result(
             post=post,
             workflow="batch_crawl",
             status=result["status"],
@@ -175,16 +177,16 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
             )
             written_post_ids.append(post_id)
             writeback_records.append(
-                {
-                    "post_id": post_id,
-                    "task_id": task_id,
-                    "result_id": result_id,
-                    "row_index": row_index,
-                }
+                PendingWriteback(
+                    post_id=post_id,
+                    task_id=task_id,
+                    result_id=result_id,
+                    row_index=row_index,
+                )
             )
         else:
             logger.warning("row not found; skipped Tencent Docs writeback id=%s", post_id)
-            record_sink_writeback_for_post(
+            record_sink_writeback(
                 post_id=post_id,
                 sink_type="tencent_docs",
                 status="skipped",
@@ -208,29 +210,21 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
     if writebacks:
         try:
             sink.write_batch_results(writebacks)
-            mark_written_back_many(written_post_ids)
-            for item in writeback_records:
-                record_sink_writeback_for_post(
-                    post_id=item["post_id"],
-                    sink_type="tencent_docs",
-                    status="success",
-                    task_id=item["task_id"],
-                    result_id=item["result_id"],
-                    locator={"row_index": item["row_index"]},
-                )
+            mark_writebacks_done(written_post_ids)
+            record_pending_writebacks(
+                records=writeback_records,
+                sink_type="tencent_docs",
+                status="success",
+            )
         except Exception as exc:
             send_alert("Tencent Docs batch writeback failed", str(exc), dedupe_key="docs_batch_writeback")
             logger.warning("batch writeback failed: %s", exc)
-            for item in writeback_records:
-                record_sink_writeback_for_post(
-                    post_id=item["post_id"],
-                    sink_type="tencent_docs",
-                    status="error",
-                    task_id=item["task_id"],
-                    result_id=item["result_id"],
-                    locator={"row_index": item["row_index"]},
-                    error=str(exc),
-                )
+            record_pending_writebacks(
+                records=writeback_records,
+                sink_type="tencent_docs",
+                status="error",
+                error=str(exc),
+            )
 
     success_count = sum(1 for item in results if item["status"] == "success")
     deleted_count = sum(1 for item in results if item["status"] == "deleted")

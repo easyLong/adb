@@ -98,7 +98,7 @@ Windows 是控制端和数据处理端：
 | 工作流层 | `workflows/*` | fetch、initial check、batch crawl 的业务编排 |
 | 写回层 | `sinks/*` | 将采集结果写回业务系统 |
 | 外部集成层 | `integrations/*` | 腾讯文档 OpenAPI 等第三方系统底层能力 |
-| 存储层 | `storage/*` | MySQL 兼容表和框架表读写 |
+| 存储层 | `storage/*` | 面向 workflow 的仓储接口、MySQL 兼容表和框架表读写 |
 | 服务层 | `services/*` | 告警、报表、框架事件记录 |
 | 工具层 | `utils/*` | 链路识别、表格解析、设备健康、限流、URL 批量解析 |
 
@@ -147,6 +147,7 @@ apps/finance_crawler/
     checker.py
     batch.py
   storage/
+    crawl_repository.py
     db.py
     framework_db.py
   services/
@@ -243,29 +244,37 @@ App 差异被拆成两类对象。
 
 ## MySQL 表分层
 
-数据库分为框架表和当前业务兼容表。
+数据库分为框架表和当前业务兼容表。当前还没有完全摆脱老表，`posts` 仍是默认主业务路径；新的 `crawl_*` 表已经在导入、采集结果和写回结果上同步记录，用于逐步迁移到通用框架。
 
-框架表：
+当前实际使用的表：
 
-| 表 | 职责 |
-| --- | --- |
-| `crawl_sources` | 数据源注册 |
-| `crawler_apps` | 可用 App 注册 |
-| `crawl_jobs` | fetch/check/batch 等任务运行记录 |
-| `crawl_tasks` | 通用待采集任务 |
-| `crawl_results` | 通用采集结果，差异字段放入 `metrics_json` |
-| `crawl_writebacks` | 写回目标系统的结果记录 |
-
-业务兼容表：
-
-| 表 | 职责 |
-| --- | --- |
-| `posts` | 当前金融帖子业务兼容表 |
-| `task_log` | 历史调度日志表 |
+| 表 | 类型 | 当前作用 | 使用程度 |
+| --- | --- | --- | --- |
+| `posts` | 业务兼容表 | 当前金融帖子主表，保存 URL、`source_app`、发帖时间、腾讯文档行号、初检状态、账号、正文、阅读数、评论数、截图路径、批处理状态、写回状态。 | 默认主路径 |
+| `task_log` | 业务兼容表 | 记录 `fetch`、`check`、`batch`、`report` 等任务的状态、摘要、耗时和错误。 | 默认主路径 |
+| `crawl_sources` | 框架表 | 记录数据源类型和名称，例如腾讯文档、manual，后续 Excel/API 也可以注册到这里。 | 已写入 |
+| `crawler_apps` | 框架表 | 记录可用 App，例如 `alipay`、`antfortune`、`tenpay`、`unknown`，包含展示名、包名和启用状态。 | 初始化维护 |
+| `crawl_tasks` | 框架表 | 通用待采集任务表，保存来源定位、App 类型、原始 URL、发帖时间、状态、重试次数，并关联 `posts.id`。 | 已和 `posts` 双写 |
+| `crawl_results` | 框架表 | 通用采集结果表，记录初检/批量采集结果，差异字段放入 `metrics_json`，例如财付通买入基金明细。 | 已写入 |
+| `crawl_writebacks` | 框架表 | 写回目标系统的结果记录，保存 sink 类型、定位信息、状态和错误。 | 已写入 |
+| `crawl_jobs` | 框架表 | 设计用于记录一次 fetch/check/batch job 的开始、结束、摘要和错误。 | 已建表，主流程使用较少 |
 
 默认库名仍是 `alipay_crawler`，这是历史兼容选择，不代表当前应用仍只服务支付宝。后续如果要改库名，应单独做数据迁移。
 
-`check` / `batch` 默认仍从 `posts` 查询，保证现有业务链路稳定。现在已经新增 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS` 开关和基于 `crawl_tasks` / `crawl_results` 的待处理查询函数，后续可以灰度切换，让 `posts` 逐步退化为兼容层。
+`check` / `batch` 默认仍从 `posts` 查询，保证现有业务链路稳定。workflow 现在通过 `storage/crawl_repository.py` 获取待处理记录、保存采集结果、记录 `crawl_results`、记录 `crawl_writebacks` 和标记写回状态，避免业务编排直接绑定旧表或框架表函数。仓储层内部仍复用 `posts` 兼容路径，并保留 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS` 开关和基于 `crawl_tasks` / `crawl_results` 的待处理查询函数；后续可以继续把保存路径也迁移到框架表，让 `posts` 逐步退化为兼容层。
+
+当前默认链路可以理解为：
+
+```text
+数据源链接
+  -> posts
+  -> 同步写 crawl_tasks
+  -> check/batch 默认从 posts 取任务
+  -> 更新 posts
+  -> 记录 crawl_results
+  -> 写回腾讯文档
+  -> 记录 crawl_writebacks
+```
 
 ## 运行入口
 

@@ -63,7 +63,8 @@ Tencent Docs
 流程：
 
 ```text
-pending posts
+pending records
+  -> storage/crawl_repository.py
   -> resolve short/deep link
   -> ADB open app
   -> mobile/device_session.py
@@ -91,7 +92,8 @@ pending posts
 流程：
 
 ```text
-pending posts
+pending records
+  -> storage/crawl_repository.py
   -> resolve short/deep link
   -> ADB open app
   -> mobile/device_session.py
@@ -257,6 +259,7 @@ apps/finance_crawler/crawlers/tenpay.py
 | `workflows/tencent_docs_fetch.py` | 数据源导入 workflow |
 | `workflows/initial_check.py` | 初检 workflow |
 | `workflows/batch_crawl.py` | 批量采集 workflow |
+| `storage/crawl_repository.py` | workflow 面向的采集任务、结果、写回记录仓储边界 |
 | `storage/db.py` | `posts` 兼容业务表读写 |
 | `storage/framework_db.py` | `crawl_*` 框架表读写 |
 | `services/framework_events.py` | 尽力记录 `crawl_results` 和 `crawl_writebacks` |
@@ -281,4 +284,21 @@ python .\scripts\crawl_one_link.py --skip-check "帖子链接"
 
 新增写回目标只改 `sinks/` 和 `integrations/`，不要让 workflow 直接拼第三方 API 请求。
 
-`check` / `batch` 默认仍走 `posts` 兼容表。需要灰度验证框架表主路径时，可以打开 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS=true`，让待处理查询改用 `crawl_tasks` / `crawl_results`。
+`check` / `batch` 默认仍走 `posts` 兼容表，但 workflow 已经通过 `storage/crawl_repository.py` 访问任务、结果保存和写回记录入口。需要灰度验证框架表主路径时，可以打开 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS=true`，让待处理查询改用 `crawl_tasks` / `crawl_results`。
+
+## MySQL 表使用现状
+
+当前仍在使用老表，`posts` 还没有退场：
+
+| 表 | 作用 |
+| --- | --- |
+| `posts` | 默认主业务表，保存帖子链接、来源 App、发帖时间、腾讯文档行号、初检/批量状态、账号、正文、阅读数、评论数、截图路径和写回状态。 |
+| `task_log` | 调度任务日志表，记录 fetch/check/batch/report 的状态、摘要、耗时和错误。 |
+| `crawl_sources` | 通用数据源注册表，记录腾讯文档、manual，未来可扩展 Excel/API。 |
+| `crawler_apps` | App 注册表，记录支付宝、蚂蚁财富、财付通/腾讯理财通等 App 类型、展示名和包名。 |
+| `crawl_tasks` | 通用采集任务表，导入链接时与 `posts` 双写，保存来源定位、App 类型、原始 URL、发帖时间和任务状态。 |
+| `crawl_results` | 通用采集结果表，记录初检和批量采集结果，App 专属指标放在 `metrics_json`。 |
+| `crawl_writebacks` | 写回结果表，记录写回腾讯文档/Excel 等目标的状态、定位和错误。 |
+| `crawl_jobs` | 通用 job 表，已建表，设计用于记录一次任务运行，目前主流程使用较少。 |
+
+默认运行链路仍是 `posts` 主路径，同时同步记录 `crawl_tasks`、`crawl_results`、`crawl_writebacks`，后续再逐步迁移。

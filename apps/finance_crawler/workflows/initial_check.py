@@ -12,14 +12,16 @@ from apps.finance_crawler.mobile.crawler import (
 )
 from apps.finance_crawler.services.alerts import send_alert
 from apps.finance_crawler.sinks.tencent_docs import TencentDocsSink
-from apps.finance_crawler.storage.db import (
-    get_pending_check_posts,
-    log_task,
-    update_check_result,
+from apps.finance_crawler.storage.crawl_repository import (
+    PendingWriteback,
+    get_pending_initial_check_records,
+    record_crawl_result,
+    record_pending_writebacks,
+    record_sink_writeback,
+    save_initial_check_result,
 )
-from apps.finance_crawler.services.framework_events import (
-    record_crawl_result_for_post,
-    record_sink_writeback_for_post,
+from apps.finance_crawler.storage.db import (
+    log_task,
 )
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.link_source import resolve_source_app
@@ -41,7 +43,7 @@ def run_initial_check() -> list[dict]:
     start_time = time.time()
     budget = OperationBudget("check")
     sink = TencentDocsSink()
-    posts = budget.limit_items(get_pending_check_posts())
+    posts = budget.limit_items(get_pending_initial_check_records())
     total = len(posts)
     logger.info("initial check started: total=%s", total)
 
@@ -68,7 +70,7 @@ def run_initial_check() -> list[dict]:
     deep_links = resolve_urls(posts, resolve_short_url, logger)
     results: list[dict] = []
     writebacks: list[dict] = []
-    writeback_records: list[dict] = []
+    writeback_records: list[PendingWriteback] = []
     stop_reason: str | None = None
 
     for idx, post in enumerate(posts, start=1):
@@ -99,11 +101,11 @@ def run_initial_check() -> list[dict]:
                 "error": str(exc),
             }
 
-        update_check_result(
-            post_id,
-            result["status"],
-            result.get("error"),
-            result.get("account_name"),
+        save_initial_check_result(
+            post_id=post_id,
+            status=result["status"],
+            error=result.get("error"),
+            account_name=result.get("account_name"),
         )
         budget.record_status(result["status"])
 
@@ -119,7 +121,7 @@ def run_initial_check() -> list[dict]:
             except Exception as exc:
                 logger.warning("unsafe initial writeback skipped id=%s: %s", post_id, exc)
 
-        task_id, result_id = record_crawl_result_for_post(
+        task_id, result_id = record_crawl_result(
             post=post,
             workflow="initial_check",
             status=result["status"],
@@ -140,16 +142,16 @@ def run_initial_check() -> list[dict]:
                 }
             )
             writeback_records.append(
-                {
-                    "post_id": post_id,
-                    "task_id": task_id,
-                    "result_id": result_id,
-                    "row_index": row_index,
-                }
+                PendingWriteback(
+                    post_id=post_id,
+                    task_id=task_id,
+                    result_id=result_id,
+                    row_index=row_index,
+                )
             )
         elif result["status"] == "error":
             logger.warning("technical error skipped Tencent Docs writeback id=%s", post_id)
-            record_sink_writeback_for_post(
+            record_sink_writeback(
                 post_id=post_id,
                 sink_type="tencent_docs",
                 status="skipped",
@@ -159,7 +161,7 @@ def run_initial_check() -> list[dict]:
             )
         else:
             logger.warning("row not found; skipped Tencent Docs writeback id=%s", post_id)
-            record_sink_writeback_for_post(
+            record_sink_writeback(
                 post_id=post_id,
                 sink_type="tencent_docs",
                 status="skipped",
@@ -178,28 +180,20 @@ def run_initial_check() -> list[dict]:
     if writebacks:
         try:
             sink.write_initial_check_results(writebacks)
-            for item in writeback_records:
-                record_sink_writeback_for_post(
-                    post_id=item["post_id"],
-                    sink_type="tencent_docs",
-                    status="success",
-                    task_id=item["task_id"],
-                    result_id=item["result_id"],
-                    locator={"row_index": item["row_index"]},
-                )
+            record_pending_writebacks(
+                records=writeback_records,
+                sink_type="tencent_docs",
+                status="success",
+            )
         except Exception as exc:
             send_alert("Tencent Docs initial writeback failed", str(exc), dedupe_key="docs_check_writeback")
             logger.warning("initial check batch writeback failed: %s", exc)
-            for item in writeback_records:
-                record_sink_writeback_for_post(
-                    post_id=item["post_id"],
-                    sink_type="tencent_docs",
-                    status="error",
-                    task_id=item["task_id"],
-                    result_id=item["result_id"],
-                    locator={"row_index": item["row_index"]},
-                    error=str(exc),
-                )
+            record_pending_writebacks(
+                records=writeback_records,
+                sink_type="tencent_docs",
+                status="error",
+                error=str(exc),
+            )
 
     success_count, not_found_count, error_count = _status_counts(results)
     duration = time.time() - start_time

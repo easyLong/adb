@@ -28,6 +28,7 @@
   v
 入库与任务
   workflows/tencent_docs_fetch.py
+  storage/crawl_repository.py
   storage/db.py + storage/framework_db.py
   - 写入兼容业务表 posts
   - 同步写入框架表 crawl_tasks
@@ -83,7 +84,7 @@ App 链路分发
 | 工作流层 | `workflows/*` | 编排 fetch/check/batch，不写具体 App 特例 |
 | 写回层 | `sinks/*` | 把采集结果写回目标系统，不关心手机采集细节 |
 | 集成层 | `integrations/*` | 第三方系统底层 API，例如腾讯文档 OpenAPI client |
-| 存储层 | `storage/*` | MySQL 兼容业务表和框架表双写 |
+| 存储层 | `storage/*` | 面向 workflow 的仓储边界、MySQL 兼容业务表和框架表双写 |
 
 ## 重构原则
 
@@ -113,6 +114,7 @@ App 链路分发
 - 新增 `mobile/post_capture.py`，把截图、XML、OCR、滑动循环从 `mobile/crawler.py` 拆出。
 - 新增 `mobile/device_session.py`，把设备连接缓存、ADB 路径准备、唤醒/锁屏检查、链接打开从 `mobile/crawler.py` 拆出。
 - 新增 `mobile/page_status.py`，把页面可用/删除/错误判断从 `mobile/crawler.py` 拆出。
+- 新增 `storage/crawl_repository.py`，让 `check` / `batch` workflow 不再直接调用旧 `posts` 表读写函数。
 - `crawl_results` 增加 `workflow` 字段，并新增基于 `crawl_tasks` / `crawl_results` 的可选待处理查询路径。
 - `crawler_apps` 框架表从 App Profile 自动同步，不再在 DB 层硬编码。
 - `source_app='unknown'` 会按 URL 重新识别，避免历史 unknown 数据走错链路。

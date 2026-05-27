@@ -14,6 +14,7 @@
 - 财付通链路支持进入“去查看明细/调仓明细”，提取买入基金名称和金额。
 - 支持结果写回腾讯文档，包含阅读数、评论数、状态、截图图片或截图路径。
 - 支持 MySQL 兼容业务表 `posts`，同时双写框架表 `crawl_tasks`、`crawl_results`、`crawl_writebacks`。
+- 当前 `posts` 仍是默认主业务路径，`crawl_*` 表用于逐步迁移到通用采集框架。
 - 截图优先使用 `adb exec-out screencap -p`，比 `adb shell screencap + adb pull` 更快。
 
 ## 目录结构
@@ -44,7 +45,7 @@ sources/                    数据源适配，例如腾讯文档
 sinks/                      结果写回适配，例如腾讯文档、本地 Excel
 workflows/                  fetch/check/batch 等业务编排
 integrations/               腾讯文档等外部系统底层 API
-storage/                    MySQL 访问和框架表写入
+storage/                    采集仓储边界、MySQL 兼容表和框架表写入
 services/                   告警、报表、框架事件记录
 utils/                      链路识别、表格解析、设备健康、限流等工具
 ```
@@ -144,6 +145,7 @@ Windows 负责调度、读写腾讯文档、读写 MySQL、解析链接、发 AD
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：整体架构、分层边界、扩展方式。
 - [docs/FINANCE_CRAWLER.md](docs/FINANCE_CRAWLER.md)：当前金融帖子采集应用的详细说明。
+- MySQL 当前表作用见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的“MySQL 表分层”章节。
 - [docs/PROJECT_PROCESS.md](docs/PROJECT_PROCESS.md)：项目演进过程和后续优化顺序。
 - [docs/OPERATIONS.md](docs/OPERATIONS.md)：运行、测试、排障命令。
 - [docs/init.sql](docs/init.sql)：MySQL 建表 SQL。
