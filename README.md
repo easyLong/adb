@@ -88,6 +88,17 @@ adb devices
 .\scripts\run.ps1 -Task batch
 ```
 
+本地 Excel 直接批跑，不入库、不跑初检：
+
+```powershell
+$env:EXCEL_BATCH_INPUT_PATH = "D:\demo\5月20日.xlsx"
+$env:EXCEL_BATCH_OUTPUT_PATH = "D:\demo\5月20日_batch_output.xlsx"
+$env:EXCEL_BATCH_SOURCE_FILTER = "alipay,antfortune"
+$env:EXCEL_BATCH_ALIPAY_LIMIT = "50"
+$env:EXCEL_BATCH_ANTFORTUNE_LIMIT = "50"
+.\scripts\run.ps1 -Task excel-batch
+```
+
 启动常驻调度：
 
 ```powershell
@@ -139,6 +150,7 @@ Windows 负责调度、读写腾讯文档、读写 MySQL、解析链接、发 AD
 - `TENPAY_PACKAGE`
 - `WRITEBACK_SINK_TYPE`
 - `WRITEBACK_EXCEL_PATH` / `WRITEBACK_EXCEL_SAVE_AS` / `WRITEBACK_EXCEL_SHEET_NAME`
+- `EXCEL_BATCH_INPUT_PATH` / `EXCEL_BATCH_OUTPUT_PATH` / `EXCEL_BATCH_*_LIMIT`
 - `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS`
 
 默认 MySQL 库名仍是 `alipay_crawler`，这是为了兼容历史本地数据；应用目录已经改为 `finance_crawler`。

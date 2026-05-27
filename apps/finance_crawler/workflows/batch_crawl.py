@@ -27,6 +27,12 @@ from apps.finance_crawler.storage.crawl_repository import (
 from apps.finance_crawler.storage.db import (
     log_task,
 )
+from apps.finance_crawler.storage.framework_db import (
+    finish_task_execution,
+    start_task_execution,
+    update_task_execution_writeback,
+    upsert_submission_for_legacy_post,
+)
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.link_source import resolve_source_app
 from apps.finance_crawler.utils.logger import get_logger
@@ -85,6 +91,8 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
     results: list[dict] = []
     writebacks: list[WritebackPlan] = []
     writeback_records: list[PendingWriteback] = []
+    writeback_execution_ids: dict[int, int] = {}
+    writeback_locators: dict[int, dict] = {}
     written_post_ids: list[int] = []
     stop_reason: str | None = None
 
@@ -99,6 +107,10 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
         post_id = post["id"]
         url = post["url"]
         source_app = resolve_source_app(post.get("source_app"), url)
+        execution_id = _start_execution_for_post(post)
+        if execution_id is None:
+            logger.info("batch skipped by task submission state id=%s", post_id)
+            continue
         logger.info("[%s/%s] scrape source=%s id=%s", idx, total, source_app, post_id)
         item_start = time.perf_counter()
         open_duration = 0.0
@@ -108,8 +120,20 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
             open_url(deep_links.get(post_id, url))
             open_duration = time.perf_counter() - open_start
             result = scrape_post_content(post_id, source_app=source_app)
-        except DeviceUnavailable:
+        except DeviceUnavailable as exc:
             reset_device_session()
+            _finish_execution(
+                execution_id,
+                result=_empty_result("error", str(exc)),
+                metrics={
+                    "read_count": 0,
+                    "comment_count": 0,
+                    "open_duration": round(open_duration, 3),
+                    "scrape_duration": round(time.perf_counter() - item_start, 3),
+                },
+                writeback_status="skipped",
+                writeback_error=str(exc),
+            )
             raise
         except Exception as exc:
             result = _empty_result("error", str(exc))
@@ -139,6 +163,17 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
         writeback_plan = writeback_service.prepare_batch(post=post, result=result)
         row_index = writeback_plan.row_index
 
+        metrics = {
+            "read_count": int(result.get("read_count") or 0),
+            "comment_count": int(result.get("comment_count") or 0),
+            "row_index": row_index,
+            "capture_pages": result.get("capture_pages"),
+            "ocr_attempted": result.get("ocr_attempted"),
+            "open_duration": round(open_duration, 3),
+            "scrape_duration": round(scrape_duration, 3),
+            **(result.get("app_metrics") or {}),
+        }
+
         task_id, result_id = record_crawl_result(
             post=post,
             workflow="batch_crawl",
@@ -146,22 +181,15 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
             account_name=result.get("account_name"),
             content=result.get("content"),
             screenshot_path=result.get("screenshot_path"),
-            metrics={
-                "read_count": int(result.get("read_count") or 0),
-                "comment_count": int(result.get("comment_count") or 0),
-                "row_index": row_index,
-                "capture_pages": result.get("capture_pages"),
-                "ocr_attempted": result.get("ocr_attempted"),
-                "open_duration": round(open_duration, 3),
-                "scrape_duration": round(scrape_duration, 3),
-                **(result.get("app_metrics") or {}),
-            },
+            metrics=metrics,
             error=result.get("error"),
         )
 
         if writeback_plan.can_write and row_index:
             writebacks.append(writeback_plan)
             written_post_ids.append(post_id)
+            writeback_execution_ids[post_id] = execution_id
+            writeback_locators[post_id] = writeback_plan.locator
             writeback_records.append(
                 PendingWriteback(
                     post_id=post_id,
@@ -179,6 +207,22 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
                 task_id=task_id,
                 result_id=result_id,
                 error=writeback_plan.skip_reason,
+            )
+
+        _finish_execution(
+            execution_id,
+            result=result,
+            metrics=metrics,
+            writeback_status="pending" if writeback_plan.can_write and row_index else "skipped",
+            writeback_locator=writeback_plan.locator,
+            writeback_error=None if writeback_plan.can_write and row_index else writeback_plan.skip_reason,
+        )
+        if not (writeback_plan.can_write and row_index):
+            _update_execution_writeback(
+                execution_id,
+                writeback_status="skipped",
+                writeback_locator=writeback_plan.locator,
+                writeback_error=writeback_plan.skip_reason,
             )
 
         result_with_post = dict(result)
@@ -202,6 +246,14 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
                 sink_type=writeback_service.sink_type,
                 status="success",
             )
+            for post_id in written_post_ids:
+                execution_id = writeback_execution_ids.get(post_id)
+                if execution_id:
+                    _update_execution_writeback(
+                        execution_id,
+                        writeback_status="success",
+                        writeback_locator=writeback_locators.get(post_id),
+                    )
         except Exception as exc:
             send_alert("Tencent Docs batch writeback failed", str(exc), dedupe_key="docs_batch_writeback")
             logger.warning("batch writeback failed: %s", exc)
@@ -211,6 +263,12 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
                 status="error",
                 error=str(exc),
             )
+            for execution_id in writeback_execution_ids.values():
+                _update_execution_writeback(
+                    execution_id,
+                    writeback_status="error",
+                    writeback_error=str(exc),
+                )
 
     success_count = sum(1 for item in results if item["status"] == "success")
     deleted_count = sum(1 for item in results if item["status"] == "deleted")
@@ -237,3 +295,57 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
         logger.warning("report generation failed: %s", exc)
 
     return results
+
+
+def _start_execution_for_post(post: dict) -> int | None:
+    submission_id = post.get("submission_id") or upsert_submission_for_legacy_post(post, task_type="batch_crawl")
+    try:
+        return start_task_execution(submission_id, worker_id="batch")
+    except ValueError as exc:
+        logger.warning("task submission not runnable post_id=%s: %s", post.get("id"), exc)
+        return None
+
+
+def _finish_execution(
+    execution_id: int,
+    *,
+    result: dict,
+    metrics: dict,
+    writeback_status: str | None = None,
+    writeback_locator: dict | None = None,
+    writeback_error: str | None = None,
+) -> None:
+    try:
+        finish_task_execution(
+            execution_id,
+            status=result.get("status") or "error",
+            account_name=result.get("account_name"),
+            content=result.get("content"),
+            metrics=metrics,
+            result=result,
+            screenshot_path=result.get("screenshot_path"),
+            writeback_status=writeback_status,
+            writeback_locator=writeback_locator,
+            writeback_error=writeback_error,
+            error=result.get("error"),
+        )
+    except Exception as exc:
+        logger.warning("failed to finish task execution id=%s: %s", execution_id, exc)
+
+
+def _update_execution_writeback(
+    execution_id: int,
+    *,
+    writeback_status: str,
+    writeback_locator: dict | None = None,
+    writeback_error: str | None = None,
+) -> None:
+    try:
+        update_task_execution_writeback(
+            execution_id,
+            writeback_status=writeback_status,
+            writeback_locator=writeback_locator,
+            writeback_error=writeback_error,
+        )
+    except Exception as exc:
+        logger.warning("failed to update task execution writeback id=%s: %s", execution_id, exc)

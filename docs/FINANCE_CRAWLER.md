@@ -115,6 +115,37 @@ pending records
 - 写回腾讯文档阅读数、评论数、状态和截图。
 - 记录 `crawl_results` 和 `crawl_writebacks`。
 
+### 4. Local Excel Direct Batch
+
+入口：
+
+```powershell
+.\scripts\run.ps1 -Task excel-batch
+```
+
+适用场景：
+
+- 本地 Excel 已经给出待抓取链接。
+- 不需要先跑 `check`。
+- 不需要把 Excel 行导入 MySQL。
+- 只需要直接抓取并回填发帖账号、阅读数、评论数。
+
+流程：
+
+```text
+local Excel
+  -> crawl_task_submissions (source_type=excel)
+  -> crawl_task_executions per row
+  -> 自动识别 alipay / antfortune / tenpay
+  -> ADB open app
+  -> mobile/crawler.py
+  -> mobile/post_capture.py
+  -> 写回输出 Excel
+  -> 写出 JSONL 明细
+```
+
+默认列约定为 0-based：J=账号，K=链接，L=阅读数，M=评论数；O/R 之后写状态、耗时、错误和链路类型。默认不会覆盖原文件，`EXCEL_BATCH_OUTPUT_PATH` 为空时会生成 `<原文件名>_batch_output.xlsx`。
+
 ## 腾讯文档列约定
 
 列索引均为 0-based，可通过环境变量覆盖。
@@ -230,10 +261,19 @@ apps/finance_crawler/crawlers/tenpay.py
 | `REPORT_TIME` | `11:30` | 每日报告时间 |
 | `FETCH_LIMIT` | `10` | 单次 fetch 导入数量，0 表示全部 |
 | `BATCH_LIMIT` | `0` | 单次 batch 数量，0 表示全部 |
+| `USE_TASK_SUBMISSIONS_FOR_BATCH` | `true` | batch 优先从 `crawl_task_submissions` 取任务，支持改状态重跑；缺少 submission 的历史 `posts` 会兜底补跑 |
 | `WRITEBACK_SINK_TYPE` | `tencent_docs` | 默认写回目标服务 |
 | `WRITEBACK_EXCEL_PATH` | 空 | `WRITEBACK_SINK_TYPE=excel` 时的本地 Excel 路径 |
 | `WRITEBACK_EXCEL_SAVE_AS` | 空 | Excel 写回另存路径，空则覆盖原文件 |
 | `WRITEBACK_EXCEL_SHEET_NAME` | 空 | Excel 工作表名，空则使用活动工作表 |
+| `EXCEL_BATCH_INPUT_PATH` | 空 | `excel-batch` 直接批跑的输入 Excel |
+| `EXCEL_BATCH_OUTPUT_PATH` | 空 | `excel-batch` 输出 Excel；空则生成 `_batch_output.xlsx` |
+| `EXCEL_BATCH_RESULT_JSONL_PATH` | 空 | `excel-batch` 每条结果明细；空则随输出 Excel 生成 |
+| `EXCEL_BATCH_SOURCE_FILTER` | 空 | 只跑指定来源，逗号分隔，如 `alipay,antfortune`；空表示全部 |
+| `EXCEL_BATCH_ALIPAY_LIMIT` | `0` | 本轮支付宝链路数量，0 表示不限制 |
+| `EXCEL_BATCH_ANTFORTUNE_LIMIT` | `0` | 本轮蚂蚁财富链路数量，0 表示不限制 |
+| `EXCEL_BATCH_TENPAY_LIMIT` | `0` | 本轮财付通链路数量，0 表示不限制 |
+| `EXCEL_BATCH_ONLY_EMPTY` | `true` | 只处理账号/阅读/评论/状态均为空的行 |
 
 ## 模块职责速查
 

@@ -49,6 +49,7 @@ XXXXXXXXXXXXX    unauthorized
 .\scripts\run.ps1 -App finance_crawler -Task fetch
 .\scripts\run.ps1 -App finance_crawler -Task check
 .\scripts\run.ps1 -App finance_crawler -Task batch
+.\scripts\run.ps1 -App finance_crawler -Task excel-batch
 .\scripts\run.ps1 -App finance_crawler -Task report
 .\scripts\run.ps1 -App finance_crawler -Task scheduler
 .\scripts\run.ps1 -App finance_crawler -Task supervisor
@@ -60,9 +61,26 @@ XXXXXXXXXXXXX    unauthorized
 python -m apps.finance_crawler.app --once fetch
 python -m apps.finance_crawler.app --once check
 python -m apps.finance_crawler.app --once batch
+python -m apps.finance_crawler.app --once excel-batch
 python -m apps.finance_crawler.app
 python -m apps.finance_crawler.app --supervise
 ```
+
+本地 Excel 直接批跑：
+
+```powershell
+$env:EXCEL_BATCH_INPUT_PATH = "D:\demo\5月20日.xlsx"
+$env:EXCEL_BATCH_OUTPUT_PATH = "D:\demo\5月20日_batch_output.xlsx"
+$env:EXCEL_BATCH_SOURCE_FILTER = "alipay,antfortune"
+$env:EXCEL_BATCH_ALIPAY_LIMIT = "50"
+$env:EXCEL_BATCH_ANTFORTUNE_LIMIT = "50"
+$env:EXCEL_BATCH_TENPAY_LIMIT = "0"
+.\scripts\run.ps1 -Task excel-batch
+```
+
+`excel-batch` 不导入 MySQL，也不跑 `check`。它直接读取 Excel 链接、打开 App 抓取，并回填账号、阅读数、评论数、状态、耗时、错误和链路类型。
+
+`excel-batch` 不导入旧 `posts` 业务表，但每一行仍会写入 `crawl_task_submissions`，每一次抓取尝试会写入 `crawl_task_executions`。
 
 ## 可靠性配置
 

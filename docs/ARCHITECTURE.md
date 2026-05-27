@@ -261,6 +261,64 @@ App 差异被拆成两类对象。
 | `crawl_results` | 框架表 | 通用采集结果表，记录初检/批量采集结果，差异字段放入 `metrics_json`，例如财付通买入基金明细。 | 已写入 |
 | `crawl_writebacks` | 框架表 | 写回目标系统的结果记录，保存 sink 类型、定位信息、状态和错误。 | 已写入 |
 | `crawl_jobs` | 框架表 | 设计用于记录一次 fetch/check/batch job 的开始、结束、摘要和错误。 | 已建表，主流程使用较少 |
+| `crawl_task_submissions` | 框架表 | 任务提交管理表，保存一条业务任务的来源、URL、App、优先级、调度时间、总体状态、重跑次数和最近一次执行摘要。用户可以通过改这里的状态让任务暂停、取消或重新进入待跑。 | 新任务中心 |
+| `crawl_task_executions` | 框架表 | 具体任务执行表，一次提交可以有多次执行记录；每次执行保存 attempt、运行状态、账号、正文、阅读/评论、耗时、截图、写回状态和错误。执行完成后同步更新 `crawl_task_submissions`。 | 新任务中心 |
+
+### 任务提交与执行解耦
+
+后续任务中心采用“两层状态”：
+
+```text
+crawl_task_submissions   一条业务任务/一次提交意图
+  -> crawl_task_executions 第 1 次执行
+  -> crawl_task_executions 第 2 次执行/重跑
+  -> crawl_task_executions 第 N 次执行
+```
+
+`crawl_task_submissions` 只回答“这条任务现在应不应该跑、总体结果是什么”。`crawl_task_executions` 只回答“某一次执行跑了多久、怎么结束、具体结果是什么”。旧执行记录不覆盖，重跑只会新增 execution。
+
+提交表建议状态：
+
+| 状态 | 含义 | 人工改状态 |
+| --- | --- | --- |
+| `pending` | 等待调度执行 | 可以把失败/成功任务改回此状态重跑 |
+| `running` | 当前有执行中 execution | 一般不人工改，异常时先确认进程已停 |
+| `success` | 最近一次执行成功 | 可改回 `pending` 重跑 |
+| `not_found` | 帖子不存在/内容不见了 | 可改回 `pending` 复测 |
+| `failed_retryable` | 最近一次失败但未超过最大次数 | 调度器可自动重试，也可人工改 `paused` |
+| `failed_final` | 达到最大失败次数 | 人工确认后改回 `pending` 重跑 |
+| `paused` | 暂停调度 | 可改回 `pending` |
+| `cancelled` | 取消任务 | 不建议自动恢复，人工确认后再改 |
+
+执行表建议状态：
+
+| 状态 | 含义 |
+| --- | --- |
+| `queued` | 已创建执行记录但未开始 |
+| `running` | 正在打开 App/抓取/写回 |
+| `success` | 抓取成功，账号和指标有效 |
+| `not_found` / `deleted` | 页面明确不存在 |
+| `invalid_account` | 页面成功但账号解析不可信 |
+| `error` | 技术错误、解析错误或设备错误 |
+| `timeout` | 执行超时 |
+| `cancelled` | 执行被取消 |
+
+状态同步规则由仓储层事务完成：
+
+```text
+start_task_execution()
+  -> 新增 crawl_task_executions(running)
+  -> crawl_task_submissions.status = running
+  -> attempts + 1
+  -> latest_execution_id = execution.id
+
+finish_task_execution()
+  -> 更新 execution 的状态、结果、耗时、错误
+  -> 根据 execution.status + attempts/max_attempts 推导 submission.status
+  -> 写入 latest_execution_id、last_error、result_summary_json
+```
+
+重跑不修改历史执行记录，只把提交表状态改回 `pending`，下一次调度会创建新的 execution。这样可以同时保留每次失败/成功的完整历史，并允许通过提交表做人工调度。
 
 默认库名仍是 `alipay_crawler`，这是历史兼容选择，不代表当前应用仍只服务支付宝。后续如果要改库名，应单独做数据迁移。
 
@@ -272,10 +330,13 @@ App 差异被拆成两类对象。
 数据源链接
   -> posts
   -> 同步写 crawl_tasks
-  -> check/batch 默认从 posts 取任务
+  -> 同步写 crawl_task_submissions
+  -> batch 优先从 crawl_task_submissions 取任务
+  -> 新增 crawl_task_executions
   -> 更新 posts
   -> 记录 crawl_results
   -> 写回腾讯文档
+  -> 更新 crawl_task_executions.writeback_status
   -> 记录 crawl_writebacks
 ```
 

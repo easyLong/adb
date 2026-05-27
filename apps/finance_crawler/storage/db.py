@@ -12,6 +12,7 @@ from apps.finance_crawler.config import Config
 from apps.finance_crawler.storage.framework_db import (
     ensure_framework_tables,
     upsert_legacy_post_task_tx,
+    upsert_legacy_post_submission_tx,
 )
 from apps.finance_crawler.utils.link_source import detect_link_source, resolve_source_app
 from apps.finance_crawler.utils.logger import get_logger
@@ -285,6 +286,16 @@ def upsert_post(
                     sheet_id=sheet_id,
                     source_app=source,
                 )
+                upsert_legacy_post_submission_tx(
+                    cursor,
+                    post_id=post_id,
+                    url=url,
+                    post_time=post_time,
+                    row_index=row_index,
+                    file_id=file_id,
+                    sheet_id=sheet_id,
+                    source_app=source,
+                )
         conn.commit()
         return affected == 1
     except Exception as exc:
@@ -379,6 +390,11 @@ def update_check_result(
 
 
 def get_pending_batch_posts(limit: int | None = None) -> list[dict[str, Any]]:
+    if Config.USE_TASK_SUBMISSIONS_FOR_BATCH:
+        from apps.finance_crawler.storage.framework_db import get_pending_batch_submissions
+
+        return get_pending_batch_submissions(limit)
+
     if Config.USE_FRAMEWORK_TASKS_FOR_WORKFLOWS:
         from apps.finance_crawler.storage.framework_db import get_pending_batch_tasks
 
@@ -390,7 +406,7 @@ def get_pending_batch_posts(limit: int | None = None) -> list[dict[str, Any]]:
         cutoff = datetime.now() - timedelta(hours=Config.POST_ELIGIBLE_HOURS)
     check_clause = "AND check_status = 'success'" if Config.BATCH_REQUIRES_CHECK_SUCCESS else ""
     sql = f"""
-        SELECT id, url, source_app, post_time, doc_row_index
+        SELECT id, url, source_app, post_time, doc_row_index, doc_file_id, doc_sheet_id
         FROM posts
         WHERE post_time <= %s
           AND batch_status = 'pending'

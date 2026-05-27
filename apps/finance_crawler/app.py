@@ -18,6 +18,7 @@ from apps.finance_crawler.services.alerts import send_alert
 from apps.finance_crawler.services.report import generate_report
 from apps.finance_crawler.storage.db import init_db, log_task
 from apps.finance_crawler.utils.logger import get_logger
+from apps.finance_crawler.workflows.local_excel_batch import run_local_excel_batch
 from apps.finance_crawler.workflows.tencent_docs_fetch import fetch_and_save
 
 logger = get_logger("scheduler")
@@ -134,7 +135,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Finance crawler scheduler")
     parser.add_argument(
         "--once",
-        choices=["db", "fetch", "check", "batch", "report"],
+        choices=["db", "fetch", "check", "batch", "excel-batch", "report"],
         help="run one task and exit",
     )
     parser.add_argument(
@@ -165,6 +166,11 @@ def main() -> int:
     if args.once == "batch":
         init_db()
         safe_run(run_batch, "batch_once")
+        return 0
+    if args.once == "excel-batch":
+        init_db()
+        results = safe_run(run_local_excel_batch, "excel_batch_once") or []
+        print(f"excel batch rows: {len(results)}")
         return 0
     if args.once == "report":
         init_db()
