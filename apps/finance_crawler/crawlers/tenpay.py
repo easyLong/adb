@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from apps.finance_crawler.config import Config
-from apps.finance_crawler.crawlers.base import AppLinkProfile, CrawlAdapterContext
+from apps.finance_crawler.crawlers.base import AppLinkProfile, CapturePlan, CrawlAdapterContext
 from apps.finance_crawler.crawlers.constants import SOURCE_TENPAY
 from apps.finance_crawler.utils.logger import get_logger
 
@@ -400,6 +400,15 @@ def _build_summary(account_name: str, comment_count: int, trade_details: list[di
 
 class TenpayCrawlerAdapter:
     source_app = SOURCE_TENPAY
+
+    def capture_plan(self) -> CapturePlan:
+        return CapturePlan(
+            max_pages=max(1, min(Config.BATCH_MAX_CAPTURE_PAGES, Config.SCROLL_TIMES + 1)),
+            scroll_wait=Config.BATCH_SCROLL_WAIT,
+            enable_ocr=True,
+            ocr_min_confidence=Config.OCR_MIN_CONFIDENCE,
+            max_detail_scrolls=max(0, min(Config.SCROLL_TIMES, 2)),
+        )
 
     def before_main_capture(self, context: CrawlAdapterContext) -> dict[str, Any]:
         return _collect_trade_details(context)

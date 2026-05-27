@@ -44,8 +44,26 @@ class CrawlAdapterContext:
     max_detail_scrolls: int
 
 
+@dataclass(frozen=True)
+class CapturePlan:
+    """App-specific policy for the common post capture loop."""
+
+    max_pages: int
+    scroll_wait: float
+    enable_ocr: bool
+    ocr_min_confidence: float
+    ocr_min_top: int = 140
+    stop_when_counts_found: bool = True
+    stop_on_repeated_screen: bool = True
+    max_detail_scrolls: int = 2
+
+
 class AppCrawlerAdapter(Protocol):
     source_app: str
+
+    def capture_plan(self) -> CapturePlan:
+        """Return how the common capture loop should collect this app."""
+        ...
 
     def before_main_capture(self, context: CrawlAdapterContext) -> dict[str, Any]:
         """Run optional app-specific work before the common post capture."""
@@ -76,6 +94,17 @@ class AppCrawlerAdapter(Protocol):
 
 class DefaultCrawlerAdapter:
     source_app = "default"
+
+    def capture_plan(self) -> CapturePlan:
+        from apps.finance_crawler.config import Config
+
+        return CapturePlan(
+            max_pages=max(1, min(Config.BATCH_MAX_CAPTURE_PAGES, Config.SCROLL_TIMES + 1)),
+            scroll_wait=Config.BATCH_SCROLL_WAIT,
+            enable_ocr=Config.BATCH_ENABLE_OCR,
+            ocr_min_confidence=Config.OCR_MIN_CONFIDENCE,
+            max_detail_scrolls=max(0, min(Config.SCROLL_TIMES, 2)),
+        )
 
     def before_main_capture(self, context: CrawlAdapterContext) -> dict[str, Any]:
         return {}

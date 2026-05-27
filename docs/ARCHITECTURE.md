@@ -38,6 +38,9 @@ Workflow
         v
 Mobile Crawler
   mobile/capture_engine.py
+  mobile/device_session.py
+  mobile/page_status.py
+  mobile/post_capture.py
   mobile/crawler.py
         |
         v
@@ -90,7 +93,7 @@ Windows 是控制端和数据处理端：
 | 领域接口层 | `domain/*` | `SourceRecord`、`CrawlResult`、`WritebackResult`、`LinkSource`、`ResultSink` |
 | 数据源层 | `sources/*` | 将腾讯文档、Excel、API 等来源转成统一候选记录 |
 | App 适配层 | `crawlers/*` | 链接识别、目标包名、deep link 改写、App 专属解析 |
-| 手机采集层 | `mobile/*` | ADB、uiautomator2、截图、XML、OCR、通用账号/阅读/评论解析 |
+| 手机采集层 | `mobile/*` | 设备会话、页面状态、截图、XML、OCR、滑动采集、采集编排 |
 | 通用解析层 | `mobile/parsers.py` | 金融社区帖子账号、正文、阅读数、评论数解析规则 |
 | 工作流层 | `workflows/*` | fetch、initial check、batch crawl 的业务编排 |
 | 写回层 | `sinks/*` | 将采集结果写回业务系统 |
@@ -118,6 +121,9 @@ apps/finance_crawler/
   mobile/
     capture_engine.py
     crawler.py
+    device_session.py
+    page_status.py
+    post_capture.py
     parsers.py
   sources/
     tencent_docs.py
@@ -161,7 +167,18 @@ App 差异被拆成两类对象。
 
 `AppLinkProfile` 负责“这个链接属于谁、要打开哪个包、是否需要改写 deep link、页面 ready 看什么关键词”。
 
-`AppCrawlerAdapter` 负责“这个 App 采集前要不要点特殊入口、账号怎么解析、内容怎么解析、阅读/评论怎么解析、专属指标怎么输出”。
+`AppCrawlerAdapter` 负责“这个 App 怎么采集、采集前要不要点特殊入口、账号怎么解析、内容怎么解析、阅读/评论怎么解析、专属指标怎么输出”。
+
+`CapturePlan` 负责“这个 App 的主帖采集要截几屏、是否启用 OCR、OCR 阈值、滑动等待多久、拿到核心字段后是否提前停止、明细页最多滑几次”。通用 `mobile/post_capture.py` 只执行计划，不再把不同 App 的截图页数、OCR 策略和明细页滚动次数写死在业务编排里。
+
+手机采集层内部继续拆成四块：
+
+| 文件 | 职责 |
+| --- | --- |
+| `mobile/device_session.py` | 设备连接缓存、ADB 路径准备、唤醒/锁屏检查、链接打开 |
+| `mobile/page_status.py` | 根据 UI 文本判断页面成功、删除、错误或未知 |
+| `mobile/post_capture.py` | 按 `CapturePlan` 执行截图、XML、OCR、滑动和停止判断 |
+| `mobile/crawler.py` | 选择 Adapter、调用采集引擎、解析字段、拼装结果 |
 
 当前 Profile/Adapter：
 
@@ -175,7 +192,7 @@ App 差异被拆成两类对象。
 
 1. 在 `crawlers/constants.py` 增加 `SOURCE_xxx`。
 2. 新增 `crawlers/<app>.py`，实现 `AppLinkProfile`。
-3. 如果有特殊采集动作或字段，继续实现 `AppCrawlerAdapter`。
+3. 如果截图页数、OCR、点击、明细页滚动或字段解析不同，继续实现 `AppCrawlerAdapter` 和 `capture_plan()`。
 4. 在 `crawlers/registry.py` 注册 Profile 和 Adapter。
 5. 如需配置包名，在 `config.py` 增加环境变量。
 

@@ -226,10 +226,10 @@ apps/finance_crawler/captures/post_xxx/ocr_records.jsonl
 确认阅读数字格式后再调整：
 
 ```text
-apps/finance_crawler/mobile/crawler.py
+apps/finance_crawler/mobile/parsers.py
 ```
 
-重点函数：`parse_numbers_with_presence()`。
+重点函数：`parse_numbers_with_presence()`。主帖截图、XML、OCR、滑动采集在 `apps/finance_crawler/mobile/post_capture.py`，设备打开和会话缓存逻辑在 `apps/finance_crawler/mobile/device_session.py`。
 
 如果是蚂蚁财富帖子，优先确认最近一次采集结果里是否已经进入了帖子详情页，而不是落到浏览器落地页或“该小程序已暂停服务”页。
 
@@ -237,4 +237,4 @@ apps/finance_crawler/mobile/crawler.py
 
 同样查看 `ui_records.jsonl`。目前规则优先取 `头像` 后面的第一个有效文本。
 
-重点函数：`extract_account_name()`。
+重点函数：`extract_account_name()`，位置在 `apps/finance_crawler/mobile/parsers.py`。

@@ -66,7 +66,8 @@ Tencent Docs
 pending posts
   -> resolve short/deep link
   -> ADB open app
-  -> mobile/crawler.py
+  -> mobile/device_session.py
+  -> mobile/page_status.py
   -> 检查页面是否存在、提取账号
   -> posts + crawl_results
   -> sinks/tencent_docs.py
@@ -93,7 +94,9 @@ pending posts
 pending posts
   -> resolve short/deep link
   -> ADB open app
+  -> mobile/device_session.py
   -> mobile/crawler.py
+  -> mobile/post_capture.py
   -> crawlers/<app>.py adapter
   -> screenshots/captures
   -> posts + crawl_results
@@ -181,6 +184,19 @@ apps/finance_crawler/crawlers/tenpay.py
 5. 解析买入基金名称、日期、金额。
 6. 将结果写入 `app_metrics`，例如 `tenpay_trade_details`、`tenpay_summary`。
 
+## App 采集策略
+
+不同 App 的页面结构、截图数量、OCR 需要和点击路径可能不同。当前通过 `CapturePlan` 和 `AppCrawlerAdapter` 解耦：
+
+| 能力 | 归属 | 说明 |
+| --- | --- | --- |
+| 链接识别、包名、deep link 改写 | `AppLinkProfile` | 判断链接属于哪个 App，以及怎么打开 |
+| 主帖截几屏、是否 OCR、滑动等待、停止条件 | `CapturePlan` | 每个 App 可以声明自己的采集策略 |
+| 采集前点击、明细页进入、特殊字段解析 | `AppCrawlerAdapter` | 例如财付通进入调仓明细 |
+| 截图、XML、OCR 文件落盘 | `mobile/post_capture.py` | 只执行策略，不写 App 特殊分支 |
+
+因此新增 App 时，优先新增 `crawlers/<app>.py`，而不是修改手机采集主循环。
+
 ## 关键配置
 
 采集控制：
@@ -224,7 +240,10 @@ apps/finance_crawler/crawlers/tenpay.py
 | `crawlers/base.py` | App Profile / Adapter 抽象 |
 | `crawlers/registry.py` | App Profile / Adapter 注册中心 |
 | `mobile/capture_engine.py` | ADB、deep link、截图、XML、OCR |
-| `mobile/crawler.py` | 通用页面状态、账号/阅读/评论解析、Adapter 调度 |
+| `mobile/device_session.py` | 设备连接缓存、唤醒/锁屏检查、链接打开 |
+| `mobile/page_status.py` | 通用页面可用/删除/错误状态判断 |
+| `mobile/crawler.py` | 通用页面状态、Adapter 调度、结果拼装 |
+| `mobile/post_capture.py` | 按 `CapturePlan` 执行截图、XML、OCR、滑动采集 |
 | `mobile/parsers.py` | 通用金融社区帖子账号、正文、阅读数、评论数解析 |
 | `sources/tencent_docs.py` | 腾讯文档数据源 |
 | `sources/excel.py` | 本地 Excel 数据源 |

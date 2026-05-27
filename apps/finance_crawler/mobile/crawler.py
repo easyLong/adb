@@ -2,120 +2,32 @@
 
 from __future__ import annotations
 
-import os
-import re
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from apps.finance_crawler.crawlers import AppCrawlerAdapter, CrawlAdapterContext, get_app_adapter
+from apps.finance_crawler.crawlers import AppCrawlerAdapter, CapturePlan, CrawlAdapterContext, get_app_adapter
 from apps.finance_crawler.mobile.capture_engine import (
     append_jsonl,
     collect_ui_records,
-    connect_uiautomator,
-    current_screen_signature,
-    is_lockscreen_showing,
-    open_app_link,
-    resolve_app_deep_link,
     save_screenshot,
-    save_text,
     scroll_forward,
-    set_device_awake,
-    stable_key,
     try_ocr,
 )
 from apps.finance_crawler.mobile import parsers as community_parsers
+from apps.finance_crawler.mobile.device_session import (
+    current_serial,
+    device,
+    open_url,
+    reset_device_session,
+    resolve_short_url,
+)
+from apps.finance_crawler.mobile.page_status import detect_page_status_from_texts, records_to_texts
+from apps.finance_crawler.mobile.post_capture import capture_post_pages
 from apps.finance_crawler.config import Config
-from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.logger import get_logger
 
 logger = get_logger("crawler")
-
-_device = None
-_device_serial: str | None = None
-_last_device_prepare_at = 0.0
-
-NOT_FOUND_KEYWORDS = [
-    "内容不存在",
-    "内容不见了",
-    "已被删除",
-    "页面不存在",
-    "帖子不见了",
-    "该内容无法查看",
-]
-ERROR_KEYWORDS = [
-    "网络不给力",
-    "加载失败",
-    "请求超时",
-    "连接失败",
-    "稍后再试",
-]
-OK_KEYWORDS = [
-    "阅读",
-    "评论",
-    "点赞",
-    "关注",
-    "理财",
-]
-
-
-def _prepare_adb_path() -> None:
-    adb_dir = str(Path(Config.ADB_PATH).resolve().parent)
-    path_parts = os.environ.get("PATH", "").split(os.pathsep)
-    if adb_dir not in path_parts:
-        os.environ["PATH"] = adb_dir + os.pathsep + os.environ.get("PATH", "")
-
-
-def reset_device_session() -> None:
-    global _device, _device_serial
-    _device = None
-    _device_serial = None
-
-
-def device():
-    global _device, _device_serial
-    serial = assert_device_ready()
-    if _device is None or _device_serial != serial:
-        _device_serial = serial
-        _device = connect_uiautomator(serial)
-        try:
-            info = _device.info
-        except Exception as exc:
-            reset_device_session()
-            raise DeviceUnavailable(f"uiautomator2 device session is unavailable: {exc}") from exc
-        logger.info(
-            "device connected: %s (%sx%s)",
-            info.get("productName", "unknown"),
-            info.get("displayWidth"),
-            info.get("displayHeight"),
-        )
-    return _device
-
-
-def _prepare_device_if_needed(serial: str) -> None:
-    global _last_device_prepare_at
-    now = time.monotonic()
-    if now - _last_device_prepare_at < Config.DEVICE_PREPARE_INTERVAL_SECONDS:
-        return
-    set_device_awake(serial)
-    if is_lockscreen_showing(serial):
-        raise RuntimeError("device is locked; unlock the phone and retry")
-    _last_device_prepare_at = now
-
-
-def resolve_short_url(short_url: str) -> str:
-    _prepare_adb_path()
-    resolved = resolve_app_deep_link(short_url)
-    return resolved or short_url
-
-
-def open_url(url: str) -> None:
-    _prepare_adb_path()
-    serial = assert_device_ready()
-    _prepare_device_if_needed(serial)
-    open_app_link(url, serial=serial)
-    time.sleep(Config.PAGE_LOAD_WAIT)
 
 
 def _dump_records() -> list[dict[str, Any]]:
@@ -124,28 +36,11 @@ def _dump_records() -> list[dict[str, Any]]:
 
 
 def read_texts_from_screen() -> list[str]:
-    texts: list[str] = []
-    for record in _dump_records():
-        for key in ("text", "content_desc"):
-            value = (record.get(key) or "").strip()
-            if value and len(value) > 1:
-                texts.append(value)
-    return texts
+    return records_to_texts(_dump_records(), min_length=2)
 
 
 def detect_page_status() -> tuple[str, str | None]:
-    texts = read_texts_from_screen()
-    joined = "\n".join(texts)
-
-    for keyword in NOT_FOUND_KEYWORDS:
-        if keyword in joined:
-            return "not_found", keyword
-    for keyword in ERROR_KEYWORDS:
-        if keyword in joined:
-            return "error", keyword
-    if any(keyword in joined for keyword in OK_KEYWORDS) or len(texts) >= 5:
-        return "success", None
-    return "error", "page status is unknown or too few controls were found"
+    return detect_page_status_from_texts(read_texts_from_screen())
 
 
 def extract_account_name(texts: list[str]) -> str:
@@ -168,103 +63,16 @@ def check_post_exists_and_account(post_id: int) -> dict[str, Any]:
 def take_screenshot(post_id: int) -> str | None:
     path = Config.SCREENSHOT_DIR / f"post_{post_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
     try:
-        save_screenshot(device(), path, serial=_device_serial)
+        current_device = device()
+        save_screenshot(current_device, path, serial=current_serial())
         return str(path)
     except Exception as exc:
         logger.warning("screenshot failed: %s", exc)
         return None
 
 
-def _parse_count_token(raw: str) -> int:
-    text = re.sub(r"\s+", "", raw.replace(",", "")).lower()
-    match = re.fullmatch(r"(?P<num>\d+(?:\.\d+)?)(?P<unit>[万wk千]?)", text)
-    if not match:
-        return 0
-
-    value = float(match.group("num"))
-    unit = match.group("unit")
-    if unit in {"万", "w"}:
-        value *= 10000
-    elif unit == "k":
-        value *= 1000
-    elif unit == "千":
-        value *= 1000
-    return int(value)
-
-
-def _number_candidates(texts: list[str]) -> list[str]:
-    candidates: list[str] = []
-    cleaned = [item.strip() for item in texts if item and item.strip()]
-    candidates.extend(cleaned)
-    for index in range(max(len(cleaned) - 1, 0)):
-        candidates.append("".join(cleaned[index : index + 2]))
-    return candidates
-
-
-def _current_post_scope_texts(texts: list[str]) -> list[str]:
-    scope: list[str] = []
-    after_latest_count: int | None = None
-    for text in texts:
-        cleaned = (text or "").strip()
-        if not cleaned:
-            continue
-        scope.append(cleaned)
-        if "暂无评论" in cleaned or "点击抢首评" in cleaned or "说说你的想法" in cleaned:
-            break
-        if after_latest_count is not None:
-            after_latest_count += 1
-            if after_latest_count >= 4:
-                break
-        if cleaned == "最新":
-            after_latest_count = 0
-    return scope
-
-
-def _is_post_content_stop(text: str) -> bool:
-    if text in {"发表观点", "发表观点.", "发表评论"}:
-        return True
-    if text in {"评论", "转发", "热度", "最新", "点赞", "返回", "更多"}:
-        return True
-    return any(
-        text.startswith(prefix)
-        for prefix in (
-            "来自以下讨论区",
-            "风险提示",
-            "暂无评论",
-            "点击抢首评",
-            "说说你的想法",
-        )
-    )
-
-
-def _is_post_content_noise(text: str) -> bool:
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}\s*\d{1,2}:\d{2}", text):
-        return True
-    if text in {"头像", "关注", "已关注", "阅读", "浏览", "查看", "评论", "转发", "点赞"}:
-        return True
-    if re.fullmatch(r"\d{1,2}:\d{2}", text):
-        return True
-    if re.fullmatch(r"\d{1,2}[-/]\d{1,2}\s*\d{1,2}:\d{2}", text):
-        return True
-    if re.fullmatch(r"\d+", text):
-        return True
-    if len(text) <= 3 and text in {"北京", "上海", "天津", "重庆", "福建", "广东", "江苏", "浙江", "山东", "四川", "河南", "河北", "湖南", "湖北"}:
-        return True
-    return False
-
-
 def extract_post_content(texts: list[str]) -> str:
     return community_parsers.extract_post_content(texts)
-
-
-def _normalize_count_text(text: str) -> str:
-    compact = re.sub(r"\s+", "", text)
-    labels = "\u9605\u8bfb|\u6d4f\u89c8|\u67e5\u770b|\u8bc4\u8bba|\u56de\u590d|\u7559\u8a00"
-    return re.sub(
-        rf"(?:\d{{1,2}}[-/]\d{{1,2}})?(?P<time>\d{{1,2}}:\d{{2}})(?P<num>\d+(?:[,.]\d+)*(?:\.\d+)?\s*[涓噖WwKk鍗僝]?)(?=(?:{labels}))",
-        lambda match: match.group("num"),
-        compact,
-    )
 
 
 def parse_numbers_with_presence(texts: list[str]) -> tuple[int, int, bool, bool]:
@@ -276,21 +84,10 @@ def parse_numbers(texts: list[str]) -> tuple[int, int]:
     return read_count, comment_count
 
 
-def _record_texts(records: list[dict[str, Any]]) -> list[str]:
-    texts: list[str] = []
-    for record in records:
-        if record.get("package") == "com.android.systemui":
-            continue
-        for key in ("text", "content_desc"):
-            value = (record.get(key) or "").strip()
-            if value:
-                texts.append(value)
-    return texts
-
-
 def _capture_ocr_snapshot(output_dir: Path, name: str) -> list[dict[str, Any]]:
     screenshot_path = output_dir / f"{name}.png"
-    save_screenshot(device(), screenshot_path, serial=_device_serial)
+    current_device = device()
+    save_screenshot(current_device, screenshot_path, serial=current_serial())
     rows = try_ocr(screenshot_path) or []
     filtered_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -366,113 +163,14 @@ def _adapter_result_fields(
     return result_fields
 
 
-def _adaptive_capture_pages(post_id: int, output_dir: Path, app_adapter: AppCrawlerAdapter) -> dict[str, Any]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ui_jsonl = output_dir / "ui_records.jsonl"
-    ocr_jsonl = output_dir / "ocr_records.jsonl"
-    seen_record_keys: set[str] = set()
-    seen_screen_signatures: set[str] = set()
-    all_texts: list[str] = []
-    total_ui_records = 0
-    total_ocr_records = 0
-    pages_captured = 0
-    read_count = 0
-    comment_count = 0
-    read_found = False
-    comment_found = False
-    ocr_attempted = False
-    ocr_available = None
+def _adapter_capture_plan(app_adapter: AppCrawlerAdapter) -> CapturePlan:
+    try:
+        return app_adapter.capture_plan()
+    except Exception as exc:
+        logger.warning("app adapter capture plan failed source=%s: %s", app_adapter.source_app, exc)
+        from apps.finance_crawler.crawlers.base import DefaultCrawlerAdapter
 
-    max_pages = max(1, min(Config.BATCH_MAX_CAPTURE_PAGES, Config.SCROLL_TIMES + 1))
-    current_device = device()
-
-    for page_index in range(max_pages):
-        xml_text = current_device.dump_hierarchy(compressed=False, pretty=True)
-        signature = current_screen_signature(xml_text)
-
-        xml_path = output_dir / f"page_{page_index:03d}.xml"
-        screenshot_path = output_dir / f"page_{page_index:03d}.png"
-        save_text(xml_path, xml_text)
-        save_screenshot(current_device, screenshot_path, serial=_device_serial)
-        pages_captured += 1
-
-        records = collect_ui_records(xml_text, page_index)
-        new_records = []
-        for record in records:
-            key = stable_key(record)
-            if key in seen_record_keys:
-                continue
-            seen_record_keys.add(key)
-            new_records.append(record)
-
-        append_jsonl(ui_jsonl, new_records)
-        total_ui_records += len(new_records)
-        all_texts.extend(_record_texts(new_records))
-
-        read_count, comment_count, read_found, comment_found = _parse_counts_with_adapter(app_adapter, all_texts)
-        if Config.BATCH_ENABLE_OCR and ocr_available is not False and not (read_found and comment_found):
-            ocr_attempted = True
-            ocr_records = try_ocr(screenshot_path)
-            if ocr_records is None:
-                ocr_available = False
-            else:
-                ocr_available = True
-                filtered_ocr = []
-                for row in ocr_records:
-                    if float(row.get("confidence", -1)) < Config.OCR_MIN_CONFIDENCE:
-                        continue
-                    bounds = row.get("bounds") or {}
-                    if int(bounds.get("top") or 0) < 140:
-                        continue
-                    row["page_index"] = page_index
-                    row["screenshot"] = screenshot_path.name
-                    filtered_ocr.append(row)
-                append_jsonl(ocr_jsonl, filtered_ocr)
-                total_ocr_records += len(filtered_ocr)
-                all_texts.extend(row["text"] for row in filtered_ocr)
-                read_count, comment_count, read_found, comment_found = _parse_counts_with_adapter(
-                    app_adapter,
-                    all_texts,
-                )
-
-        logger.info(
-            "adaptive capture post=%s page=%s/%s ui_new=%s ocr_total=%s read_found=%s comment_found=%s",
-            post_id,
-            page_index + 1,
-            max_pages,
-            len(new_records),
-            total_ocr_records,
-            read_found,
-            comment_found,
-        )
-        if read_found and comment_found:
-            break
-        if page_index >= max_pages - 1:
-            break
-        if signature in seen_screen_signatures:
-            logger.info("adaptive capture stopped: repeated screen post=%s", post_id)
-            break
-        seen_screen_signatures.add(signature)
-        if not scroll_forward(current_device):
-            logger.info("adaptive capture stopped: no more scrollable content post=%s", post_id)
-            break
-        time.sleep(Config.BATCH_SCROLL_WAIT)
-
-    return {
-        "output_dir": str(output_dir),
-        "ui_records": total_ui_records,
-        "ocr_records": total_ocr_records,
-        "ui_jsonl": str(ui_jsonl),
-        "ocr_jsonl": str(ocr_jsonl) if ocr_jsonl.exists() else None,
-        "texts": all_texts,
-        "read_count": read_count,
-        "comment_count": comment_count,
-        "read_found": read_found,
-        "comment_found": comment_found,
-        "pages_captured": pages_captured,
-        "ocr_attempted": ocr_attempted,
-        "ocr_available": ocr_available,
-    }
+        return DefaultCrawlerAdapter().capture_plan()
 
 
 def scrape_post_content(post_id: int, source_app: str | None = None) -> dict[str, Any]:
@@ -495,6 +193,7 @@ def scrape_post_content(post_id: int, source_app: str | None = None) -> dict[str
         return result
 
     app_adapter = get_app_adapter(source_app)
+    capture_plan = _adapter_capture_plan(app_adapter)
     adapter_data = _adapter_before_main_capture(
         app_adapter,
         CrawlAdapterContext(
@@ -503,11 +202,20 @@ def scrape_post_content(post_id: int, source_app: str | None = None) -> dict[str
             capture_ocr_snapshot=_capture_ocr_snapshot,
             device=device,
             scroll_forward=scroll_forward,
-            scroll_wait=Config.BATCH_SCROLL_WAIT,
-            max_detail_scrolls=max(0, min(Config.SCROLL_TIMES, 2)),
+            scroll_wait=capture_plan.scroll_wait,
+            max_detail_scrolls=capture_plan.max_detail_scrolls,
         )
     )
-    summary = _adaptive_capture_pages(post_id, output_dir, app_adapter)
+    current_device = device()
+    summary = capture_post_pages(
+        post_id=post_id,
+        output_dir=output_dir,
+        app_adapter=app_adapter,
+        capture_plan=capture_plan,
+        device=current_device,
+        serial=current_serial(),
+        parse_counts=lambda texts: _parse_counts_with_adapter(app_adapter, texts),
+    )
     texts = summary["texts"]
     read_count = summary["read_count"]
     comment_count = summary["comment_count"]

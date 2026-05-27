@@ -33,7 +33,12 @@ app.py                      调度入口，支持单任务、常驻调度、supe
 config.py                   环境变量和默认配置
 domain/                     通用记录对象和 source/crawler/sink 接口
 crawlers/                   App Profile 和 App 专属 Adapter
-mobile/                     ADB、uiautomator2、截图、XML、OCR、通用解析
+mobile/                     手机采集执行层
+mobile/capture_engine.py    ADB、deep link、截图、XML、OCR 底层能力
+mobile/device_session.py    设备连接缓存、唤醒/锁屏检查、链接打开
+mobile/page_status.py       页面可用/删除/错误状态判断
+mobile/post_capture.py      按 CapturePlan 执行截图、XML、OCR、滑动采集
+mobile/crawler.py           Adapter 调度、结果拼装
 mobile/parsers.py           通用金融社区帖子解析规则
 sources/                    数据源适配，例如腾讯文档
 sinks/                      结果写回适配，例如腾讯文档、本地 Excel
