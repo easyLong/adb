@@ -46,7 +46,7 @@ class CrawlAdapterContext:
 
 @dataclass(frozen=True)
 class CapturePlan:
-    """App-specific policy for the common post capture loop."""
+    """App-specific policy for the common record capture loop."""
 
     max_pages: int
     scroll_wait: float
@@ -66,7 +66,7 @@ class AppCrawlerAdapter(Protocol):
         ...
 
     def before_main_capture(self, context: CrawlAdapterContext) -> dict[str, Any]:
-        """Run optional app-specific work before the common post capture."""
+        """Run optional app-specific work before the common record capture."""
         ...
 
     def result_fields(
@@ -99,9 +99,9 @@ class DefaultCrawlerAdapter:
         from apps.finance_crawler.config import Config
 
         return CapturePlan(
-            max_pages=max(1, min(Config.BATCH_MAX_CAPTURE_PAGES, Config.SCROLL_TIMES + 1)),
-            scroll_wait=Config.BATCH_SCROLL_WAIT,
-            enable_ocr=Config.BATCH_ENABLE_OCR,
+            max_pages=max(1, min(Config.DETAIL_MAX_CAPTURE_PAGES, Config.SCROLL_TIMES + 1)),
+            scroll_wait=Config.DETAIL_SCROLL_WAIT,
+            enable_ocr=Config.DETAIL_ENABLE_OCR,
             ocr_min_confidence=Config.OCR_MIN_CONFIDENCE,
             max_detail_scrolls=max(0, min(Config.SCROLL_TIMES, 2)),
         )

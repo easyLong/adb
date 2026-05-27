@@ -14,7 +14,7 @@ def get_row_index_map() -> dict[str, int]:
         if len(row) <= Config.QQ_COL_URL:
             continue
         url = row[Config.QQ_COL_URL].strip()
-        if tabular_links.is_supported_post_url(url):
+        if tabular_links.is_supported_crawl_url(url):
             # Tencent grid startRow is zero-based; sheet row number is one-based.
             mapping[url] = start_row + offset + 1
     return mapping

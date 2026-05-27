@@ -14,10 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.finance_crawler.mobile.crawler import (
-    check_post_exists_and_account,
+    check_record_exists_and_account,
     open_url,
     resolve_short_url,
-    scrape_post_content,
+    scrape_record_content,
 )
 from apps.finance_crawler.config import Config
 
@@ -96,7 +96,7 @@ def process_row(ws, row: int, header_map: dict[str, int]) -> dict[str, object]:
     deep_link = resolve_short_url(url)
     open_url(deep_link)
 
-    check_result = check_post_exists_and_account(row)
+    check_result = check_record_exists_and_account(row)
     if check_result["status"] == "not_found":
         ws.cell(row, header_map[ACCOUNT_HEADER]).value = "N"
         ws.cell(row, header_map[READ_HEADER]).value = 0
@@ -120,7 +120,7 @@ def process_row(ws, row: int, header_map: dict[str, int]) -> dict[str, object]:
             "error": check_result.get("error"),
         }
 
-    scrape_result = scrape_post_content(row, source_app="antfortune")
+    scrape_result = scrape_record_content(row, source_app="antfortune")
     account_name = check_result.get("account_name") or ""
     ws.cell(row, header_map[ACCOUNT_HEADER]).value = account_name
     ws.cell(row, header_map[READ_HEADER]).value = scrape_result.get("read_count") or 0

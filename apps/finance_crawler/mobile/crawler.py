@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from apps.finance_crawler.crawlers import AppCrawlerAdapter, CapturePlan, CrawlAdapterContext, get_app_adapter
@@ -23,7 +24,7 @@ from apps.finance_crawler.mobile.device_session import (
     resolve_short_url,
 )
 from apps.finance_crawler.mobile.page_status import detect_page_status_from_texts, records_to_texts
-from apps.finance_crawler.mobile.post_capture import capture_post_pages
+from apps.finance_crawler.mobile.record_capture import capture_record_pages
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.utils.logger import get_logger
 
@@ -47,7 +48,7 @@ def extract_account_name(texts: list[str]) -> str:
     return community_parsers.extract_account_name(texts)
 
 
-def check_post_exists_and_account(post_id: int) -> dict[str, Any]:
+def check_record_exists_and_account(record_id: int) -> dict[str, Any]:
     time.sleep(1.0)
     status, error_msg = detect_page_status()
     if status == "not_found":
@@ -60,8 +61,8 @@ def check_post_exists_and_account(post_id: int) -> dict[str, Any]:
     return {"status": "success", "exists": True, "account_name": account_name, "error": None}
 
 
-def take_screenshot(post_id: int) -> str | None:
-    path = Config.SCREENSHOT_DIR / f"post_{post_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+def take_screenshot(record_id: int) -> str | None:
+    path = Config.SCREENSHOT_DIR / f"record_{record_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
     try:
         current_device = device()
         save_screenshot(current_device, path, serial=current_serial())
@@ -173,8 +174,8 @@ def _adapter_capture_plan(app_adapter: AppCrawlerAdapter) -> CapturePlan:
         return DefaultCrawlerAdapter().capture_plan()
 
 
-def scrape_post_content(post_id: int, source_app: str | None = None) -> dict[str, Any]:
-    output_dir = Config.CAPTURE_DIR / f"post_{post_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+def scrape_record_content(record_id: int, source_app: str | None = None) -> dict[str, Any]:
+    output_dir = Config.CAPTURE_DIR / f"record_{record_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     result: dict[str, Any] = {
         "status": "error",
         "content": None,
@@ -207,8 +208,8 @@ def scrape_post_content(post_id: int, source_app: str | None = None) -> dict[str
         )
     )
     current_device = device()
-    summary = capture_post_pages(
-        post_id=post_id,
+    summary = capture_record_pages(
+        record_id=record_id,
         output_dir=output_dir,
         app_adapter=app_adapter,
         capture_plan=capture_plan,

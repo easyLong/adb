@@ -5,10 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from datetime import time as datetime_time
+from datetime import timedelta
 from typing import Any
 
 from apps.finance_crawler.crawlers.registry import iter_app_profiles
-from apps.finance_crawler.domain.records import CrawlResult, SourceRecord, WritebackResult
+from apps.finance_crawler.domain.records import CrawlResult, WritebackResult
+from apps.finance_crawler.domain.task_types import (
+    DETAIL_CRAWL_TASK_TYPE,
+    INITIAL_CHECK_TASK_TYPE,
+)
 from apps.finance_crawler.utils.link_source import resolve_source_app
 
 
@@ -18,8 +24,41 @@ def _json_dumps(value: Any) -> str | None:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+def _normalize_url_for_record_key(url: str) -> str:
+    """Normalize only safe whitespace for stable task identity.
+
+    Do not sort/drop query parameters here: finance app deep links often carry
+    business identifiers in the query string.
+    """
+
+    return url.strip()
+
+
 def _record_key_for_url(url: str) -> str:
-    return f"url:{hashlib.sha1(url.encode('utf-8')).hexdigest()}"
+    normalized = _normalize_url_for_record_key(url)
+    return f"url:{hashlib.sha1(normalized.encode('utf-8')).hexdigest()}"
+
+
+def _parse_detail_time(value: str) -> datetime_time:
+    parts = [int(part) for part in (value or "10:00").split(":")]
+    if len(parts) == 2:
+        return datetime_time(parts[0], parts[1])
+    if len(parts) == 3:
+        return datetime_time(parts[0], parts[1], parts[2])
+    raise ValueError(f"invalid DETAIL_TIME: {value}")
+
+
+def _initial_check_scheduled_at(source_time: datetime) -> datetime:
+    return source_time + timedelta(hours=_config().INITIAL_CHECK_DELAY_HOURS)
+
+
+def _detail_scheduled_at(source_time: datetime) -> datetime:
+    detail_time = _parse_detail_time(_config().DETAIL_TIME)
+    return datetime.combine(source_time.date() + timedelta(days=1), detail_time)
+
+
+def _should_skip_initial_check(source_time: datetime, now: datetime | None = None) -> bool:
+    return (now or datetime.now()) >= _detail_scheduled_at(source_time)
 
 
 def _hash_key(prefix: str, *parts: Any) -> str:
@@ -27,12 +66,54 @@ def _hash_key(prefix: str, *parts: Any) -> str:
     return f"{prefix}:{hashlib.sha1(raw.encode('utf-8')).hexdigest()}"
 
 
-def _record_key_for_source_url(prefix: str, *source_parts: Any, url: str) -> str:
-    return _hash_key(prefix, *source_parts, url.strip())
+def _current_schema(cursor) -> str:
+    cursor.execute("SELECT DATABASE() AS db_name")
+    row = cursor.fetchone() or {}
+    return row["db_name"]
+
+
+def _column_exists(cursor, table: str, column: str) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND column_name = %s
+        LIMIT 1
+        """,
+        (_current_schema(cursor), table, column),
+    )
+    return cursor.fetchone() is not None
+
+
+def _ensure_column(cursor, table: str, column: str, ddl: str) -> None:
+    if not _column_exists(cursor, table, column):
+        cursor.execute(f"ALTER TABLE `{table}` ADD COLUMN {ddl}")
+
+
+def _index_exists(cursor, table: str, index_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.statistics
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND index_name = %s
+        LIMIT 1
+        """,
+        (_current_schema(cursor), table, index_name),
+    )
+    return cursor.fetchone() is not None
+
+
+def _ensure_index(cursor, table: str, index_name: str, ddl: str) -> None:
+    if not _index_exists(cursor, table, index_name):
+        cursor.execute(f"ALTER TABLE `{table}` ADD INDEX {index_name} {ddl}")
 
 
 def ensure_framework_tables(cursor) -> None:
-    """Create framework-level tables without changing legacy business tables."""
+    """Create and migrate framework-level tables used by the current workflow."""
 
     cursor.execute(
         """
@@ -90,44 +171,9 @@ def ensure_framework_tables(cursor) -> None:
 
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS crawl_tasks (
-            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            job_id BIGINT UNSIGNED NULL,
-            legacy_post_id INT NULL,
-            source_id BIGINT UNSIGNED NULL,
-            source_type VARCHAR(64) NOT NULL,
-            source_record_key VARCHAR(191) NOT NULL,
-            source_locator_json LONGTEXT NULL,
-            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
-            original_url VARCHAR(1000) NOT NULL,
-            canonical_url VARCHAR(1000) NULL,
-            source_time DATETIME NULL,
-            status VARCHAR(32) NOT NULL DEFAULT 'pending',
-            priority INT NOT NULL DEFAULT 0,
-            scheduled_at DATETIME NULL,
-            locked_at DATETIME NULL,
-            attempts INT NOT NULL DEFAULT 0,
-            max_attempts INT NOT NULL DEFAULT 3,
-            error TEXT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_source_record (source_type, source_record_key),
-            INDEX idx_task_status (status),
-            INDEX idx_task_app (app_type),
-            INDEX idx_task_source (source_id),
-            INDEX idx_task_job (job_id),
-            INDEX idx_legacy_post (legacy_post_id),
-            INDEX idx_original_url (original_url(191))
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-
-    cursor.execute(
-        """
         CREATE TABLE IF NOT EXISTS crawl_results (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             task_id BIGINT UNSIGNED NULL,
-            legacy_post_id INT NULL,
             app_type VARCHAR(64) NOT NULL,
             url VARCHAR(1000) NOT NULL,
             workflow VARCHAR(64) NULL,
@@ -140,7 +186,6 @@ def ensure_framework_tables(cursor) -> None:
             crawled_at DATETIME NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_result_task (task_id),
-            INDEX idx_result_legacy_post (legacy_post_id),
             INDEX idx_result_app (app_type),
             INDEX idx_result_workflow (workflow),
             INDEX idx_result_status (status),
@@ -156,7 +201,6 @@ def ensure_framework_tables(cursor) -> None:
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             task_id BIGINT UNSIGNED NULL,
             result_id BIGINT UNSIGNED NULL,
-            legacy_post_id INT NULL,
             sink_type VARCHAR(64) NOT NULL,
             sink_locator_json LONGTEXT NULL,
             status VARCHAR(32) NOT NULL,
@@ -165,7 +209,6 @@ def ensure_framework_tables(cursor) -> None:
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_writeback_task (task_id),
             INDEX idx_writeback_result (result_id),
-            INDEX idx_writeback_legacy_post (legacy_post_id),
             INDEX idx_writeback_sink (sink_type),
             INDEX idx_writeback_status (status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -176,11 +219,11 @@ def ensure_framework_tables(cursor) -> None:
         """
         CREATE TABLE IF NOT EXISTS crawl_task_submissions (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            task_type VARCHAR(64) NOT NULL DEFAULT 'batch',
+            task_type VARCHAR(64) NOT NULL DEFAULT 'detail_crawl',
             source_id BIGINT UNSIGNED NULL,
             source_type VARCHAR(64) NOT NULL,
             source_name VARCHAR(191) NULL,
-            source_record_key VARCHAR(191) NOT NULL,
+            crawl_object_key VARCHAR(191) NOT NULL,
             source_locator_json LONGTEXT NULL,
             app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
             original_url VARCHAR(1000) NOT NULL,
@@ -197,10 +240,11 @@ def ensure_framework_tables(cursor) -> None:
             created_by VARCHAR(64) NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_submission_record (source_type, source_record_key, task_type),
+            UNIQUE KEY uk_submission_record (source_type, crawl_object_key, task_type),
             INDEX idx_submission_status (status),
             INDEX idx_submission_app (app_type),
             INDEX idx_submission_source (source_id),
+            INDEX idx_submission_object_task (task_type, crawl_object_key, status),
             INDEX idx_submission_schedule (scheduled_at),
             INDEX idx_submission_priority (priority),
             INDEX idx_submission_latest_execution (latest_execution_id),
@@ -245,6 +289,14 @@ def ensure_framework_tables(cursor) -> None:
         """
     )
 
+    _ensure_index(
+        cursor,
+        "crawl_task_submissions",
+        "idx_submission_object_task",
+        "(task_type, crawl_object_key, status)",
+    )
+    _ensure_column(cursor, "crawl_results", "workflow", "workflow VARCHAR(64) NULL")
+    _ensure_index(cursor, "crawl_results", "idx_result_workflow", "(workflow)")
     seed_crawler_apps(cursor)
 
 
@@ -287,58 +339,12 @@ def upsert_crawl_source_tx(
     return int(cursor.lastrowid)
 
 
-def upsert_crawl_task_tx(
-    cursor,
-    record: SourceRecord,
-    *,
-    job_id: int | None = None,
-    source_id: int | None = None,
-    legacy_post_id: int | None = None,
-    status: str = "pending",
-    max_attempts: int = 3,
-) -> int:
-    app_type = resolve_source_app(record.app_type, record.url)
-    cursor.execute(
-        """
-        INSERT INTO crawl_tasks
-            (job_id, legacy_post_id, source_id, source_type, source_record_key,
-             source_locator_json, app_type, original_url, source_time, status, max_attempts)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            id = LAST_INSERT_ID(id),
-            job_id = COALESCE(VALUES(job_id), job_id),
-            legacy_post_id = COALESCE(VALUES(legacy_post_id), legacy_post_id),
-            source_id = COALESCE(VALUES(source_id), source_id),
-            source_locator_json = VALUES(source_locator_json),
-            app_type = VALUES(app_type),
-            original_url = VALUES(original_url),
-            source_time = VALUES(source_time),
-            status = IF(status IN ('done', 'success'), status, VALUES(status)),
-            max_attempts = VALUES(max_attempts)
-        """,
-        (
-            job_id,
-            legacy_post_id,
-            source_id,
-            record.source_type,
-            record.record_id,
-            _json_dumps(record.locator),
-            app_type,
-            record.url,
-            record.post_time,
-            status,
-            max_attempts,
-        ),
-    )
-    return int(cursor.lastrowid)
-
-
 def upsert_task_submission_tx(
     cursor,
     *,
     task_type: str,
     source_type: str,
-    source_record_key: str,
+    crawl_object_key: str,
     original_url: str,
     source_name: str | None = None,
     source_id: int | None = None,
@@ -357,13 +363,13 @@ def upsert_task_submission_tx(
         task_type=task_type,
         source_type=source_type,
         source_name=source_name,
-        source_record_key=source_record_key,
+        crawl_object_key=crawl_object_key,
         original_url=original_url,
     )
     cursor.execute(
         """
         INSERT INTO crawl_task_submissions
-            (task_type, source_id, source_type, source_name, source_record_key,
+            (task_type, source_id, source_type, source_name, crawl_object_key,
              source_locator_json, app_type, original_url, canonical_url, source_time,
              status, priority, scheduled_at, max_attempts, created_by)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s)
@@ -385,7 +391,7 @@ def upsert_task_submission_tx(
             source_id,
             source_type,
             source_name,
-            source_record_key,
+            crawl_object_key,
             _json_dumps(source_locator),
             app,
             original_url,
@@ -406,12 +412,12 @@ def _migrate_existing_submission_key_tx(
     task_type: str,
     source_type: str,
     source_name: str | None,
-    source_record_key: str,
+    crawl_object_key: str,
     original_url: str,
 ) -> None:
     cursor.execute(
         """
-        SELECT id, source_record_key
+        SELECT id, crawl_object_key
         FROM crawl_task_submissions
         WHERE task_type = %s
           AND source_type = %s
@@ -423,136 +429,125 @@ def _migrate_existing_submission_key_tx(
         (task_type, source_type, source_name, original_url),
     )
     row = cursor.fetchone()
-    if not row or row["source_record_key"] == source_record_key:
+    if not row or row["crawl_object_key"] == crawl_object_key:
         return
     try:
         cursor.execute(
             """
             UPDATE crawl_task_submissions
-            SET source_record_key = %s
+            SET crawl_object_key = %s
             WHERE id = %s
             """,
-            (source_record_key, row["id"]),
+            (crawl_object_key, row["id"]),
         )
     except Exception:
-        # If another row already owns the stable key, the upsert below will
+        # If another row already owns the stable object key, the upsert below will
         # merge into it via uk_submission_record.
         pass
 
 
-def upsert_legacy_post_task_tx(
+def upsert_source_record_submissions_tx(
     cursor,
     *,
-    post_id: int,
+    source_type: str,
+    source_name: str | None,
+    source_config: dict[str, Any] | None,
+    source_locator: dict[str, Any] | None,
     url: str,
-    post_time: datetime,
-    row_index: int | None = None,
-    file_id: str | None = None,
-    sheet_id: str | None = None,
+    source_time: datetime | None = None,
     source_app: str | None = None,
-) -> int:
-    source_type = "tencent_docs" if file_id or sheet_id or row_index else "manual"
-    source_name = f"{file_id or 'unknown'}:{sheet_id or 'unknown'}" if source_type == "tencent_docs" else "manual"
+    now: datetime | None = None,
+    created_by: str = "fetch",
+) -> dict[str, int]:
+    """Create the planned task submissions for one source record.
+
+    One crawl object can produce multiple task types. For post-like finance
+    links we schedule a lightweight initial check and a next-day detail crawl.
+    If the next-day detail window has already arrived, the initial check is
+    skipped because it no longer adds business value.
+    """
+
+    if source_time is None:
+        raise ValueError("source_time is required")
+
+    resolved_source_name = source_name or source_type
     source_id = upsert_crawl_source_tx(
         cursor,
         source_type,
-        source_name,
-        {"file_id": file_id, "sheet_id": sheet_id} if source_type == "tencent_docs" else None,
+        resolved_source_name,
+        source_config,
     )
-    record_id = (
-        f"{file_id or 'unknown'}:{sheet_id or 'unknown'}:{row_index}"
-        if source_type == "tencent_docs" and row_index
-        else _record_key_for_url(url)
-    )
-    record = SourceRecord(
-        record_id=record_id,
-        source_type=source_type,
-        source_name=source_name,
-        url=url,
-        app_type=resolve_source_app(source_app, url),
-        post_time=post_time,
-        locator={"file_id": file_id, "sheet_id": sheet_id, "row_index": row_index},
-        raw={"legacy_post_id": post_id},
-    )
-    return upsert_crawl_task_tx(
-        cursor,
-        record,
-        source_id=source_id,
-        legacy_post_id=post_id,
-        status="pending",
-    )
+    object_key = _record_key_for_url(url)
 
-
-def upsert_legacy_post_submission_tx(
-    cursor,
-    *,
-    post_id: int,
-    url: str,
-    post_time: datetime,
-    row_index: int | None = None,
-    file_id: str | None = None,
-    sheet_id: str | None = None,
-    source_app: str | None = None,
-    task_type: str = "batch_crawl",
-) -> int:
-    source_type = "tencent_docs" if file_id or sheet_id or row_index else "manual"
-    source_name = f"{file_id or 'unknown'}:{sheet_id or 'unknown'}" if source_type == "tencent_docs" else "manual"
-    source_id = upsert_crawl_source_tx(
+    submissions: dict[str, int] = {}
+    locator = dict(source_locator or {})
+    if not _should_skip_initial_check(source_time, now):
+        submissions[INITIAL_CHECK_TASK_TYPE] = upsert_task_submission_tx(
+            cursor,
+            task_type=INITIAL_CHECK_TASK_TYPE,
+            source_id=source_id,
+            source_type=source_type,
+            source_name=resolved_source_name,
+            crawl_object_key=object_key,
+            source_locator=locator,
+            app_type=source_app,
+            original_url=url,
+            source_time=source_time,
+            scheduled_at=_initial_check_scheduled_at(source_time),
+            max_attempts=_config().CHECK_MAX_RETRIES,
+            created_by=created_by,
+        )
+    submissions[DETAIL_CRAWL_TASK_TYPE] = upsert_task_submission_tx(
         cursor,
-        source_type,
-        source_name,
-        {"file_id": file_id, "sheet_id": sheet_id} if source_type == "tencent_docs" else None,
-    )
-    record_key = (
-        _record_key_for_source_url("tencent_docs_url", file_id, sheet_id, url=url)
-        if source_type == "tencent_docs"
-        else _record_key_for_url(url)
-    )
-    return upsert_task_submission_tx(
-        cursor,
-        task_type=task_type,
+        task_type=DETAIL_CRAWL_TASK_TYPE,
         source_id=source_id,
         source_type=source_type,
-        source_name=source_name,
-        source_record_key=record_key,
-        source_locator={
-            "legacy_post_id": post_id,
-            "file_id": file_id,
-            "sheet_id": sheet_id,
-            "row_index": row_index,
-        },
+        source_name=resolved_source_name,
+        crawl_object_key=object_key,
+        source_locator=locator,
         app_type=source_app,
         original_url=url,
-        source_time=post_time,
-        created_by="fetch",
+        source_time=source_time,
+        scheduled_at=_detail_scheduled_at(source_time),
+        max_attempts=_config().DETAIL_MAX_RETRIES,
+        created_by=created_by,
     )
+    return submissions
 
 
-def upsert_submission_for_legacy_post(
-    post: dict[str, Any],
+def upsert_source_record_submissions(
     *,
-    task_type: str = "batch_crawl",
-) -> int:
-    """Ensure a legacy post has a task-center submission."""
+    source_type: str,
+    source_name: str | None,
+    source_config: dict[str, Any] | None = None,
+    source_locator: dict[str, Any] | None = None,
+    url: str,
+    source_time: datetime | None = None,
+    source_app: str | None = None,
+    now: datetime | None = None,
+    created_by: str = "fetch",
+) -> dict[str, int]:
+    """Create or refresh planned task submissions for one source record."""
 
     from apps.finance_crawler.storage.db import get_conn
 
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
-            submission_id = upsert_legacy_post_submission_tx(
+            submissions = upsert_source_record_submissions_tx(
                 cursor,
-                post_id=int(post["id"]),
-                url=post["url"],
-                post_time=post["post_time"],
-                row_index=post.get("doc_row_index"),
-                file_id=post.get("doc_file_id"),
-                sheet_id=post.get("doc_sheet_id"),
-                source_app=post.get("source_app"),
-                task_type=task_type,
+                source_type=source_type,
+                source_name=source_name,
+                source_config=source_config,
+                source_locator=source_locator,
+                url=url,
+                source_time=source_time,
+                source_app=source_app,
+                now=now,
+                created_by=created_by,
             )
         conn.commit()
-        return submission_id
+        return submissions
     except Exception:
         conn.rollback()
         raise
@@ -568,7 +563,7 @@ def upsert_excel_row_submission(
     url: str,
     source_app: str | None = None,
     output_path: str | None = None,
-    task_type: str = "batch_crawl",
+    task_type: str = DETAIL_CRAWL_TASK_TYPE,
     max_attempts: int = 3,
 ) -> int:
     """Create or refresh a submission for one local Excel row."""
@@ -577,7 +572,7 @@ def upsert_excel_row_submission(
 
     source_type = "excel"
     source_name = _hash_key("excel_source", path, sheet_name)
-    record_key = _record_key_for_source_url("excel_url", path, sheet_name, url=url)
+    object_key = _record_key_for_url(url)
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
@@ -593,7 +588,7 @@ def upsert_excel_row_submission(
                 source_id=source_id,
                 source_type=source_type,
                 source_name=source_name,
-                source_record_key=record_key,
+                crawl_object_key=object_key,
                 source_locator={
                     "path": path,
                     "sheet_name": sheet_name,
@@ -603,7 +598,7 @@ def upsert_excel_row_submission(
                 app_type=source_app,
                 original_url=url,
                 max_attempts=max_attempts,
-                created_by="excel_batch",
+                created_by="excel_detail",
             )
         conn.commit()
         return submission_id
@@ -678,7 +673,7 @@ def upsert_task_submission(
     *,
     task_type: str,
     source_type: str,
-    source_record_key: str,
+    crawl_object_key: str,
     original_url: str,
     source_name: str | None = None,
     source_id: int | None = None,
@@ -708,7 +703,7 @@ def upsert_task_submission(
                 source_id=source_id,
                 source_type=source_type,
                 source_name=source_name,
-                source_record_key=source_record_key,
+                crawl_object_key=crawl_object_key,
                 source_locator=source_locator,
                 app_type=app_type,
                 original_url=original_url,
@@ -977,7 +972,7 @@ def update_task_execution_writeback(
                 writeback_status=writeback_status,
             )
             submission_status = _submission_status_from_execution(
-                "error" if writeback_status in {"error", "skipped"} else row["status"],
+                "error" if writeback_status == "error" else row["status"],
                 attempt_no=int(row["attempt_no"] or 0),
                 max_attempts=int(row["max_attempts"] or 1),
             )
@@ -993,7 +988,7 @@ def update_task_execution_writeback(
                     submission_status,
                     (
                         writeback_error or row.get("error")
-                        if writeback_status in {"error", "skipped"}
+                        if writeback_status == "error"
                         else row.get("error")
                     ),
                     _json_dumps(summary),
@@ -1084,33 +1079,34 @@ def _json_loads(value: str | None) -> Any:
         return None
 
 
-def get_task_id_by_legacy_post_id(legacy_post_id: int) -> int | None:
-    from apps.finance_crawler.storage.db import get_conn
-
-    conn = get_conn()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id
-                FROM crawl_tasks
-                WHERE legacy_post_id = %s
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (legacy_post_id,),
-            )
-            row = cursor.fetchone()
-            return int(row["id"]) if row else None
-    finally:
-        conn.close()
+def _submission_task_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
+    for row in rows:
+        locator = _json_loads(row.get("source_locator_json")) or {}
+        # Keep a stable workflow-facing numeric id derived from the submission.
+        record_id = -int(row["submission_id"])
+        tasks.append(
+            {
+                "record_id": record_id,
+                "task_id": row["submission_id"],
+                "submission_id": row["submission_id"],
+                "url": row["url"],
+                "source_app": row.get("source_app"),
+                "source_time": row.get("source_time"),
+                "doc_row_index": locator.get("row_index"),
+                "doc_file_id": locator.get("file_id"),
+                "doc_sheet_id": locator.get("sheet_id"),
+                "source_locator": locator,
+                "attempts": row.get("attempts"),
+            }
+        )
+    return tasks
 
 
 def insert_crawl_result(
     result: CrawlResult,
     *,
     task_id: int | None = None,
-    legacy_post_id: int | None = None,
 ) -> int:
     from apps.finance_crawler.storage.db import get_conn
 
@@ -1121,13 +1117,12 @@ def insert_crawl_result(
             cursor.execute(
                 """
                 INSERT INTO crawl_results
-                    (task_id, legacy_post_id, app_type, url, workflow, status, account_name,
+                    (task_id, app_type, url, workflow, status, account_name,
                      content, metrics_json, screenshot_path, error, crawled_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     task_id or result.task_id,
-                    legacy_post_id,
                     result.app_type,
                     result.url,
                     workflow,
@@ -1150,163 +1145,86 @@ def insert_crawl_result(
         conn.close()
 
 
-def get_pending_check_tasks(limit: int) -> list[dict[str, Any]]:
-    """Return task-shaped rows that can replace the legacy posts check query."""
-    from apps.finance_crawler.storage.db import get_conn
-
-    conn = get_conn()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    t.legacy_post_id AS id,
-                    t.id AS task_id,
-                    t.original_url AS url,
-                    t.app_type AS source_app,
-                    t.source_time AS post_time,
-                    p.doc_row_index,
-                    COALESCE(p.check_retries, t.attempts, 0) AS check_retries
-                FROM crawl_tasks t
-                LEFT JOIN posts p ON p.id = t.legacy_post_id
-                WHERE t.status = 'pending'
-                  AND t.legacy_post_id IS NOT NULL
-                  AND COALESCE(p.check_status, 'pending') = 'pending'
-                  AND COALESCE(p.check_retries, t.attempts, 0) < %s
-                  AND t.source_time <= %s
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM crawl_results r
-                      WHERE r.task_id = t.id
-                        AND r.workflow = 'initial_check'
-                        AND r.status IN ('success', 'not_found')
-                  )
-                ORDER BY t.source_time ASC
-                LIMIT %s
-                """,
-                (_config().CHECK_MAX_RETRIES, _check_cutoff(), limit),
-            )
-            return cursor.fetchall()
-    finally:
-        conn.close()
-
-
-def get_pending_batch_tasks(limit: int | None = None) -> list[dict[str, Any]]:
-    """Return task-shaped rows that can replace the legacy posts batch query."""
+def get_pending_check_submissions(limit: int) -> list[dict[str, Any]]:
+    """Return due initial-check records from task submissions."""
     from apps.finance_crawler.storage.db import get_conn
 
     sql = """
         SELECT
-            t.legacy_post_id AS id,
-            t.id AS task_id,
-            t.original_url AS url,
-            t.app_type AS source_app,
-            t.source_time AS post_time,
-            p.doc_row_index,
-            p.doc_file_id,
-            p.doc_sheet_id
-        FROM crawl_tasks t
-        LEFT JOIN posts p ON p.id = t.legacy_post_id
-        WHERE t.status = 'pending'
-          AND t.legacy_post_id IS NOT NULL
-          AND t.source_time <= %s
-          AND COALESCE(p.batch_status, 'pending') = 'pending'
-          AND COALESCE(p.batch_retries, t.attempts, 0) < %s
+            s.id AS submission_id,
+            s.original_url AS url,
+            s.app_type AS source_app,
+            s.source_time AS source_time,
+            s.source_locator_json,
+            s.attempts
+        FROM crawl_task_submissions s
+        WHERE s.task_type = %s
+          AND s.status IN ('pending', 'failed_retryable')
+          AND (s.scheduled_at IS NULL OR s.scheduled_at <= %s)
+          AND s.attempts < s.max_attempts
+        ORDER BY s.source_time ASC
+        LIMIT %s
     """
-    params: list[Any] = [_batch_cutoff(), _config().BATCH_MAX_RETRIES]
-    if _config().BATCH_REQUIRES_CHECK_SUCCESS:
-        sql += """
-          AND EXISTS (
-              SELECT 1
-              FROM crawl_results r
-              WHERE r.task_id = t.id
-                AND r.workflow = 'initial_check'
-                AND r.status = 'success'
-          )
-        """
-    sql += """
-          AND NOT EXISTS (
-              SELECT 1
-              FROM crawl_results r
-              WHERE r.task_id = t.id
-                AND r.workflow = 'batch_crawl'
-                AND r.status IN ('success', 'deleted')
-          )
-        ORDER BY t.source_time ASC
-    """
-    if limit and limit > 0:
-        sql += " LIMIT %s"
-        params.append(limit)
-
+    now = datetime.now()
+    params: list[Any] = [
+        INITIAL_CHECK_TASK_TYPE,
+        now,
+        limit,
+    ]
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
             cursor.execute(sql, params)
-            return cursor.fetchall()
+            return _submission_task_rows(cursor.fetchall())
     finally:
         conn.close()
 
 
-def get_pending_batch_submissions(limit: int | None = None) -> list[dict[str, Any]]:
-    """Return batch records from task submissions, with legacy posts as bootstrap fallback."""
+def get_pending_detail_submissions(limit: int | None = None) -> list[dict[str, Any]]:
+    """Return due detail-crawl records from task submissions."""
     from apps.finance_crawler.storage.db import get_conn
 
-    check_clause = "AND p.check_status = 'success'" if _config().BATCH_REQUIRES_CHECK_SUCCESS else ""
-    submission_sql = f"""
+    check_clause = ""
+    check_params: list[Any] = []
+    if _config().DETAIL_REQUIRES_CHECK_SUCCESS:
+        check_clause = """
+          AND (
+              EXISTS (
+                  SELECT 1
+                  FROM crawl_task_submissions c
+                  WHERE c.task_type = %s
+                    AND c.crawl_object_key = s.crawl_object_key
+                    AND c.status = 'success'
+              )
+              OR NOT EXISTS (
+                  SELECT 1
+                  FROM crawl_task_submissions c
+                  WHERE c.task_type = %s
+                    AND c.crawl_object_key = s.crawl_object_key
+              )
+          )
+        """
+        check_params = [INITIAL_CHECK_TASK_TYPE, INITIAL_CHECK_TASK_TYPE]
+    sql = f"""
         SELECT
-            p.id AS id,
             s.id AS submission_id,
-            p.url AS url,
-            COALESCE(s.app_type, p.source_app) AS source_app,
-            COALESCE(s.source_time, p.post_time) AS post_time,
-            p.doc_row_index,
-            p.doc_file_id,
-            p.doc_sheet_id
+            s.original_url AS url,
+            s.app_type AS source_app,
+            s.source_time AS source_time,
+            s.source_locator_json,
+            s.attempts
         FROM crawl_task_submissions s
-        JOIN posts p ON p.url = s.original_url
-        WHERE s.task_type = 'batch_crawl'
+        WHERE s.task_type = %s
           AND s.status IN ('pending', 'failed_retryable')
           AND (s.scheduled_at IS NULL OR s.scheduled_at <= %s)
-          AND COALESCE(s.source_time, p.post_time) <= %s
           AND s.attempts < s.max_attempts
           {check_clause}
-    """
-    legacy_sql = f"""
-        SELECT
-            p.id AS id,
-            NULL AS submission_id,
-            p.url AS url,
-            p.source_app AS source_app,
-            p.post_time AS post_time,
-            p.doc_row_index,
-            p.doc_file_id,
-            p.doc_sheet_id
-        FROM posts p
-        WHERE p.post_time <= %s
-          AND p.batch_status = 'pending'
-          AND p.batch_retries < %s
-          {check_clause}
-          AND NOT EXISTS (
-              SELECT 1
-              FROM crawl_task_submissions s
-              WHERE s.task_type = 'batch_crawl'
-                AND s.original_url = p.url
-          )
-    """
-    sql = f"""
-        SELECT *
-        FROM (
-            {submission_sql}
-            UNION ALL
-            {legacy_sql}
-        ) pending_batch
-        ORDER BY post_time ASC
+        ORDER BY s.source_time ASC
     """
     params: list[Any] = [
+        DETAIL_CRAWL_TASK_TYPE,
         datetime.now(),
-        _batch_cutoff(),
-        _batch_cutoff(),
-        _config().BATCH_MAX_RETRIES,
+        *check_params,
     ]
     if limit and limit > 0:
         sql += " LIMIT %s"
@@ -1316,7 +1234,7 @@ def get_pending_batch_submissions(limit: int | None = None) -> list[dict[str, An
     try:
         with conn.cursor() as cursor:
             cursor.execute(sql, params)
-            return cursor.fetchall()
+            return _submission_task_rows(cursor.fetchall())
     finally:
         conn.close()
 
@@ -1327,21 +1245,7 @@ def _config():
     return Config
 
 
-def _check_cutoff() -> datetime:
-    from datetime import timedelta
-
-    return datetime.now() - timedelta(hours=_config().POST_ELIGIBLE_HOURS)
-
-
-def _batch_cutoff() -> datetime:
-    from datetime import timedelta
-
-    if _config().BATCH_NEXT_DAY_ONLY:
-        return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return datetime.now() - timedelta(hours=_config().POST_ELIGIBLE_HOURS)
-
-
-def record_writeback(writeback: WritebackResult, *, legacy_post_id: int | None = None) -> int:
+def record_writeback(writeback: WritebackResult) -> int:
     from apps.finance_crawler.storage.db import get_conn
 
     conn = get_conn()
@@ -1350,14 +1254,13 @@ def record_writeback(writeback: WritebackResult, *, legacy_post_id: int | None =
             cursor.execute(
                 """
                 INSERT INTO crawl_writebacks
-                    (task_id, result_id, legacy_post_id, sink_type, sink_locator_json,
+                    (task_id, result_id, sink_type, sink_locator_json,
                      status, error, written_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     writeback.task_id,
                     writeback.result_id,
-                    legacy_post_id,
                     writeback.sink_type,
                     _json_dumps(writeback.locator),
                     writeback.status,

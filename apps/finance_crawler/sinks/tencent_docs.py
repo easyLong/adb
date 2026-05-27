@@ -11,7 +11,7 @@ from apps.finance_crawler.integrations.tencent_docs import writeback as tencent_
 
 
 class TencentDocsSink:
-    """Write initial checks and batch crawl results back to Tencent Docs."""
+    """Write initial checks and detail crawl results back to Tencent Docs."""
 
     sink_type = "tencent_docs"
 
@@ -30,8 +30,8 @@ class TencentDocsSink:
     def write_initial_check_results(self, rows: list[dict[str, Any]]) -> None:
         tencent_docs_writeback.write_initial_check_results(rows)
 
-    def write_batch_results(self, rows: list[dict[str, Any]]) -> None:
-        tencent_docs_writeback.write_back_rows(rows)
+    def write_detail_results(self, rows: list[dict[str, Any]]) -> None:
+        tencent_docs_writeback.write_detail_rows(rows)
 
     def write_results(self, results: list[CrawlResult]) -> list[WritebackResult]:
         writebacks: list[dict[str, Any]] = []
@@ -54,7 +54,7 @@ class TencentDocsSink:
                     "row_index": row_index,
                     "read_count": result.metrics.get("read_count"),
                     "comment_count": result.metrics.get("comment_count"),
-                    "batch_status": result.status,
+                    "detail_status": result.status,
                     "screenshot_path": result.screenshot_path,
                 }
             )
@@ -68,7 +68,7 @@ class TencentDocsSink:
             )
 
         if writebacks:
-            self.write_batch_results(writebacks)
+            self.write_detail_results(writebacks)
             for item in output:
                 if item.status == "pending":
                     item.status = "success"
@@ -95,5 +95,5 @@ def write_initial_check_results(rows: list[dict[str, Any]]) -> None:
     _DEFAULT_SINK.write_initial_check_results(rows)
 
 
-def write_back_rows(rows: list[dict[str, Any]]) -> None:
-    _DEFAULT_SINK.write_batch_results(rows)
+def write_detail_results(rows: list[dict[str, Any]]) -> None:
+    _DEFAULT_SINK.write_detail_results(rows)

@@ -48,7 +48,7 @@ class OperationBudget:
         self.consecutive_errors = 0
 
     def limit_items(self, items: Sequence[T]) -> list[T]:
-        limit = Config.MAX_POSTS_PER_RUN
+        limit = Config.MAX_RECORDS_PER_RUN
         if limit and limit > 0:
             return list(items[:limit])
         return list(items)

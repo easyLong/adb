@@ -87,8 +87,6 @@ def is_package_installed(package_name: str, serial: Optional[str] = None) -> boo
 
 
 def load_scheme_cache(cache_path: Path = DEFAULT_CACHE_PATH) -> Dict[str, str]:
-    if not cache_path.exists() and Config.LEGACY_CACHE_FILE.exists():
-        cache_path = Config.LEGACY_CACHE_FILE
     if not cache_path.exists():
         return {}
     try:

@@ -403,8 +403,8 @@ class TenpayCrawlerAdapter:
 
     def capture_plan(self) -> CapturePlan:
         return CapturePlan(
-            max_pages=max(1, min(Config.BATCH_MAX_CAPTURE_PAGES, Config.SCROLL_TIMES + 1)),
-            scroll_wait=Config.BATCH_SCROLL_WAIT,
+            max_pages=max(1, min(Config.DETAIL_MAX_CAPTURE_PAGES, Config.SCROLL_TIMES + 1)),
+            scroll_wait=Config.DETAIL_SCROLL_WAIT,
             enable_ocr=True,
             ocr_min_confidence=Config.OCR_MIN_CONFIDENCE,
             max_detail_scrolls=max(0, min(Config.SCROLL_TIMES, 2)),

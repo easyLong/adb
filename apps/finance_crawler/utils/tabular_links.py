@@ -29,7 +29,7 @@ def _normalize_date_text(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def is_supported_post_url(url: str) -> bool:
+def is_supported_crawl_url(url: str) -> bool:
     parsed = urlparse((url or "").strip())
     if parsed.scheme in {"http", "https"}:
         return bool(parsed.netloc)
@@ -96,7 +96,7 @@ def parse_time_from_cell(value: str) -> tuple[int, int, int] | None:
     return None
 
 
-def parse_post_time(value: str, sheet_title: str = "") -> datetime | None:
+def parse_source_time(value: str, sheet_title: str = "") -> datetime | None:
     sheet_date = parse_sheet_date(sheet_title)
     cell_time = parse_time_from_cell(value)
     if sheet_date and cell_time:
@@ -134,34 +134,34 @@ def eligible_candidates(
     start_row: int,
     sheet_title: str = "",
     *,
-    post_time_col: int = Config.QQ_COL_POST_TIME,
+    source_time_col: int = Config.QQ_COL_POST_TIME,
     url_col: int = Config.QQ_COL_URL,
 ) -> list[dict[str, Any]]:
     now = datetime.now()
-    cutoff = now - timedelta(hours=Config.POST_ELIGIBLE_HOURS)
+    cutoff = now - timedelta(hours=Config.INITIAL_CHECK_DELAY_HOURS)
     candidates: list[dict[str, Any]] = []
 
     for offset, row in enumerate(rows[1:], start=1):
         row_index = start_row + offset + 1
-        if len(row) <= max(url_col, post_time_col):
+        if len(row) <= max(url_col, source_time_col):
             continue
 
         url = row[url_col].strip()
-        post_time = parse_post_time(row[post_time_col], sheet_title)
-        if not url or not post_time:
+        source_time = parse_source_time(row[source_time_col], sheet_title)
+        if not url or not source_time:
             continue
-        if not is_supported_post_url(url):
+        if not is_supported_crawl_url(url):
             continue
-        if post_time > cutoff:
+        if Config.FETCH_ONLY_ELIGIBLE and source_time > cutoff:
             continue
 
         candidates.append(
             {
                 "url": url,
                 "source_app": detect_link_source(url),
-                "post_time": post_time,
+                "source_time": source_time,
                 "row_index": row_index,
-                "age_hours": round((now - post_time).total_seconds() / 3600, 2),
+                "age_hours": round((now - source_time).total_seconds() / 3600, 2),
             }
         )
 
@@ -172,9 +172,9 @@ def save_latest_candidates(candidates: list[dict[str, Any]]) -> None:
     serializable = []
     for item in candidates:
         copied = dict(item)
-        post_time = copied.get("post_time")
-        if hasattr(post_time, "isoformat"):
-            copied["post_time"] = post_time.isoformat(sep=" ")
+        source_time = copied.get("source_time")
+        if hasattr(source_time, "isoformat"):
+            copied["source_time"] = source_time.isoformat(sep=" ")
         serializable.append(copied)
 
     Config.LATEST_CANDIDATES_FILE.write_text(

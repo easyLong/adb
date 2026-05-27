@@ -32,7 +32,7 @@ class ExcelSink:
         self.account_col = Config.QQ_COL_ACCOUNT_NAME if account_col is None else account_col
         self.read_count_col = Config.QQ_COL_READ_COUNT if read_count_col is None else read_count_col
         self.comment_count_col = Config.QQ_COL_COMMENT_COUNT if comment_count_col is None else comment_count_col
-        self.status_col = Config.QQ_COL_BATCH_STATUS if status_col is None else status_col
+        self.status_col = Config.QQ_COL_DETAIL_STATUS if status_col is None else status_col
         self.screenshot_col = Config.QQ_COL_SCREENSHOT if screenshot_col is None else screenshot_col
 
     def write_initial_check_results(self, rows: list[dict[str, Any]]) -> None:
@@ -49,14 +49,14 @@ class ExcelSink:
         finally:
             workbook.close()
 
-    def write_batch_results(self, rows: list[dict[str, Any]]) -> None:
+    def write_detail_results(self, rows: list[dict[str, Any]]) -> None:
         workbook, worksheet = self._open_sheet()
         try:
             for item in rows:
                 row_index = int(item["row_index"])
                 self._set_cell(worksheet, row_index, self.read_count_col, item.get("read_count"))
                 self._set_cell(worksheet, row_index, self.comment_count_col, item.get("comment_count"))
-                self._set_cell(worksheet, row_index, self.status_col, item.get("batch_status"))
+                self._set_cell(worksheet, row_index, self.status_col, _detail_status(item))
                 if self.screenshot_col >= 0 and item.get("screenshot_path"):
                     self._set_cell(worksheet, row_index, self.screenshot_col, item.get("screenshot_path"))
             self._save(workbook)
@@ -83,7 +83,7 @@ class ExcelSink:
                     "row_index": row_index,
                     "read_count": result.metrics.get("read_count"),
                     "comment_count": result.metrics.get("comment_count"),
-                    "batch_status": result.status,
+                    "detail_status": result.status,
                     "screenshot_path": result.screenshot_path,
                 }
             )
@@ -97,7 +97,7 @@ class ExcelSink:
             )
 
         if rows:
-            self.write_batch_results(rows)
+            self.write_detail_results(rows)
             for item in output:
                 if item.status == "pending":
                     item.status = "success"
@@ -124,3 +124,7 @@ class ExcelSink:
         if zero_based_col < 0:
             return
         worksheet.cell(row=row_index, column=zero_based_col + 1).value = value
+
+
+def _detail_status(item: dict[str, Any]) -> Any:
+    return item.get("detail_status")

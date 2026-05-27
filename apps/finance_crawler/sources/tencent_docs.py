@@ -14,7 +14,7 @@ logger = get_logger("tencent_docs_source")
 
 
 class TencentDocsSource:
-    """Read candidate post links from a Tencent Docs sheet."""
+    """Read candidate links from a Tencent Docs sheet."""
 
     source_type = "tencent_docs"
 
@@ -47,7 +47,7 @@ class TencentDocsSource:
                     source_name=self.source_name,
                     url=item["url"],
                     app_type=item.get("source_app"),
-                    post_time=item.get("post_time"),
+                    source_time=item.get("source_time"),
                     locator={
                         "file_id": self.doc.file_id,
                         "sheet_id": self.doc.sheet_id,
@@ -61,7 +61,7 @@ class TencentDocsSource:
 
 def _json_safe_item(item: dict[str, Any]) -> dict[str, Any]:
     copied = dict(item)
-    value = copied.get("post_time")
+    value = copied.get("source_time")
     if hasattr(value, "isoformat"):
-        copied["post_time"] = value.isoformat(sep=" ")
+        copied["source_time"] = value.isoformat(sep=" ")
     return copied

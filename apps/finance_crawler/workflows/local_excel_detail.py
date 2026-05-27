@@ -1,7 +1,7 @@
-"""Direct batch crawl workflow for local Excel workbooks.
+"""Direct detail-crawl workflow for local Excel workbooks.
 
 This mode does not run a separate initial check. It reads links from Excel,
-creates task-center submissions/executions for each row, crawls each post once,
+creates task-center submissions/executions for each row, crawls each link once,
 and writes results back to an output workbook.
 """
 
@@ -26,8 +26,9 @@ from apps.finance_crawler.mobile.crawler import (
     open_url,
     reset_device_session,
     resolve_short_url,
-    scrape_post_content,
+    scrape_record_content,
 )
+from apps.finance_crawler.domain.task_types import DETAIL_CRAWL_TASK_TYPE
 from apps.finance_crawler.storage.framework_db import (
     finish_task_execution,
     start_task_execution,
@@ -38,24 +39,24 @@ from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_d
 from apps.finance_crawler.utils.link_source import detect_link_source
 from apps.finance_crawler.utils.logger import get_logger
 
-logger = get_logger("excel_batch_workflow")
+logger = get_logger("excel_detail_workflow")
 
 _SOURCE_LIMITS = {
-    SOURCE_ALIPAY: Config.EXCEL_BATCH_ALIPAY_LIMIT,
-    SOURCE_ANTFORTUNE: Config.EXCEL_BATCH_ANTFORTUNE_LIMIT,
-    SOURCE_TENPAY: Config.EXCEL_BATCH_TENPAY_LIMIT,
+    SOURCE_ALIPAY: Config.EXCEL_DETAIL_ALIPAY_LIMIT,
+    SOURCE_ANTFORTUNE: Config.EXCEL_DETAIL_ANTFORTUNE_LIMIT,
+    SOURCE_TENPAY: Config.EXCEL_DETAIL_TENPAY_LIMIT,
 }
 
 
 @dataclass(frozen=True)
-class ExcelBatchTarget:
+class ExcelDetailTarget:
     row_index: int
     source_app: str
     url: str
 
 
-def run_local_excel_batch() -> list[dict[str, Any]]:
-    """Run direct batch crawling for a configured local Excel workbook."""
+def run_local_excel_detail() -> list[dict[str, Any]]:
+    """Run direct detail crawling for a configured local Excel workbook."""
 
     start_time = time.time()
     input_path = _input_path()
@@ -74,7 +75,7 @@ def run_local_excel_batch() -> list[dict[str, Any]]:
         _ensure_result_headers(worksheet)
         targets = _pick_targets(worksheet)
         logger.info(
-            "Excel batch started file=%s sheet=%s targets=%s",
+            "Excel detail started file=%s sheet=%s targets=%s",
             output_path,
             worksheet.title,
             len(targets),
@@ -95,7 +96,7 @@ def run_local_excel_batch() -> list[dict[str, Any]]:
         for index, target in enumerate(targets, start=1):
             execution_id = _start_execution_for_target(input_path, output_path, worksheet.title, target)
             if execution_id is None:
-                logger.info("Excel batch skipped by task submission state row=%s", target.row_index)
+                logger.info("Excel detail skipped by task submission state row=%s", target.row_index)
                 continue
             try:
                 item = _crawl_target(index, len(targets), target)
@@ -134,7 +135,7 @@ def run_local_excel_batch() -> list[dict[str, Any]]:
             )
         summary = _summary(results, time.time() - start_time)
         _append_jsonl(result_jsonl_path, {"summary": summary})
-        logger.info("Excel batch finished: %s", summary)
+        logger.info("Excel detail finished: %s", summary)
         print(json.dumps({"summary": summary}, ensure_ascii=True))
         return results
     finally:
@@ -142,23 +143,23 @@ def run_local_excel_batch() -> list[dict[str, Any]]:
 
 
 def _input_path() -> Path:
-    if not Config.EXCEL_BATCH_INPUT_PATH:
-        raise ValueError("EXCEL_BATCH_INPUT_PATH is required for excel-batch")
-    path = Path(Config.EXCEL_BATCH_INPUT_PATH)
+    if not Config.EXCEL_DETAIL_INPUT_PATH:
+        raise ValueError("EXCEL_DETAIL_INPUT_PATH is required for excel-detail")
+    path = Path(Config.EXCEL_DETAIL_INPUT_PATH)
     if not path.exists():
         raise FileNotFoundError(f"Excel file not found: {path}")
     return path
 
 
 def _output_path(input_path: Path) -> Path:
-    if Config.EXCEL_BATCH_OUTPUT_PATH:
-        return Path(Config.EXCEL_BATCH_OUTPUT_PATH)
-    return input_path.with_name(f"{input_path.stem}_batch_output{input_path.suffix}")
+    if Config.EXCEL_DETAIL_OUTPUT_PATH:
+        return Path(Config.EXCEL_DETAIL_OUTPUT_PATH)
+    return input_path.with_name(f"{input_path.stem}_detail_output{input_path.suffix}")
 
 
 def _result_jsonl_path(output_path: Path) -> Path:
-    if Config.EXCEL_BATCH_RESULT_JSONL_PATH:
-        return Path(Config.EXCEL_BATCH_RESULT_JSONL_PATH)
+    if Config.EXCEL_DETAIL_RESULT_JSONL_PATH:
+        return Path(Config.EXCEL_DETAIL_RESULT_JSONL_PATH)
     return output_path.with_name(f"{output_path.stem}_results.jsonl")
 
 
@@ -169,16 +170,16 @@ def _open_workbook(path: Path):
         raise RuntimeError("Missing dependency: pip install openpyxl") from exc
 
     workbook = load_workbook(path)
-    worksheet = workbook[Config.EXCEL_BATCH_SHEET_NAME] if Config.EXCEL_BATCH_SHEET_NAME else workbook.active
+    worksheet = workbook[Config.EXCEL_DETAIL_SHEET_NAME] if Config.EXCEL_DETAIL_SHEET_NAME else workbook.active
     return workbook, worksheet
 
 
-def _pick_targets(worksheet) -> list[ExcelBatchTarget]:
-    targets: list[ExcelBatchTarget] = []
+def _pick_targets(worksheet) -> list[ExcelDetailTarget]:
+    targets: list[ExcelDetailTarget] = []
     source_counts: Counter[str] = Counter()
     source_filter = _source_filter()
     for row_index in range(2, worksheet.max_row + 1):
-        url = _cell_value(worksheet, row_index, Config.EXCEL_BATCH_COL_URL)
+        url = _cell_value(worksheet, row_index, Config.EXCEL_DETAIL_COL_URL)
         if not url:
             continue
         source_app = detect_link_source(url)
@@ -187,21 +188,21 @@ def _pick_targets(worksheet) -> list[ExcelBatchTarget]:
             continue
         if source_filter and source_app not in source_filter:
             continue
-        if Config.EXCEL_BATCH_ONLY_EMPTY and _has_existing_result(worksheet, row_index):
+        if Config.EXCEL_DETAIL_ONLY_EMPTY and _has_existing_result(worksheet, row_index):
             continue
         if _source_limit_reached(source_app, source_counts[source_app]):
             continue
-        if Config.EXCEL_BATCH_LIMIT and len(targets) >= Config.EXCEL_BATCH_LIMIT:
+        if Config.EXCEL_DETAIL_LIMIT and len(targets) >= Config.EXCEL_DETAIL_LIMIT:
             break
         source_counts[source_app] += 1
-        targets.append(ExcelBatchTarget(row_index=row_index, source_app=source_app, url=url))
+        targets.append(ExcelDetailTarget(row_index=row_index, source_app=source_app, url=url))
     return targets
 
 
-def _crawl_target(index: int, total: int, target: ExcelBatchTarget) -> dict[str, Any]:
+def _crawl_target(index: int, total: int, target: ExcelDetailTarget) -> dict[str, Any]:
     started = time.perf_counter()
     logger.info(
-        "[%s/%s] Excel batch source=%s row=%s",
+        "[%s/%s] Excel detail source=%s row=%s",
         index,
         total,
         target.source_app,
@@ -210,12 +211,12 @@ def _crawl_target(index: int, total: int, target: ExcelBatchTarget) -> dict[str,
     result: dict[str, Any]
     try:
         open_url(resolve_short_url(target.url))
-        result = scrape_post_content(target.row_index, source_app=target.source_app)
+        result = scrape_record_content(target.row_index, source_app=target.source_app)
     except DeviceUnavailable:
         reset_device_session()
         raise
     except Exception as exc:
-        logger.exception("Excel batch crawl failed row=%s", target.row_index)
+        logger.exception("Excel detail crawl failed row=%s", target.row_index)
         result = {
             "status": "error",
             "account_name": None,
@@ -252,7 +253,7 @@ def _start_execution_for_target(
     input_path: Path,
     output_path: Path,
     sheet_name: str,
-    target: ExcelBatchTarget,
+    target: ExcelDetailTarget,
 ) -> int | None:
     submission_id = upsert_excel_row_submission(
         path=str(input_path.resolve()),
@@ -261,12 +262,13 @@ def _start_execution_for_target(
         url=target.url,
         source_app=target.source_app,
         output_path=str(output_path.resolve()),
-        task_type="batch_crawl",
+        task_type=DETAIL_CRAWL_TASK_TYPE,
+        max_attempts=Config.DETAIL_MAX_RETRIES,
     )
     try:
-        return start_task_execution(submission_id, worker_id="excel_batch")
+        return start_task_execution(submission_id, worker_id="excel_detail")
     except ValueError as exc:
-        logger.warning("Excel task submission not runnable row=%s: %s", target.row_index, exc)
+        logger.warning("Excel detail task submission not runnable row=%s: %s", target.row_index, exc)
         return None
 
 
@@ -321,7 +323,7 @@ def _execution_metrics(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _error_item(target: ExcelBatchTarget, error: str) -> dict[str, Any]:
+def _error_item(target: ExcelDetailTarget, error: str) -> dict[str, Any]:
     return {
         "row_index": target.row_index,
         "url": target.url,
@@ -342,16 +344,16 @@ def _write_result(worksheet, item: dict[str, Any]) -> None:
     row_index = int(item["row_index"])
     status = item["status"]
     if status == "success":
-        _set_cell(worksheet, row_index, Config.EXCEL_BATCH_COL_ACCOUNT_NAME, item.get("account_name") or "")
-        _set_cell(worksheet, row_index, Config.EXCEL_BATCH_COL_READ_COUNT, item.get("read_count") or 0)
-        _set_cell(worksheet, row_index, Config.EXCEL_BATCH_COL_COMMENT_COUNT, item.get("comment_count") or 0)
+        _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_ACCOUNT_NAME, item.get("account_name") or "")
+        _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_READ_COUNT, item.get("read_count") or 0)
+        _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_COMMENT_COUNT, item.get("comment_count") or 0)
     elif status in {"not_found", "deleted"}:
-        _set_cell(worksheet, row_index, Config.EXCEL_BATCH_COL_ACCOUNT_NAME, "N")
+        _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_ACCOUNT_NAME, "N")
 
-    _set_cell(worksheet, row_index, Config.EXCEL_BATCH_COL_STATUS, status)
-    _set_cell(worksheet, row_index, Config.EXCEL_BATCH_COL_DURATION, item.get("duration"))
-    _set_cell(worksheet, row_index, Config.EXCEL_BATCH_COL_ERROR, item.get("error") or "")
-    _set_cell(worksheet, row_index, Config.EXCEL_BATCH_COL_SOURCE, item.get("source_app") or "")
+    _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_STATUS, status)
+    _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_DURATION, item.get("duration"))
+    _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_ERROR, item.get("error") or "")
+    _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_SOURCE, item.get("source_app") or "")
 
 
 def _summary(results: list[dict[str, Any]], total_duration: float) -> dict[str, Any]:
@@ -378,10 +380,10 @@ def _summary(results: list[dict[str, Any]], total_duration: float) -> dict[str, 
 
 def _has_existing_result(worksheet, row_index: int) -> bool:
     columns = (
-        Config.EXCEL_BATCH_COL_ACCOUNT_NAME,
-        Config.EXCEL_BATCH_COL_READ_COUNT,
-        Config.EXCEL_BATCH_COL_COMMENT_COUNT,
-        Config.EXCEL_BATCH_COL_STATUS,
+        Config.EXCEL_DETAIL_COL_ACCOUNT_NAME,
+        Config.EXCEL_DETAIL_COL_READ_COUNT,
+        Config.EXCEL_DETAIL_COL_COMMENT_COUNT,
+        Config.EXCEL_DETAIL_COL_STATUS,
     )
     return any(_cell_value(worksheet, row_index, column) for column in columns if column >= 0)
 
@@ -392,7 +394,7 @@ def _source_limit_reached(source_app: str, current_count: int) -> bool:
 
 
 def _source_filter() -> set[str]:
-    value = Config.EXCEL_BATCH_SOURCE_FILTER.strip()
+    value = Config.EXCEL_DETAIL_SOURCE_FILTER.strip()
     if not value:
         return set()
     return {item.strip() for item in value.split(",") if item.strip()}
@@ -400,10 +402,10 @@ def _source_filter() -> set[str]:
 
 def _ensure_result_headers(worksheet) -> None:
     headers = {
-        Config.EXCEL_BATCH_COL_STATUS: "测试状态",
-        Config.EXCEL_BATCH_COL_DURATION: "耗时秒",
-        Config.EXCEL_BATCH_COL_ERROR: "错误",
-        Config.EXCEL_BATCH_COL_SOURCE: "链路类型",
+        Config.EXCEL_DETAIL_COL_STATUS: "测试状态",
+        Config.EXCEL_DETAIL_COL_DURATION: "耗时秒",
+        Config.EXCEL_DETAIL_COL_ERROR: "错误",
+        Config.EXCEL_DETAIL_COL_SOURCE: "链路类型",
     }
     for column, value in headers.items():
         if column >= 0 and not _cell_value(worksheet, 1, column):
@@ -411,7 +413,7 @@ def _ensure_result_headers(worksheet) -> None:
 
 
 def _should_save(index: int) -> bool:
-    return index == 1 or index % max(Config.EXCEL_BATCH_SAVE_EVERY, 1) == 0
+    return index == 1 or index % max(Config.EXCEL_DETAIL_SAVE_EVERY, 1) == 0
 
 
 def _valid_account(value: Any) -> bool:

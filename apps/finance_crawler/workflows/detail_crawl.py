@@ -1,4 +1,4 @@
-"""Batch crawl workflow: scrape eligible posts and write business results."""
+"""Detail crawl workflow: scrape eligible records and write business results."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from apps.finance_crawler.mobile.crawler import (
     open_url,
     reset_device_session,
     resolve_short_url,
-    scrape_post_content,
+    scrape_record_content,
 )
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.services.alerts import send_alert
@@ -17,12 +17,10 @@ from apps.finance_crawler.services.report import generate_report
 from apps.finance_crawler.services.writeback import WritebackPlan, default_writeback_service
 from apps.finance_crawler.storage.crawl_repository import (
     PendingWriteback,
-    get_pending_batch_records,
-    mark_writebacks_done,
+    get_pending_detail_records,
     record_crawl_result,
     record_pending_writebacks,
     record_sink_writeback,
-    save_batch_result,
 )
 from apps.finance_crawler.storage.db import (
     log_task,
@@ -31,15 +29,15 @@ from apps.finance_crawler.storage.framework_db import (
     finish_task_execution,
     start_task_execution,
     update_task_execution_writeback,
-    upsert_submission_for_legacy_post,
 )
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.link_source import resolve_source_app
 from apps.finance_crawler.utils.logger import get_logger
 from apps.finance_crawler.utils.rate_limiter import OperationBudget, TaskBudgetExceeded
+from apps.finance_crawler.utils.record_identity import workflow_record_id, workflow_record_url
 from apps.finance_crawler.utils.url_resolver import resolve_urls
 
-logger = get_logger("batch_workflow")
+logger = get_logger("detail_crawl_workflow")
 
 
 def _empty_result(status: str = "error", error: str | None = None) -> dict:
@@ -53,18 +51,18 @@ def _empty_result(status: str = "error", error: str | None = None) -> dict:
     }
 
 
-def run_batch_crawl(limit: int | None = None) -> list[dict]:
+def run_detail_crawl(limit: int | None = None) -> list[dict]:
     start_time = time.time()
-    budget = OperationBudget("batch")
+    budget = OperationBudget("detail_crawl")
     writeback_service = default_writeback_service()
-    task_limit = Config.BATCH_LIMIT if limit is None else limit
-    posts = get_pending_batch_records(task_limit)
-    posts = budget.limit_items(posts)
-    total = len(posts)
-    logger.info("batch started: total=%s limit=%s", total, task_limit)
+    task_limit = Config.DETAIL_LIMIT if limit is None else limit
+    records = get_pending_detail_records(task_limit)
+    records = budget.limit_items(records)
+    total = len(records)
+    logger.info("detail crawl started: total=%s limit=%s", total, task_limit)
 
-    if not posts:
-        log_task("batch", "success", "no pending posts", time.time() - start_time)
+    if not records:
+        log_task("detail_crawl", "success", "no pending records", time.time() - start_time)
         return []
 
     budget.check()
@@ -74,7 +72,7 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
     except DeviceUnavailable as exc:
         reset_device_session()
         send_alert("ADB device unavailable", str(exc), dedupe_key="device_unavailable")
-        log_task("batch", "error", str(exc), time.time() - start_time)
+        log_task("detail_crawl", "error", str(exc), time.time() - start_time)
         raise
 
     writeback_service.load_snapshot(
@@ -87,39 +85,38 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
         warning_dedupe_key="docs_snapshot",
     )
 
-    deep_links = resolve_urls(posts, resolve_short_url, logger)
+    deep_links = resolve_urls(records, resolve_short_url, logger)
     results: list[dict] = []
     writebacks: list[WritebackPlan] = []
     writeback_records: list[PendingWriteback] = []
     writeback_execution_ids: dict[int, int] = {}
     writeback_locators: dict[int, dict] = {}
-    written_post_ids: list[int] = []
     stop_reason: str | None = None
 
-    for idx, post in enumerate(posts, start=1):
+    for idx, record in enumerate(records, start=1):
         try:
             budget.check()
         except TaskBudgetExceeded as exc:
             stop_reason = str(exc)
-            logger.warning("batch stopped by runtime budget: %s", stop_reason)
+            logger.warning("detail crawl stopped by runtime budget: %s", stop_reason)
             break
 
-        post_id = post["id"]
-        url = post["url"]
-        source_app = resolve_source_app(post.get("source_app"), url)
-        execution_id = _start_execution_for_post(post)
+        record_id = workflow_record_id(record)
+        url = workflow_record_url(record)
+        source_app = resolve_source_app(record.get("source_app"), url)
+        execution_id = _start_execution_for_record(record)
         if execution_id is None:
-            logger.info("batch skipped by task submission state id=%s", post_id)
+            logger.info("detail crawl skipped by task submission state id=%s", record_id)
             continue
-        logger.info("[%s/%s] scrape source=%s id=%s", idx, total, source_app, post_id)
+        logger.info("[%s/%s] scrape source=%s id=%s", idx, total, source_app, record_id)
         item_start = time.perf_counter()
         open_duration = 0.0
 
         try:
             open_start = time.perf_counter()
-            open_url(deep_links.get(post_id, url))
+            open_url(deep_links.get(record_id, url))
             open_duration = time.perf_counter() - open_start
-            result = scrape_post_content(post_id, source_app=source_app)
+            result = scrape_record_content(record_id, source_app=source_app)
         except DeviceUnavailable as exc:
             reset_device_session()
             _finish_execution(
@@ -137,21 +134,12 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
             raise
         except Exception as exc:
             result = _empty_result("error", str(exc))
-            logger.exception("scrape failed id=%s", post_id)
+            logger.exception("scrape failed id=%s", record_id)
 
-        save_batch_result(
-            post_id=post_id,
-            status=result["status"],
-            content=result.get("content"),
-            read_count=result.get("read_count") or 0,
-            comment_count=result.get("comment_count") or 0,
-            screenshot_path=result.get("screenshot_path"),
-            error=result.get("error"),
-        )
         budget.record_status(result["status"])
         logger.info(
-            "batch timing id=%s status=%s open=%.2fs scrape_total=%.2fs pages=%s ocr=%s",
-            post_id,
+            "detail crawl timing id=%s status=%s open=%.2fs scrape_total=%.2fs pages=%s ocr=%s",
+            record_id,
             result["status"],
             open_duration,
             time.perf_counter() - item_start,
@@ -160,7 +148,7 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
         )
         scrape_duration = time.perf_counter() - item_start
 
-        writeback_plan = writeback_service.prepare_batch(post=post, result=result)
+        writeback_plan = writeback_service.prepare_detail(record=record, result=result)
         row_index = writeback_plan.row_index
 
         metrics = {
@@ -175,8 +163,8 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
         }
 
         task_id, result_id = record_crawl_result(
-            post=post,
-            workflow="batch_crawl",
+            record=record,
+            workflow="detail_crawl",
             status=result["status"],
             account_name=result.get("account_name"),
             content=result.get("content"),
@@ -187,21 +175,20 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
 
         if writeback_plan.can_write and row_index:
             writebacks.append(writeback_plan)
-            written_post_ids.append(post_id)
-            writeback_execution_ids[post_id] = execution_id
-            writeback_locators[post_id] = writeback_plan.locator
+            writeback_execution_ids[record_id] = execution_id
+            writeback_locators[record_id] = writeback_plan.locator
             writeback_records.append(
                 PendingWriteback(
-                    post_id=post_id,
+                    record_id=record_id,
                     task_id=task_id,
                     result_id=result_id,
                     row_index=row_index,
                 )
             )
         else:
-            logger.warning("skipped %s writeback id=%s: %s", writeback_plan.sink_type, post_id, writeback_plan.skip_reason)
+            logger.warning("skipped %s writeback id=%s: %s", writeback_plan.sink_type, record_id, writeback_plan.skip_reason)
             record_sink_writeback(
-                post_id=post_id,
+                record_id=record_id,
                 sink_type=writeback_plan.sink_type,
                 status="skipped",
                 task_id=task_id,
@@ -225,38 +212,37 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
                 writeback_error=writeback_plan.skip_reason,
             )
 
-        result_with_post = dict(result)
-        result_with_post.update(
-            {"id": post_id, "url": url, "source_app": source_app, "row_index": row_index}
+        result_with_record = dict(result)
+        result_with_record.update(
+            {"record_id": record_id, "url": url, "source_app": source_app, "row_index": row_index}
         )
-        results.append(result_with_post)
+        results.append(result_with_record)
         time.sleep(
             random.uniform(
-                max(Config.BATCH_POST_DELAY_MIN, 0),
-                max(Config.BATCH_POST_DELAY_MAX, Config.BATCH_POST_DELAY_MIN),
+                max(Config.DETAIL_POST_DELAY_MIN, 0),
+                max(Config.DETAIL_POST_DELAY_MAX, Config.DETAIL_POST_DELAY_MIN),
             )
         )
 
     if writebacks:
         try:
-            writeback_service.write_batch_results(writebacks)
-            mark_writebacks_done(written_post_ids)
+            writeback_service.write_detail_results(writebacks)
             record_pending_writebacks(
                 records=writeback_records,
                 sink_type=writeback_service.sink_type,
                 status="success",
             )
-            for post_id in written_post_ids:
-                execution_id = writeback_execution_ids.get(post_id)
+            for record_id in writeback_execution_ids:
+                execution_id = writeback_execution_ids.get(record_id)
                 if execution_id:
                     _update_execution_writeback(
                         execution_id,
                         writeback_status="success",
-                        writeback_locator=writeback_locators.get(post_id),
+                        writeback_locator=writeback_locators.get(record_id),
                     )
         except Exception as exc:
-            send_alert("Tencent Docs batch writeback failed", str(exc), dedupe_key="docs_batch_writeback")
-            logger.warning("batch writeback failed: %s", exc)
+            send_alert("Tencent Docs detail writeback failed", str(exc), dedupe_key="docs_detail_writeback")
+            logger.warning("detail writeback failed: %s", exc)
             record_pending_writebacks(
                 records=writeback_records,
                 sink_type=writeback_service.sink_type,
@@ -280,13 +266,13 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
     )
     if stop_reason:
         msg = f"{msg}, stopped={stop_reason}"
-    logger.info("batch finished: %s", msg)
-    log_task("batch", "success", msg, duration)
+    logger.info("detail crawl finished: %s", msg)
+    log_task("detail_crawl", "success", msg, duration)
 
     if error_count:
-        send_alert("Batch crawl has errors", msg, level="warning", dedupe_key="batch_errors")
+        send_alert("Detail crawl has errors", msg, level="warning", dedupe_key="detail_crawl_errors")
     if stop_reason:
-        send_alert("Batch stopped by budget", stop_reason, level="warning", dedupe_key="batch_budget")
+        send_alert("Detail crawl stopped by budget", stop_reason, level="warning", dedupe_key="detail_crawl_budget")
 
     try:
         generate_report()
@@ -297,12 +283,15 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
     return results
 
 
-def _start_execution_for_post(post: dict) -> int | None:
-    submission_id = post.get("submission_id") or upsert_submission_for_legacy_post(post, task_type="batch_crawl")
+def _start_execution_for_record(record: dict) -> int | None:
+    submission_id = record.get("submission_id")
+    if not submission_id:
+        logger.warning("detail crawl record has no submission_id id=%s", workflow_record_id(record))
+        return None
     try:
-        return start_task_execution(submission_id, worker_id="batch")
+        return start_task_execution(submission_id, worker_id="detail_crawl")
     except ValueError as exc:
-        logger.warning("task submission not runnable post_id=%s: %s", post.get("id"), exc)
+        logger.warning("task submission not runnable record_id=%s: %s", workflow_record_id(record), exc)
         return None
 
 

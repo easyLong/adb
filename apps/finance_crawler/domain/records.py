@@ -16,7 +16,7 @@ class SourceRecord:
     url: str
     source_name: str | None = None
     app_type: str | None = None
-    post_time: datetime | None = None
+    source_time: datetime | None = None
     locator: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
     task_id: int | None = None

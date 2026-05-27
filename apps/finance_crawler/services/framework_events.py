@@ -6,19 +6,19 @@ from typing import Any
 
 from apps.finance_crawler.domain.records import CrawlResult, WritebackResult
 from apps.finance_crawler.storage.framework_db import (
-    get_task_id_by_legacy_post_id,
     insert_crawl_result,
     record_writeback,
 )
 from apps.finance_crawler.utils.link_source import resolve_source_app
 from apps.finance_crawler.utils.logger import get_logger
+from apps.finance_crawler.utils.record_identity import workflow_record_id, workflow_record_url
 
 logger = get_logger("framework_events")
 
 
-def record_crawl_result_for_post(
+def record_crawl_result_for_record(
     *,
-    post: dict[str, Any],
+    record: dict[str, Any],
     workflow: str,
     status: str,
     metrics: dict[str, Any] | None = None,
@@ -27,23 +27,24 @@ def record_crawl_result_for_post(
     screenshot_path: str | None = None,
     error: str | None = None,
 ) -> tuple[int | None, int | None]:
-    """Record a crawl result without allowing framework writes to break legacy flow."""
+    """Record a crawl result without allowing framework writes to break workflow execution."""
 
-    post_id = int(post["id"])
-    source_app = resolve_source_app(post.get("source_app"), post["url"])
+    record_id = workflow_record_id(record)
+    url = workflow_record_url(record)
+    source_app = resolve_source_app(record.get("source_app"), url)
     merged_metrics = {
         "workflow": workflow,
-        "doc_row_index": post.get("doc_row_index"),
+        "doc_row_index": record.get("doc_row_index"),
         "source_app": source_app,
     }
     if metrics:
         merged_metrics.update(metrics)
 
     try:
-        task_id = get_task_id_by_legacy_post_id(post_id)
+        task_id = record.get("task_id")
         result = CrawlResult(
             task_id=task_id,
-            url=post["url"],
+            url=url,
             app_type=source_app,
             status=status,
             account_name=account_name,
@@ -52,16 +53,16 @@ def record_crawl_result_for_post(
             screenshot_path=screenshot_path,
             error=error,
         )
-        result_id = insert_crawl_result(result, legacy_post_id=post_id)
+        result_id = insert_crawl_result(result)
         return task_id, result_id
     except Exception as exc:
-        logger.warning("failed to write crawl_results workflow=%s post_id=%s: %s", workflow, post_id, exc)
+        logger.warning("failed to write crawl_results workflow=%s record_id=%s: %s", workflow, record_id, exc)
         return None, None
 
 
-def record_sink_writeback_for_post(
+def record_sink_writeback_for_record(
     *,
-    post_id: int,
+    record_id: int,
     sink_type: str,
     status: str,
     task_id: int | None = None,
@@ -69,7 +70,7 @@ def record_sink_writeback_for_post(
     locator: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
-    """Record a sink writeback without allowing framework writes to break legacy flow."""
+    """Record a sink writeback without allowing framework writes to break workflow execution."""
 
     try:
         record_writeback(
@@ -80,14 +81,13 @@ def record_sink_writeback_for_post(
                 status=status,
                 locator=locator or {},
                 error=error,
-            ),
-            legacy_post_id=post_id,
+            )
         )
     except Exception as exc:
         logger.warning(
-            "failed to write crawl_writebacks sink=%s post_id=%s status=%s: %s",
+            "failed to write crawl_writebacks sink=%s record_id=%s status=%s: %s",
             sink_type,
-            post_id,
+            record_id,
             status,
             exc,
         )

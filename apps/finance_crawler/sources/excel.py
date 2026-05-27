@@ -11,7 +11,7 @@ from apps.finance_crawler.utils import tabular_links
 
 
 class ExcelSource:
-    """Read candidate post links from a local XLSX sheet."""
+    """Read candidate links from a local XLSX sheet."""
 
     source_type = "excel"
 
@@ -21,14 +21,14 @@ class ExcelSource:
         *,
         sheet_name: str | None = None,
         limit: int | None = None,
-        post_time_col: int | None = None,
+        source_time_col: int | None = None,
         url_col: int | None = None,
         sheet_title: str | None = None,
     ) -> None:
         self.path = Path(path)
         self.sheet_name = sheet_name
         self.limit = Config.FETCH_LIMIT if limit is None else limit
-        self.post_time_col = Config.QQ_COL_POST_TIME if post_time_col is None else post_time_col
+        self.source_time_col = Config.QQ_COL_POST_TIME if source_time_col is None else source_time_col
         self.url_col = Config.QQ_COL_URL if url_col is None else url_col
         self.sheet_title = sheet_title
 
@@ -43,7 +43,7 @@ class ExcelSource:
             rows,
             start_row=0,
             sheet_title=self.sheet_title or title,
-            post_time_col=self.post_time_col,
+            source_time_col=self.source_time_col,
             url_col=self.url_col,
         )
         if self.limit and self.limit > 0:
@@ -61,7 +61,7 @@ class ExcelSource:
                     source_name=self.source_name,
                     url=item["url"],
                     app_type=item.get("source_app"),
-                    post_time=item.get("post_time"),
+                    source_time=item.get("source_time"),
                     locator={
                         "path": str(self.path),
                         "sheet_name": self.sheet_name,
@@ -94,7 +94,7 @@ class ExcelSource:
 
 def _json_safe_item(item: dict[str, Any]) -> dict[str, Any]:
     copied = dict(item)
-    value = copied.get("post_time")
+    value = copied.get("source_time")
     if hasattr(value, "isoformat"):
-        copied["post_time"] = value.isoformat(sep=" ")
+        copied["source_time"] = value.isoformat(sep=" ")
     return copied

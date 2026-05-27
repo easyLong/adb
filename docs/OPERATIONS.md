@@ -1,258 +1,160 @@
 # 运行和排障
 
-## 安装依赖
+## 准备
 
 ```powershell
 pip install -r requirements.txt
+adb devices
 ```
 
-## 环境变量
+`adb devices` 状态必须是 `device`。如果是 `unauthorized`，需要在手机上允许 USB 调试；如果没有设备，检查数据线、驱动、USB 模式和手机解锁状态。
 
-默认运行脚本会从本机读取：
-
-```text
-D:\password\tengxun.txt
-D:\password\mysql.txt
-```
-
-环境变量模板见 [env.example.ps1](env.example.ps1)。
-
-## ADB 检查
+## 常用命令
 
 ```powershell
-.\platform-tools\adb.exe devices
+.\scripts\run.ps1 -Task db
+.\scripts\run.ps1 -Task fetch
+.\scripts\run.ps1 -Task check
+.\scripts\run.ps1 -Task detail
+.\scripts\run.ps1 -Task excel-detail
+.\scripts\run.ps1 -Task report
+.\scripts\run.ps1 -Task scheduler
+.\scripts\run.ps1 -Task supervisor
 ```
 
-正确结果：
-
-```text
-List of devices attached
-XXXXXXXXXXXXX    device
-```
-
-异常结果：
-
-```text
-XXXXXXXXXXXXX    unauthorized
-```
-
-说明手机上还没有点 USB 调试授权。
-
-如果列表为空，优先检查数据线、驱动、USB 模式和手机是否解锁。
-
-## 应用命令
-
-使用统一脚本：
-
-```powershell
-.\scripts\run.ps1 -App finance_crawler -Task db
-.\scripts\run.ps1 -App finance_crawler -Task fetch
-.\scripts\run.ps1 -App finance_crawler -Task check
-.\scripts\run.ps1 -App finance_crawler -Task batch
-.\scripts\run.ps1 -App finance_crawler -Task excel-batch
-.\scripts\run.ps1 -App finance_crawler -Task report
-.\scripts\run.ps1 -App finance_crawler -Task scheduler
-.\scripts\run.ps1 -App finance_crawler -Task supervisor
-```
-
-直接运行模块：
+Python 模块入口：
 
 ```powershell
 python -m apps.finance_crawler.app --once fetch
 python -m apps.finance_crawler.app --once check
-python -m apps.finance_crawler.app --once batch
-python -m apps.finance_crawler.app --once excel-batch
-python -m apps.finance_crawler.app
-python -m apps.finance_crawler.app --supervise
-```
-
-本地 Excel 直接批跑：
-
-```powershell
-$env:EXCEL_BATCH_INPUT_PATH = "D:\demo\5月20日.xlsx"
-$env:EXCEL_BATCH_OUTPUT_PATH = "D:\demo\5月20日_batch_output.xlsx"
-$env:EXCEL_BATCH_SOURCE_FILTER = "alipay,antfortune"
-$env:EXCEL_BATCH_ALIPAY_LIMIT = "50"
-$env:EXCEL_BATCH_ANTFORTUNE_LIMIT = "50"
-$env:EXCEL_BATCH_TENPAY_LIMIT = "0"
-.\scripts\run.ps1 -Task excel-batch
-```
-
-`excel-batch` 不导入 MySQL，也不跑 `check`。它直接读取 Excel 链接、打开 App 抓取，并回填账号、阅读数、评论数、状态、耗时、错误和链路类型。
-
-`excel-batch` 不导入旧 `posts` 业务表，但每一行仍会写入 `crawl_task_submissions`，每一次抓取尝试会写入 `crawl_task_executions`。
-
-## 可靠性配置
-
-生产常驻建议使用 supervisor 模式：
-
-```powershell
-.\scripts\run.ps1 -Task supervisor
-```
-
-该模式会由父进程看护调度器，调度器异常退出后自动重启。任务开始前会检查 ADB 设备；
-设备断开、未授权、离线或多设备未指定 `DEVICE_SERIAL` 时，本轮 `check`/`batch` 会中止并告警，
-不会把每条帖子误记为重试失败。
-
-告警默认写入：
-
-```text
-apps/finance_crawler/logs/alerts.jsonl
-```
-
-配置 `ALERT_WEBHOOK_URL` 后，任务失败、设备断连、写回失败、报告失败、调度器崩溃等事件会同时 POST 到该地址。
-
-可用这些环境变量控制单轮自动化强度：
-
-```powershell
-$env:MAX_POSTS_PER_RUN = "50"
-$env:CRAWL_MAX_TASK_SECONDS = "1800"
-$env:CRAWL_MAX_CONSECUTIVE_ERRORS = "5"
-$env:CRAWL_ACTIVE_START = "08:00"
-$env:CRAWL_ACTIVE_END = "23:00"
-```
-
-写回腾讯文档前会重新读取当前表格快照，用 URL 校验目标行号；若同一 URL 出现多行，会跳过写回以避免写错行。
-批处理写回会合并为 batchUpdate 请求，`TENCENT_DOC_BATCH_UPDATE_SIZE` 控制每次提交的单元格数量。
-
-批处理采集默认先抓首屏；只有阅读数或评论数没有解析出来时才继续滚动，最多抓
-`BATCH_MAX_CAPTURE_PAGES` 屏，默认 3 屏。
-批处理两条之间的等待由 `BATCH_POST_DELAY_MIN` / `BATCH_POST_DELAY_MAX` 单独控制；
-滚动后的等待由 `BATCH_SCROLL_WAIT` 控制。
-
-设备健康检查有短缓存，`DEVICE_HEALTH_CACHE_SECONDS` 默认 8 秒；唤醒和锁屏检测按
-`DEVICE_PREPARE_INTERVAL_SECONDS` 周期执行，避免每条帖子重复跑多次 ADB 检查。
-
-批量写回 O/P/Q 三列会合并成同一行请求，减少 Tencent Docs batchUpdate 的请求数量。
-第一屏截图 `page_000.png` 会写入截图列，默认 R 列：
-
-```powershell
-$env:TENCENT_DOC_COL_SCREENSHOT = "17"
-```
-
-默认会优先调用腾讯文档开放平台上传图片接口，把截图作为文档资源插入到截图列，不需要配置
-`SCREENSHOT_PUBLIC_BASE_URL`。如果上传或插入失败，会自动降级写入本机路径。
-如果已经把 `apps/finance_crawler/captures/` 暴露成可访问的静态文件服务，也可以配置
-`SCREENSHOT_PUBLIC_BASE_URL`，降级写回值会变成在线链接。
-
-```powershell
-$env:TENCENT_DOC_UPLOAD_SCREENSHOTS = "true"
-$env:TENCENT_DOC_IMAGE_INSERT_WIDTH = "160"
-$env:TENCENT_DOC_IMAGE_INSERT_HEIGHT = "300"
-$env:TENCENT_DOC_IMAGE_UPLOAD_DELAY = "0.25"
-```
-
-WebView 包裹内容如果无法从控件树读取，程序会对截图启用 OCR 兜底。先安装 Python 依赖：
-
-```powershell
-pip install -r requirements.txt
-```
-
-OCR 只使用 `rapidocr-onnxruntime`，不需要安装额外的 OCR 主程序或语言包。
-可通过下面的开关控制是否启用截图 OCR：
-
-```powershell
-$env:BATCH_ENABLE_OCR = "true"
+python -m apps.finance_crawler.app --once detail
+python -m apps.finance_crawler.app --once excel-detail
+python -m apps.finance_crawler.app --once report
 ```
 
 ## 推荐测试顺序
 
-1. 初始化数据库：
+1. 初始化数据库。
 
 ```powershell
 .\scripts\run.ps1 -Task db
 ```
 
-2. 拉取腾讯文档候选：
+2. 拉取候选链接。
 
 ```powershell
 .\scripts\run.ps1 -Task fetch
 ```
 
-3. 手机保持解锁，跑初检：
+3. 手机保持解锁，跑初检。
 
 ```powershell
 .\scripts\run.ps1 -Task check
 ```
 
-4. 跑阅读数和评论数：
+4. 跑详情采集。
 
 ```powershell
-.\scripts\run.ps1 -Task batch
+.\scripts\run.ps1 -Task detail
 ```
 
-5. 生成报告：
+5. 生成报告。
 
 ```powershell
 .\scripts\run.ps1 -Task report
 ```
 
+## 本地 Excel 直接详情采集
+
+```powershell
+$env:EXCEL_DETAIL_INPUT_PATH = "D:\demo\input.xlsx"
+$env:EXCEL_DETAIL_OUTPUT_PATH = "D:\demo\output.xlsx"
+$env:EXCEL_DETAIL_SOURCE_FILTER = "alipay,antfortune,tenpay"
+$env:EXCEL_DETAIL_ALIPAY_LIMIT = "50"
+$env:EXCEL_DETAIL_ANTFORTUNE_LIMIT = "50"
+$env:EXCEL_DETAIL_TENPAY_LIMIT = "0"
+.\scripts\run.ps1 -Task excel-detail
+```
+
+## 单链接测试
+
+```powershell
+python .\scripts\crawl_one_link.py "<url>"
+python .\scripts\crawl_one_link.py "<url>" --skip-check
+python .\scripts\crawl_one_link.py "<url>" --record-id 10001
+```
+
+## 常驻运行
+
+生产建议使用 supervisor：
+
+```powershell
+.\scripts\run.ps1 -Task supervisor
+```
+
+supervisor 会看护调度器，异常退出后自动重启。设备断开、未授权、离线或多设备未指定 `DEVICE_SERIAL` 时，本轮 `check` / `detail` 会中止并告警。
+
+## 截图和 OCR
+
+截图优先走：
+
+```powershell
+adb exec-out screencap -p
+```
+
+调试文件：
+
+```text
+apps/finance_crawler/captures/record_<id>_<time>/
+```
+
+常看文件：
+
+| 文件 | 用途 |
+| --- | --- |
+| `page_000.png` | 首屏截图 |
+| `page_000.xml` | UI XML |
+| `ui_records.jsonl` | 控件文本 |
+| `ocr_records.jsonl` | OCR 文本 |
+| `tenpay_trade_*.png/jsonl` | 财付通明细页截图和 OCR |
+
+OCR 开关：
+
+```powershell
+$env:DETAIL_ENABLE_OCR = "true"
+```
+
 ## 常见问题
 
-### 支付宝没有打开详情页
+### App 没有打开详情页
 
-确认：
-
-- 手机未锁屏。
-- ADB 显示 `device`。
-- 手机已安装支付宝；测试蚂蚁财富链路时还需要安装蚂蚁财富。
-- 手动打开分享链接时能进入详情页。
-
-### 蚂蚁财富链接落到了浏览器
-
-常见原因：
-
-- 直接打开了 `https://think.klv5qu.com/...` 外链，系统先分给浏览器。
-- 设备未安装蚂蚁财富。
-- 分享链接参数不完整，无法改写成 `afwealth://platformapi/startapp?...`。
-
-当前程序会自动把 `think.klv5qu.com` 这类分享链接改写成 `afwealth://...` 深链后再打开。
+- 手机保持解锁。
+- `adb devices` 必须是 `device`。
+- 确认目标 App 已安装并登录。
+- 手动打开分享链接确认能进入详情页。
 
 ### 腾讯文档读不到数据
 
-确认：
+- 检查 `TENCENT_DOC_ACCESS_TOKEN` 是否过期。
+- 检查 `TENCENT_DOC_CLIENT_ID`、`TENCENT_DOC_OPEN_ID`。
+- 检查 `TENCENT_DOC_FILE_ID` 和 `TENCENT_DOC_SHEET_ID`。
+- 检查 `TENCENT_DOC_READ_RANGE` 是否覆盖目标行。
 
-- `TENCENT_DOC_ACCESS_TOKEN` 未过期。
-- `TENCENT_DOC_CLIENT_ID`、`TENCENT_DOC_OPEN_ID` 正确。
-- `TENCENT_DOC_FILE_ID` 和 `TENCENT_DOC_SHEET_ID` 对应当前测试文档。
+### 阅读数或评论数不准
 
-### 腾讯文档写回慢
-
-当前策略：
-
-- 初检结果批量写回 L 列。
-- 批处理把 O/P/Q 三列合并成同行 batchUpdate。
-- 首屏截图先上传成腾讯文档资源，再批量插入 R 列。
-- 写回前用 URL 校验当前行号，避免行号漂移写错。
-
-不要整行写回，除非确实需要整行格式。
-
-### 阅读数不准
-
-查看最近一次控件采集文件：
+先看：
 
 ```text
-apps/finance_crawler/captures/post_xxx/ui_records.jsonl
+apps/finance_crawler/captures/record_<id>_<time>/ui_records.jsonl
+apps/finance_crawler/captures/record_<id>_<time>/ocr_records.jsonl
 ```
 
-如果控件树读不到 WebView 内容，再查看 OCR 结果：
-
-```text
-apps/finance_crawler/captures/post_xxx/ocr_records.jsonl
-```
-
-确认阅读数字格式后再调整：
+再调整：
 
 ```text
 apps/finance_crawler/mobile/parsers.py
 ```
 
-重点函数：`parse_numbers_with_presence()`。主帖截图、XML、OCR、滑动采集在 `apps/finance_crawler/mobile/post_capture.py`，设备打开和会话缓存逻辑在 `apps/finance_crawler/mobile/device_session.py`。
+### 财付通明细没抓到
 
-如果是蚂蚁财富帖子，优先确认最近一次采集结果里是否已经进入了帖子详情页，而不是落到浏览器落地页或“该小程序已暂停服务”页。
-
-### 账号提取不准
-
-同样查看 `ui_records.jsonl`。目前规则优先取 `头像` 后面的第一个有效文本。
-
-重点函数：`extract_account_name()`，位置在 `apps/finance_crawler/mobile/parsers.py`。
+检查采集目录里是否有 `tenpay_trade_*` 文件。如果没有，通常是没有识别到“去查看明细/查看明细”；如果有截图但没结果，优先看对应 OCR JSONL。

@@ -13,12 +13,12 @@ from typing import Any
 import schedule
 
 from apps.finance_crawler.config import Config
-from apps.finance_crawler.jobs.batch import run_batch
+from apps.finance_crawler.jobs.detail import run_detail
 from apps.finance_crawler.services.alerts import send_alert
 from apps.finance_crawler.services.report import generate_report
 from apps.finance_crawler.storage.db import init_db, log_task
 from apps.finance_crawler.utils.logger import get_logger
-from apps.finance_crawler.workflows.local_excel_batch import run_local_excel_batch
+from apps.finance_crawler.workflows.local_excel_detail import run_local_excel_detail
 from apps.finance_crawler.workflows.tencent_docs_fetch import fetch_and_save
 
 logger = get_logger("scheduler")
@@ -64,8 +64,8 @@ def _register_jobs() -> None:
         )
         logger.info("registered check every %s minutes", Config.CHECK_INTERVAL_MINUTES)
 
-    schedule.every().day.at(Config.BATCH_TIME).do(safe_run, run_batch, "batch")
-    logger.info("registered batch daily at %s, limit=%s", Config.BATCH_TIME, Config.BATCH_LIMIT)
+    schedule.every().day.at(Config.DETAIL_TIME).do(safe_run, run_detail, "detail_crawl")
+    logger.info("registered detail crawl daily at %s, limit=%s", Config.DETAIL_TIME, Config.DETAIL_LIMIT)
 
     schedule.every().day.at(Config.REPORT_TIME).do(
         safe_run, generate_report, "report"
@@ -135,7 +135,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Finance crawler scheduler")
     parser.add_argument(
         "--once",
-        choices=["db", "fetch", "check", "batch", "excel-batch", "report"],
+        choices=["db", "fetch", "check", "detail", "excel-detail", "report"],
         help="run one task and exit",
     )
     parser.add_argument(
@@ -161,16 +161,16 @@ def main() -> int:
 
         init_db()
         results = safe_run(run_check, "check_once") or []
-        print(f"checked posts: {len(results)}")
+        print(f"checked records: {len(results)}")
         return 0
-    if args.once == "batch":
+    if args.once == "detail":
         init_db()
-        safe_run(run_batch, "batch_once")
+        safe_run(run_detail, "detail_crawl_once")
         return 0
-    if args.once == "excel-batch":
+    if args.once == "excel-detail":
         init_db()
-        results = safe_run(run_local_excel_batch, "excel_batch_once") or []
-        print(f"excel batch rows: {len(results)}")
+        results = safe_run(run_local_excel_detail, "excel_detail_once") or []
+        print(f"excel detail rows: {len(results)}")
         return 0
     if args.once == "report":
         init_db()

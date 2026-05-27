@@ -15,6 +15,7 @@ from apps.finance_crawler.config import Config
 from apps.finance_crawler.sinks.excel import ExcelSink
 from apps.finance_crawler.sinks.tencent_docs import TencentDocsSink
 from apps.finance_crawler.utils.logger import get_logger
+from apps.finance_crawler.utils.record_identity import workflow_record_id, workflow_record_url
 
 logger = get_logger("writeback_service")
 
@@ -42,16 +43,16 @@ class WritebackService(Protocol):
     def load_snapshot(self, *, alert=None, warning_dedupe_key: str | None = None) -> None:
         ...
 
-    def prepare_initial_check(self, *, post: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
+    def prepare_initial_check(self, *, record: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
         ...
 
-    def prepare_batch(self, *, post: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
+    def prepare_detail(self, *, record: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
         ...
 
     def write_initial_check_results(self, plans: list[WritebackPlan]) -> None:
         ...
 
-    def write_batch_results(self, plans: list[WritebackPlan]) -> None:
+    def write_detail_results(self, plans: list[WritebackPlan]) -> None:
         ...
 
 
@@ -77,14 +78,14 @@ class TencentDocsWritebackService:
                 alert(str(exc), warning_dedupe_key)
             logger.warning("failed to load %s row snapshot; writeback will be skipped: %s", self.sink_type, exc)
 
-    def prepare_initial_check(self, *, post: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
+    def prepare_initial_check(self, *, record: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
         if result.get("status") not in {"success", "not_found"}:
             return WritebackPlan(
                 sink_type=self.sink_type,
                 skip_reason=result.get("error") or "technical error skipped writeback",
             )
 
-        row_index = self._resolve_row_index(post)
+        row_index = self._resolve_row_index(record)
         if not row_index:
             return WritebackPlan(sink_type=self.sink_type, skip_reason="row not found")
 
@@ -98,8 +99,8 @@ class TencentDocsWritebackService:
             locator={"row_index": row_index},
         )
 
-    def prepare_batch(self, *, post: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
-        row_index = self._resolve_row_index(post)
+    def prepare_detail(self, *, record: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
+        row_index = self._resolve_row_index(record)
         if not row_index:
             return WritebackPlan(sink_type=self.sink_type, skip_reason="row not found")
 
@@ -109,7 +110,7 @@ class TencentDocsWritebackService:
                 "row_index": row_index,
                 "read_count": result.get("read_count") or 0,
                 "comment_count": result.get("comment_count") or 0,
-                "batch_status": result["status"],
+                "detail_status": result["status"],
                 "screenshot_path": result.get("screenshot_path"),
             },
             locator={"row_index": row_index},
@@ -120,23 +121,23 @@ class TencentDocsWritebackService:
         if rows:
             self.sink.write_initial_check_results(rows)
 
-    def write_batch_results(self, plans: list[WritebackPlan]) -> None:
+    def write_detail_results(self, plans: list[WritebackPlan]) -> None:
         rows = [plan.row for plan in plans if plan.can_write and plan.row]
         if rows:
-            self.sink.write_batch_results(rows)
+            self.sink.write_detail_results(rows)
 
-    def _resolve_row_index(self, post: dict[str, Any]) -> int | None:
+    def _resolve_row_index(self, record: dict[str, Any]) -> int | None:
         if not self.snapshot_available:
             return None
         try:
             return self.sink.resolve_row_index_for_url(
-                post["url"],
-                preferred_row_index=post.get("doc_row_index"),
+                workflow_record_url(record),
+                preferred_row_index=record.get("doc_row_index"),
                 rows=self.rows,
                 start_row=self.start_row,
             )
         except Exception as exc:
-            logger.warning("unsafe %s writeback skipped id=%s: %s", self.sink_type, post.get("id"), exc)
+            logger.warning("unsafe %s writeback skipped id=%s: %s", self.sink_type, workflow_record_id(record), exc)
             return None
 
 
@@ -151,13 +152,13 @@ class ExcelWritebackService:
     def load_snapshot(self, *, alert=None, warning_dedupe_key: str | None = None) -> None:
         return None
 
-    def prepare_initial_check(self, *, post: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
+    def prepare_initial_check(self, *, record: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
         if result.get("status") not in {"success", "not_found"}:
             return WritebackPlan(
                 sink_type=self.sink_type,
                 skip_reason=result.get("error") or "technical error skipped writeback",
             )
-        row_index = self._row_index(post)
+        row_index = self._row_index(record)
         if not row_index:
             return WritebackPlan(sink_type=self.sink_type, skip_reason="row not found")
         return WritebackPlan(
@@ -170,8 +171,8 @@ class ExcelWritebackService:
             locator={"path": str(self.sink.save_as), "row_index": row_index},
         )
 
-    def prepare_batch(self, *, post: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
-        row_index = self._row_index(post)
+    def prepare_detail(self, *, record: dict[str, Any], result: dict[str, Any]) -> WritebackPlan:
+        row_index = self._row_index(record)
         if not row_index:
             return WritebackPlan(sink_type=self.sink_type, skip_reason="row not found")
         return WritebackPlan(
@@ -180,7 +181,7 @@ class ExcelWritebackService:
                 "row_index": row_index,
                 "read_count": result.get("read_count") or 0,
                 "comment_count": result.get("comment_count") or 0,
-                "batch_status": result["status"],
+                "detail_status": result["status"],
                 "screenshot_path": result.get("screenshot_path"),
             },
             locator={"path": str(self.sink.save_as), "row_index": row_index},
@@ -191,14 +192,14 @@ class ExcelWritebackService:
         if rows:
             self.sink.write_initial_check_results(rows)
 
-    def write_batch_results(self, plans: list[WritebackPlan]) -> None:
+    def write_detail_results(self, plans: list[WritebackPlan]) -> None:
         rows = [plan.row for plan in plans if plan.can_write and plan.row]
         if rows:
-            self.sink.write_batch_results(rows)
+            self.sink.write_detail_results(rows)
 
     @staticmethod
-    def _row_index(post: dict[str, Any]) -> int | None:
-        value = post.get("doc_row_index") or post.get("row_index")
+    def _row_index(record: dict[str, Any]) -> int | None:
+        value = record.get("doc_row_index") or record.get("row_index")
         return int(value) if value else None
 
 

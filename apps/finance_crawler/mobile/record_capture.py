@@ -1,4 +1,4 @@
-"""Common post page capture loop driven by an app-specific CapturePlan."""
+"""Common record page capture loop driven by an app-specific CapturePlan."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from apps.finance_crawler.mobile.capture_engine import (
 )
 from apps.finance_crawler.utils.logger import get_logger
 
-logger = get_logger("post_capture")
+logger = get_logger("record_capture")
 
 CountParser = Callable[[list[str]], tuple[int, int, bool, bool]]
 
@@ -37,9 +37,9 @@ def _record_texts(records: list[dict[str, Any]]) -> list[str]:
     return texts
 
 
-def capture_post_pages(
+def capture_record_pages(
     *,
-    post_id: int,
+    record_id: int,
     output_dir: Path,
     app_adapter: AppCrawlerAdapter,
     capture_plan: CapturePlan,
@@ -47,7 +47,7 @@ def capture_post_pages(
     serial: str | None,
     parse_counts: CountParser,
 ) -> dict[str, Any]:
-    """Capture post screenshots/XML/OCR according to the app capture plan."""
+    """Capture screenshots/XML/OCR according to the app capture plan."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     ui_jsonl = output_dir / "ui_records.jsonl"
@@ -117,9 +117,9 @@ def capture_post_pages(
                 read_count, comment_count, read_found, comment_found = parse_counts(all_texts)
 
         logger.info(
-            "post capture source=%s post=%s page=%s/%s ui_new=%s ocr_total=%s read_found=%s comment_found=%s",
+            "record capture source=%s record=%s page=%s/%s ui_new=%s ocr_total=%s read_found=%s comment_found=%s",
             app_adapter.source_app,
-            post_id,
+            record_id,
             page_index + 1,
             max_pages,
             len(new_records),
@@ -132,11 +132,11 @@ def capture_post_pages(
         if page_index >= max_pages - 1:
             break
         if capture_plan.stop_on_repeated_screen and signature in seen_screen_signatures:
-            logger.info("post capture stopped: repeated screen post=%s", post_id)
+            logger.info("record capture stopped: repeated screen record=%s", record_id)
             break
         seen_screen_signatures.add(signature)
         if not scroll_forward(device):
-            logger.info("post capture stopped: no more scrollable content post=%s", post_id)
+            logger.info("record capture stopped: no more scrollable content record=%s", record_id)
             break
         time.sleep(capture_plan.scroll_wait)
 

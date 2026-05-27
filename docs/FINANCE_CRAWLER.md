@@ -1,349 +1,111 @@
-# Finance Crawler 说明
+# 业务流程说明
 
-`apps/finance_crawler` 是当前项目的核心应用，负责采集金融 App 帖子数据。虽然历史上从支付宝链路开始，但现在内部已经支持支付宝、蚂蚁财富、财付通/腾讯理财通三条链路。
+更完整的项目全景见 [PROJECT_FLOW.md](PROJECT_FLOW.md)。本文聚焦业务流程、采集字段、MySQL 表和关键配置。
 
-## 目标
+## 采集目标
 
-当前业务目标是：给定帖子链接，自动打开对应 App 页面，采集“谁在什么时间发帖/买了什么/买了多少/多少人阅读/多少人评论”等信息，并把结果回填到业务表格和数据库。
-
-当前主要字段：
-
-- 发帖账号。
-- 帖子正文。
-- 阅读数。
-- 评论数。
-- 首屏截图。
-- 财付通调仓明细中的买入基金名称和金额。
-- 采集状态和错误信息。
+| 字段 | 来源 |
+| --- | --- |
+| 发帖账号 | App 页面 UI/XML/OCR |
+| 帖子正文 | App 页面 |
+| 阅读数 | App 页面 |
+| 评论数 | App 页面 |
+| 首屏截图 | ADB 截图 |
+| 财付通买入基金名称和金额 | 财付通调仓明细页 |
+| 状态和错误 | workflow、任务执行、写回结果 |
 
 ## 支持链路
 
-| source_app | 典型链接 | 打开方式 | 采集特点 |
+| app_type | 典型链接 | 打开方式 | 专属能力 |
 | --- | --- | --- | --- |
-| `alipay` | `ur.alipay.com`、`alipays://`、`alipay://` | 短链优先解析为支付宝 deep link | 采集账号、正文、阅读数、评论数 |
-| `antfortune` | `think.klv5qu.com`、`afwealth://` | 分享链接直接改写为蚂蚁财富 deep link | 采集账号、正文、阅读数、评论数 |
-| `tenpay` | `www.tencentwm.com`、`tenpay://`、`tencentwm://` | 通过财付通/腾讯理财通包名打开 | 额外进入调仓明细，采集买入基金和金额 |
+| `alipay` | `ur.alipay.com`, `alipays://` | 短链解析或 deep link 打开支付宝 | 账号、正文、阅读、评论 |
+| `antfortune` | `think.klv5qu.com`, `afwealth://` | 分享链接改写为 `afwealth://platformapi/startapp?...` | 账号、正文、阅读、评论 |
+| `tenpay` | `www.tencentwm.com`, `tenpay://` | 指定 `TENPAY_PACKAGE` 打开 | 进入调仓明细，解析买入基金和金额 |
 
-## 业务流程
-
-### 1. Fetch
-
-入口：
-
-```powershell
-.\scripts\run.ps1 -Task fetch
-```
-
-流程：
+## 标准在线流程
 
 ```text
-Tencent Docs
-  -> sources/tencent_docs.py
-  -> utils/tabular_links.py
-  -> storage/db.py
-  -> posts + crawl_tasks
+fetch
+  -> 读取腾讯文档候选链接
+  -> 提交 initial_check / detail_crawl
+
+check
+  -> 执行 initial_check
+  -> 判断帖子存在性
+  -> 提取账号
+  -> 写回账号或 N
+
+detail
+  -> 执行 detail_crawl
+  -> 打开 App
+  -> 截图、XML、OCR、滑动
+  -> 解析正文、阅读、评论、截图和 App 专属指标
+  -> 写回结果
 ```
 
-职责：
-
-- 从腾讯文档读取候选行。
-- 解析发布时间和帖子链接。
-- 根据 `POST_ELIGIBLE_HOURS` 判断是否达到采集延迟。
-- 根据 URL 自动识别 `source_app`。
-- 写入旧业务表 `posts`，同时同步写入框架表 `crawl_tasks`。
-
-### 2. Initial Check
-
-入口：
-
-```powershell
-.\scripts\run.ps1 -Task check
-```
-
-流程：
+## 本地 Excel 流程
 
 ```text
-pending records
-  -> storage/crawl_repository.py
-  -> resolve short/deep link
-  -> ADB open app
-  -> mobile/device_session.py
-  -> mobile/page_status.py
-  -> 检查页面是否存在、提取账号
-  -> posts + crawl_results
-  -> sinks/tencent_docs.py
-```
-
-职责：
-
-- 打开帖子页面。
-- 判断帖子是否存在或已删除。
-- 提取发帖账号。
-- 写回腾讯文档账号列；不存在时写 `N` 并标记。
-
-### 3. Batch Crawl
-
-入口：
-
-```powershell
-.\scripts\run.ps1 -Task batch
-```
-
-流程：
-
-```text
-pending records
-  -> storage/crawl_repository.py
-  -> resolve short/deep link
-  -> ADB open app
-  -> mobile/device_session.py
-  -> mobile/crawler.py
-  -> mobile/post_capture.py
-  -> crawlers/<app>.py adapter
-  -> screenshots/captures
-  -> posts + crawl_results
-  -> sinks/tencent_docs.py
-  -> crawl_writebacks
-```
-
-职责：
-
-- 打开帖子页面。
-- 采集首屏截图、UI XML、OCR 记录。
-- 解析账号、正文、阅读数、评论数。
-- 如果是财付通链路，进入“去查看明细/调仓明细”，解析买入基金名称和金额。
-- 写回腾讯文档阅读数、评论数、状态和截图。
-- 记录 `crawl_results` 和 `crawl_writebacks`。
-
-### 4. Local Excel Direct Batch
-
-入口：
-
-```powershell
-.\scripts\run.ps1 -Task excel-batch
-```
-
-适用场景：
-
-- 本地 Excel 已经给出待抓取链接。
-- 不需要先跑 `check`。
-- 不需要把 Excel 行导入 MySQL。
-- 只需要直接抓取并回填发帖账号、阅读数、评论数。
-
-流程：
-
-```text
-local Excel
-  -> crawl_task_submissions (source_type=excel)
-  -> crawl_task_executions per row
-  -> 自动识别 alipay / antfortune / tenpay
-  -> ADB open app
-  -> mobile/crawler.py
-  -> mobile/post_capture.py
+excel-detail
+  -> 读取本地 Excel 链接
+  -> 直接打开 App 详情页采集
   -> 写回输出 Excel
-  -> 写出 JSONL 明细
+  -> 记录任务提交和执行结果
 ```
 
-默认列约定为 0-based：J=账号，K=链接，L=阅读数，M=评论数；O/R 之后写状态、耗时、错误和链路类型。默认不会覆盖原文件，`EXCEL_BATCH_OUTPUT_PATH` 为空时会生成 `<原文件名>_batch_output.xlsx`。
+## 任务调度
 
-## 腾讯文档列约定
+| task_type | 生成规则 | 默认执行时间 |
+| --- | --- | --- |
+| `initial_check` | 导入时未晚于次日详情采集窗口 | `source_time + INITIAL_CHECK_DELAY_HOURS` |
+| `detail_crawl` | 每条有效链接都会生成 | `source_time` 次日 `DETAIL_TIME` |
 
-列索引均为 0-based，可通过环境变量覆盖。
+## MySQL 表
+
+| 表 | 作用 |
+| --- | --- |
+| `crawl_sources` | 数据源注册，例如腾讯文档、Excel |
+| `crawler_apps` | App 注册，例如 alipay、antfortune、tenpay |
+| `crawl_task_submissions` | 任务提交和总体状态 |
+| `crawl_task_executions` | 每次执行尝试、结果摘要、错误和写回状态 |
+| `crawl_results` | 标准化采集结果，App 专属数据放在 `metrics_json` |
+| `crawl_writebacks` | 写回目标、定位、状态和错误 |
+| `crawl_jobs` | 一次 job 运行记录 |
+| `task_log` | 调度日志 |
+
+## 腾讯文档列
+
+列索引为 0-based，可通过环境变量覆盖。
 
 | 默认列 | 索引 | 配置 | 含义 |
 | --- | --- | --- | --- |
 | J | 9 | `TENCENT_DOC_COL_POST_TIME` | 发帖时间 |
-| L | 11 | `TENCENT_DOC_COL_ACCOUNT_NAME` | 发帖账号/初检结果 |
+| L | 11 | `TENCENT_DOC_COL_ACCOUNT_NAME` | 账号/初检结果 |
 | N | 13 | `TENCENT_DOC_COL_URL` | 帖子链接 |
 | O | 14 | `TENCENT_DOC_COL_READ_COUNT` | 阅读数 |
 | P | 15 | `TENCENT_DOC_COL_COMMENT_COUNT` | 评论数 |
-| Q | 16 | `TENCENT_DOC_COL_BATCH_STATUS` | 批处理状态 |
+| Q | 16 | `TENCENT_DOC_COL_DETAIL_STATUS` | 详情采集状态 |
 | R | 17 | `TENCENT_DOC_COL_SCREENSHOT` | 首屏截图 |
 
-写回前会按 URL 校验当前行号，避免腾讯文档插入/删除行后写错行。若同一个 URL 在表格中出现多次，会跳过不安全写回。
+写回前会用 URL 校验目标行号。同一 URL 出现多行时会跳过写回，避免写错行。
 
-## 手机采集文件
+## 常用配置
 
-全链路调试文件保存在：
-
-```text
-apps/finance_crawler/captures/post_<post_id>_<yyyymmdd_hhmmss>/
-```
-
-常见文件：
-
-| 文件 | 含义 |
+| 配置 | 说明 |
 | --- | --- |
-| `page_000.png` | 第 1 屏截图 |
-| `page_000.xml` | 第 1 屏 UI XML |
-| `ui_records.jsonl` | 从 UI XML 提取的控件记录 |
-| `ocr_records.jsonl` | 从截图 OCR 提取的文字记录 |
-| `tenpay_trade_entry.png` | 财付通明细入口截图 |
-| `tenpay_trade_rebalance_*.png` | 财付通调仓明细截图 |
-| `tenpay_trade_ocr_records.jsonl` | 财付通调仓明细 OCR 记录 |
-
-业务写回用的首屏截图保存在：
-
-```text
-apps/finance_crawler/screenshots/
-```
-
-## 截图实现
-
-当前截图优先走：
-
-```powershell
-adb exec-out screencap -p
-```
-
-这样直接把 PNG 数据从手机标准输出写到 Windows 本地文件，避免先在手机 `/sdcard` 写文件再 `adb pull`，速度更快。
-
-如果 `exec-out` 失败，会降级使用 uiautomator2 的截图能力。
-
-## 财付通专属采集
-
-财付通特殊逻辑集中在：
-
-```text
-apps/finance_crawler/crawlers/tenpay.py
-```
-
-它不会污染通用采集流程。主要步骤：
-
-1. 判断当前页面是否是腾讯理财通帖子。
-2. 查找并点击“去查看明细/查看明细”。
-3. 打开“调仓明细”。
-4. 对明细页截图和 OCR。
-5. 解析买入基金名称、日期、金额。
-6. 将结果写入 `app_metrics`，例如 `tenpay_trade_details`、`tenpay_summary`。
-
-## App 采集策略
-
-不同 App 的页面结构、截图数量、OCR 需要和点击路径可能不同。当前通过 `CapturePlan` 和 `AppCrawlerAdapter` 解耦：
-
-| 能力 | 归属 | 说明 |
-| --- | --- | --- |
-| 链接识别、包名、deep link 改写 | `AppLinkProfile` | 判断链接属于哪个 App，以及怎么打开 |
-| 主帖截几屏、是否 OCR、滑动等待、停止条件 | `CapturePlan` | 每个 App 可以声明自己的采集策略 |
-| 采集前点击、明细页进入、特殊字段解析 | `AppCrawlerAdapter` | 例如财付通进入调仓明细 |
-| 截图、XML、OCR 文件落盘 | `mobile/post_capture.py` | 只执行策略，不写 App 特殊分支 |
-
-因此新增 App 时，优先新增 `crawlers/<app>.py`，而不是修改手机采集主循环。
-
-## 关键配置
-
-采集控制：
-
-| 配置 | 默认 | 含义 |
-| --- | --- | --- |
-| `SCROLL_TIMES` | `2` | 普通采集滑动次数 |
-| `BATCH_MAX_CAPTURE_PAGES` | `3` | 批处理最多采集屏数 |
-| `BATCH_ENABLE_OCR` | `true` | 是否启用 OCR |
-| `OCR_MIN_CONFIDENCE` | `30.0` | OCR 最低置信度 |
-| `PAGE_LOAD_WAIT` | `3.0` | 打开页面后的等待秒数 |
-| `BATCH_SCROLL_WAIT` | `0.8` | 滑动后的等待秒数 |
-
-设备配置：
-
-| 配置 | 含义 |
-| --- | --- |
-| `ADB_PATH` | adb 可执行文件路径 |
-| `DEVICE_SERIAL` | 多设备时指定设备序列号 |
-| `TENPAY_PACKAGE` | 财付通/腾讯理财通包名，默认 `com.tencent.fortuneplat` |
-
-调度配置：
-
-| 配置 | 默认 | 含义 |
-| --- | --- | --- |
-| `FETCH_INTERVAL_MINUTES` | `5` | 拉取腾讯文档间隔 |
-| `CHECK_INTERVAL_MINUTES` | `10` | 初检间隔 |
-| `BATCH_TIME` | `10:00` | 每日批处理时间 |
-| `REPORT_TIME` | `11:30` | 每日报告时间 |
-| `FETCH_LIMIT` | `10` | 单次 fetch 导入数量，0 表示全部 |
-| `BATCH_LIMIT` | `0` | 单次 batch 数量，0 表示全部 |
-| `USE_TASK_SUBMISSIONS_FOR_BATCH` | `true` | batch 优先从 `crawl_task_submissions` 取任务，支持改状态重跑；缺少 submission 的历史 `posts` 会兜底补跑 |
-| `WRITEBACK_SINK_TYPE` | `tencent_docs` | 默认写回目标服务 |
-| `WRITEBACK_EXCEL_PATH` | 空 | `WRITEBACK_SINK_TYPE=excel` 时的本地 Excel 路径 |
-| `WRITEBACK_EXCEL_SAVE_AS` | 空 | Excel 写回另存路径，空则覆盖原文件 |
-| `WRITEBACK_EXCEL_SHEET_NAME` | 空 | Excel 工作表名，空则使用活动工作表 |
-| `EXCEL_BATCH_INPUT_PATH` | 空 | `excel-batch` 直接批跑的输入 Excel |
-| `EXCEL_BATCH_OUTPUT_PATH` | 空 | `excel-batch` 输出 Excel；空则生成 `_batch_output.xlsx` |
-| `EXCEL_BATCH_RESULT_JSONL_PATH` | 空 | `excel-batch` 每条结果明细；空则随输出 Excel 生成 |
-| `EXCEL_BATCH_SOURCE_FILTER` | 空 | 只跑指定来源，逗号分隔，如 `alipay,antfortune`；空表示全部 |
-| `EXCEL_BATCH_ALIPAY_LIMIT` | `0` | 本轮支付宝链路数量，0 表示不限制 |
-| `EXCEL_BATCH_ANTFORTUNE_LIMIT` | `0` | 本轮蚂蚁财富链路数量，0 表示不限制 |
-| `EXCEL_BATCH_TENPAY_LIMIT` | `0` | 本轮财付通链路数量，0 表示不限制 |
-| `EXCEL_BATCH_ONLY_EMPTY` | `true` | 只处理账号/阅读/评论/状态均为空的行 |
-
-## 模块职责速查
-
-| 模块 | 职责 |
-| --- | --- |
-| `app.py` | 调度入口，支持 `--once`、常驻调度、supervisor |
-| `config.py` | 环境变量和默认配置 |
-| `domain/records.py` | 通用输入、输出、写回结果对象 |
-| `domain/interfaces.py` | LinkSource、AppCrawler、ResultSink 协议 |
-| `crawlers/base.py` | App Profile / Adapter 抽象 |
-| `crawlers/registry.py` | App Profile / Adapter 注册中心 |
-| `mobile/capture_engine.py` | ADB、deep link、截图、XML、OCR |
-| `mobile/device_session.py` | 设备连接缓存、唤醒/锁屏检查、链接打开 |
-| `mobile/page_status.py` | 通用页面可用/删除/错误状态判断 |
-| `mobile/crawler.py` | 通用页面状态、Adapter 调度、结果拼装 |
-| `mobile/post_capture.py` | 按 `CapturePlan` 执行截图、XML、OCR、滑动采集 |
-| `mobile/parsers.py` | 通用金融社区帖子账号、正文、阅读数、评论数解析 |
-| `sources/tencent_docs.py` | 腾讯文档数据源 |
-| `sources/excel.py` | 本地 Excel 数据源 |
-| `sinks/tencent_docs.py` | 腾讯文档结果写回适配 |
-| `sinks/excel.py` | 本地 Excel 结果写回适配 |
-| `integrations/tencent_docs/client.py` | 腾讯文档 OpenAPI client |
-| `integrations/tencent_docs/rows.py` | 腾讯文档行号定位 |
-| `integrations/tencent_docs/write_requests.py` | 腾讯文档 request 构造 |
-| `integrations/tencent_docs/screenshots.py` | 腾讯文档截图上传和降级 |
-| `integrations/tencent_docs/writeback.py` | 腾讯文档批量写回编排 |
-| `services/writeback.py` | workflow 面向的写回服务和 sink 工厂，当前支持 `tencent_docs` 和 `excel` |
-| `workflows/tencent_docs_fetch.py` | 数据源导入 workflow |
-| `workflows/initial_check.py` | 初检 workflow |
-| `workflows/batch_crawl.py` | 批量采集 workflow |
-| `storage/crawl_repository.py` | workflow 面向的采集任务、结果、写回记录仓储边界 |
-| `storage/db.py` | `posts` 兼容业务表读写 |
-| `storage/framework_db.py` | `crawl_*` 框架表读写 |
-| `services/framework_events.py` | 尽力记录 `crawl_results` 和 `crawl_writebacks` |
-
-## 单链接测试
-
-```powershell
-python .\scripts\crawl_one_link.py "帖子链接"
-```
-
-跳过初检，直接批量采集：
-
-```powershell
-python .\scripts\crawl_one_link.py --skip-check "帖子链接"
-```
-
-## 新增链路建议
-
-新增 App 链路只改 `crawlers/`，不要改 `mobile/crawler.py` 的通用流程。
-
-新增数据源只改 `sources/`，不要让 App 采集层知道数据来自腾讯文档还是 Excel。
-
-新增写回目标优先改 `sinks/`、`integrations/` 和 `services/writeback.py` 的服务工厂，不要让 workflow 直接拼第三方 API 请求或处理行号定位。
-
-`check` / `batch` 默认仍走 `posts` 兼容表，但 workflow 已经通过 `storage/crawl_repository.py` 访问任务、结果保存和写回记录入口。需要灰度验证框架表主路径时，可以打开 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS=true`，让待处理查询改用 `crawl_tasks` / `crawl_results`。
-
-## MySQL 表使用现状
-
-当前仍在使用老表，`posts` 还没有退场：
-
-| 表 | 作用 |
-| --- | --- |
-| `posts` | 默认主业务表，保存帖子链接、来源 App、发帖时间、腾讯文档行号、初检/批量状态、账号、正文、阅读数、评论数、截图路径和写回状态。 |
-| `task_log` | 调度任务日志表，记录 fetch/check/batch/report 的状态、摘要、耗时和错误。 |
-| `crawl_sources` | 通用数据源注册表，记录腾讯文档、manual，未来可扩展 Excel/API。 |
-| `crawler_apps` | App 注册表，记录支付宝、蚂蚁财富、财付通/腾讯理财通等 App 类型、展示名和包名。 |
-| `crawl_tasks` | 通用采集任务表，导入链接时与 `posts` 双写，保存来源定位、App 类型、原始 URL、发帖时间和任务状态。 |
-| `crawl_results` | 通用采集结果表，记录初检和批量采集结果，App 专属指标放在 `metrics_json`。 |
-| `crawl_writebacks` | 写回结果表，记录写回腾讯文档/Excel 等目标的状态、定位和错误。 |
-| `crawl_jobs` | 通用 job 表，已建表，设计用于记录一次任务运行，目前主流程使用较少。 |
-
-默认运行链路仍是 `posts` 主路径，同时同步记录 `crawl_tasks`、`crawl_results`、`crawl_writebacks`，后续再逐步迁移。
+| `FETCH_INTERVAL_MINUTES` | 拉取数据源间隔 |
+| `CHECK_INTERVAL_MINUTES` | 初检间隔 |
+| `INITIAL_CHECK_DELAY_HOURS` | 初检相对 `source_time` 的延迟小时数 |
+| `DETAIL_TIME` | 每日详情采集时间 |
+| `FETCH_LIMIT` | 单次 fetch 数量 |
+| `CHECK_LIMIT` | 单次初检任务数量 |
+| `DETAIL_LIMIT` | 单次详情采集数量，0 表示不限制 |
+| `DETAIL_MAX_RETRIES` | 详情任务最大执行次数 |
+| `DETAIL_MAX_CAPTURE_PAGES` | 详情采集最多主帖截图页数 |
+| `DETAIL_ENABLE_OCR` | 是否启用 OCR |
+| `DETAIL_REQUIRES_CHECK_SUCCESS` | 详情采集是否等待初检成功 |
+| `MAX_RECORDS_PER_RUN` | 单次任务最多处理记录数，0 表示不限制 |
+| `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 输入文件 |
+| `EXCEL_DETAIL_OUTPUT_PATH` | 本地 Excel 输出文件 |
+| `WRITEBACK_SINK_TYPE` | 写回目标，支持 `tencent_docs`、`excel` |
+| `TENPAY_PACKAGE` | 财付通/腾讯理财通包名 |
