@@ -10,6 +10,13 @@ from apps.finance_crawler.utils.logger import get_logger
 
 logger = get_logger("tencent_docs_writeback")
 
+_HIGHLIGHT_YELLOW = {"red": 255, "green": 255, "blue": 0, "alpha": 255}
+_RED_BOLD = {
+    "bold": True,
+    "color": {"red": 255, "green": 0, "blue": 0, "alpha": 255},
+}
+_MISSING_CONTENT_STATUSES = {"deleted", "not_found"}
+
 
 def _detail_status(item: dict[str, Any]) -> Any:
     return item.get("detail_status")
@@ -21,8 +28,11 @@ def write_detail_rows(rows: list[dict[str, Any]]) -> None:
     for item in rows:
         row_index = int(item["row_index"])
         screenshot_path = item.get("screenshot_path")
-        should_upload_screenshot = write_requests.can_upload_screenshot(screenshot_path)
         detail_status = _detail_status(item)
+        if detail_status in _MISSING_CONTENT_STATUSES and Config.QQ_COL_ACCOUNT_NAME >= 0:
+            requests_payload.append(_missing_content_account_request(row_index))
+
+        should_upload_screenshot = write_requests.can_upload_screenshot(screenshot_path)
         has_detail_row = (
             item.get("read_count") is not None
             and item.get("comment_count") is not None
@@ -72,11 +82,6 @@ def write_detail_rows(rows: list[dict[str, Any]]) -> None:
 
 def write_initial_check_results(rows: list[dict[str, Any]]) -> None:
     requests_payload: list[dict[str, Any]] = []
-    yellow = {"red": 255, "green": 255, "blue": 0, "alpha": 255}
-    red_bold = {
-        "bold": True,
-        "color": {"red": 255, "green": 0, "blue": 0, "alpha": 255},
-    }
 
     for item in rows:
         row_index = int(item["row_index"])
@@ -86,15 +91,7 @@ def write_initial_check_results(rows: list[dict[str, Any]]) -> None:
                 write_requests.cell_request(row_index, Config.QQ_COL_ACCOUNT_NAME, item.get("account_name") or "")
             )
         else:
-            requests_payload.append(
-                write_requests.cell_request(
-                    row_index,
-                    Config.QQ_COL_ACCOUNT_NAME,
-                    "N",
-                    background_color=yellow,
-                    text_format=red_bold,
-                )
-            )
+            requests_payload.append(_missing_content_account_request(row_index))
 
     client.post_batch_update(requests_payload, "initial_check")
 
@@ -106,4 +103,14 @@ def write_initial_check_result(
 ) -> None:
     write_initial_check_results(
         [{"row_index": row_index, "exists": exists, "account_name": account_name}]
+    )
+
+
+def _missing_content_account_request(row_index: int) -> dict[str, Any]:
+    return write_requests.cell_request(
+        row_index,
+        Config.QQ_COL_ACCOUNT_NAME,
+        "N",
+        background_color=_HIGHLIGHT_YELLOW,
+        text_format=_RED_BOLD,
     )
