@@ -8,6 +8,7 @@
 
 - 支持 `alipay`、`antfortune`、`tenpay` 三类 App 链路识别和打开。
 - 支持腾讯文档作为数据源，读取帖子链接和发布时间。
+- 支持本地 Excel 作为可替换的数据源/写回目标适配器。
 - 支持初检帖子是否存在，并提取发帖账号。
 - 支持批量采集账号、正文、阅读数、评论数、截图。
 - 财付通链路支持进入“去查看明细/调仓明细”，提取买入基金名称和金额。
@@ -33,8 +34,9 @@ config.py                   环境变量和默认配置
 domain/                     通用记录对象和 source/crawler/sink 接口
 crawlers/                   App Profile 和 App 专属 Adapter
 mobile/                     ADB、uiautomator2、截图、XML、OCR、通用解析
+mobile/parsers.py           通用金融社区帖子解析规则
 sources/                    数据源适配，例如腾讯文档
-sinks/                      结果写回适配，例如腾讯文档
+sinks/                      结果写回适配，例如腾讯文档、本地 Excel
 workflows/                  fetch/check/batch 等业务编排
 integrations/               腾讯文档等外部系统底层 API
 storage/                    MySQL 访问和框架表写入
@@ -129,6 +131,7 @@ Windows 负责调度、读写腾讯文档、读写 MySQL、解析链接、发 AD
 - `FETCH_LIMIT` / `BATCH_LIMIT`
 - `SCROLL_TIMES` / `BATCH_MAX_CAPTURE_PAGES`
 - `TENPAY_PACKAGE`
+- `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS`
 
 默认 MySQL 库名仍是 `alipay_crawler`，这是为了兼容历史本地数据；应用目录已经改为 `finance_crawler`。
 
@@ -144,6 +147,6 @@ Windows 负责调度、读写腾讯文档、读写 MySQL、解析链接、发 AD
 
 新增 App 优先新增 `apps/finance_crawler/crawlers/<app>.py`，在 `crawlers/registry.py` 注册 Profile/Adapter，不要把 App 特例写进通用采集流程。
 
-新增数据源优先新增 `sources/<source>.py`，复用 `domain.SourceRecord` 和 `utils/tabular_links.py`。
+新增数据源优先新增 `sources/<source>.py`，复用 `domain.SourceRecord` 和 `utils/tabular_links.py`；当前已提供 `sources/excel.py` 作为本地 Excel 示例。
 
-新增写回目标优先新增 `sinks/<sink>.py` 和必要的 `integrations/<sink>/` 底层客户端，不要让 workflow 直接调用第三方 API。
+新增写回目标优先新增 `sinks/<sink>.py` 和必要的 `integrations/<sink>/` 底层客户端，不要让 workflow 直接调用第三方 API；当前已提供 `sinks/excel.py` 作为本地 Excel 示例。

@@ -133,6 +133,9 @@ def eligible_candidates(
     rows: list[list[str]],
     start_row: int,
     sheet_title: str = "",
+    *,
+    post_time_col: int = Config.QQ_COL_POST_TIME,
+    url_col: int = Config.QQ_COL_URL,
 ) -> list[dict[str, Any]]:
     now = datetime.now()
     cutoff = now - timedelta(hours=Config.POST_ELIGIBLE_HOURS)
@@ -140,11 +143,11 @@ def eligible_candidates(
 
     for offset, row in enumerate(rows[1:], start=1):
         row_index = start_row + offset + 1
-        if len(row) <= max(Config.QQ_COL_URL, Config.QQ_COL_POST_TIME):
+        if len(row) <= max(url_col, post_time_col):
             continue
 
-        url = row[Config.QQ_COL_URL].strip()
-        post_time = parse_post_time(row[Config.QQ_COL_POST_TIME], sheet_title)
+        url = row[url_col].strip()
+        post_time = parse_post_time(row[post_time_col], sheet_title)
         if not url or not post_time:
             continue
         if not is_supported_post_url(url):

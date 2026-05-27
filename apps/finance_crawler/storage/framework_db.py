@@ -121,6 +121,7 @@ def ensure_framework_tables(cursor) -> None:
             legacy_post_id INT NULL,
             app_type VARCHAR(64) NOT NULL,
             url VARCHAR(1000) NOT NULL,
+            workflow VARCHAR(64) NULL,
             status VARCHAR(32) NOT NULL,
             account_name VARCHAR(255) NULL,
             content MEDIUMTEXT NULL,
@@ -132,6 +133,7 @@ def ensure_framework_tables(cursor) -> None:
             INDEX idx_result_task (task_id),
             INDEX idx_result_legacy_post (legacy_post_id),
             INDEX idx_result_app (app_type),
+            INDEX idx_result_workflow (workflow),
             INDEX idx_result_status (status),
             INDEX idx_result_url (url(191)),
             INDEX idx_crawled_at (crawled_at)
@@ -382,21 +384,23 @@ def insert_crawl_result(
 ) -> int:
     from apps.finance_crawler.storage.db import get_conn
 
+    workflow = result.metrics.get("workflow") if result.metrics else None
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO crawl_results
-                    (task_id, legacy_post_id, app_type, url, status, account_name,
+                    (task_id, legacy_post_id, app_type, url, workflow, status, account_name,
                      content, metrics_json, screenshot_path, error, crawled_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     task_id or result.task_id,
                     legacy_post_id,
                     result.app_type,
                     result.url,
+                    workflow,
                     result.status,
                     result.account_name,
                     result.content,
@@ -414,6 +418,121 @@ def insert_crawl_result(
         raise
     finally:
         conn.close()
+
+
+def get_pending_check_tasks(limit: int) -> list[dict[str, Any]]:
+    """Return task-shaped rows that can replace the legacy posts check query."""
+    from apps.finance_crawler.storage.db import get_conn
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    t.legacy_post_id AS id,
+                    t.id AS task_id,
+                    t.original_url AS url,
+                    t.app_type AS source_app,
+                    t.source_time AS post_time,
+                    p.doc_row_index,
+                    COALESCE(p.check_retries, t.attempts, 0) AS check_retries
+                FROM crawl_tasks t
+                LEFT JOIN posts p ON p.id = t.legacy_post_id
+                WHERE t.status = 'pending'
+                  AND t.legacy_post_id IS NOT NULL
+                  AND COALESCE(p.check_status, 'pending') = 'pending'
+                  AND COALESCE(p.check_retries, t.attempts, 0) < %s
+                  AND t.source_time <= %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM crawl_results r
+                      WHERE r.task_id = t.id
+                        AND r.workflow = 'initial_check'
+                        AND r.status IN ('success', 'not_found')
+                  )
+                ORDER BY t.source_time ASC
+                LIMIT %s
+                """,
+                (_config().CHECK_MAX_RETRIES, _check_cutoff(), limit),
+            )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def get_pending_batch_tasks(limit: int | None = None) -> list[dict[str, Any]]:
+    """Return task-shaped rows that can replace the legacy posts batch query."""
+    from apps.finance_crawler.storage.db import get_conn
+
+    sql = """
+        SELECT
+            t.legacy_post_id AS id,
+            t.id AS task_id,
+            t.original_url AS url,
+            t.app_type AS source_app,
+            t.source_time AS post_time,
+            p.doc_row_index
+        FROM crawl_tasks t
+        LEFT JOIN posts p ON p.id = t.legacy_post_id
+        WHERE t.status = 'pending'
+          AND t.legacy_post_id IS NOT NULL
+          AND t.source_time <= %s
+          AND COALESCE(p.batch_status, 'pending') = 'pending'
+          AND COALESCE(p.batch_retries, t.attempts, 0) < %s
+    """
+    params: list[Any] = [_batch_cutoff(), _config().BATCH_MAX_RETRIES]
+    if _config().BATCH_REQUIRES_CHECK_SUCCESS:
+        sql += """
+          AND EXISTS (
+              SELECT 1
+              FROM crawl_results r
+              WHERE r.task_id = t.id
+                AND r.workflow = 'initial_check'
+                AND r.status = 'success'
+          )
+        """
+    sql += """
+          AND NOT EXISTS (
+              SELECT 1
+              FROM crawl_results r
+              WHERE r.task_id = t.id
+                AND r.workflow = 'batch_crawl'
+                AND r.status IN ('success', 'deleted')
+          )
+        ORDER BY t.source_time ASC
+    """
+    if limit and limit > 0:
+        sql += " LIMIT %s"
+        params.append(limit)
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def _config():
+    from apps.finance_crawler.config import Config
+
+    return Config
+
+
+def _check_cutoff() -> datetime:
+    from datetime import timedelta
+
+    return datetime.now() - timedelta(hours=_config().POST_ELIGIBLE_HOURS)
+
+
+def _batch_cutoff() -> datetime:
+    from datetime import timedelta
+
+    if _config().BATCH_NEXT_DAY_ONLY:
+        return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return datetime.now() - timedelta(hours=_config().POST_ELIGIBLE_HOURS)
 
 
 def record_writeback(writeback: WritebackResult, *, legacy_post_id: int | None = None) -> int:

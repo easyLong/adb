@@ -103,14 +103,17 @@ App 链路分发
 - 腾讯文档单元格更新、截图链接、截图图片插入 request 构造抽到 `integrations/tencent_docs/write_requests.py`。
 - 腾讯文档行号定位抽到 `integrations/tencent_docs/rows.py`，source/sink 不再依赖旧 `qq_docs.py` 门面。
 - 腾讯文档截图上传/降级路径抽到 `integrations/tencent_docs/screenshots.py`，批量写回编排抽到 `integrations/tencent_docs/writeback.py`。
+- 新增 `sources/excel.py` 和 `sinks/excel.py`，开始验证腾讯文档可以被本地 Excel 替换。
+- 新增 `mobile/parsers.py`，把通用金融社区帖子账号、正文、阅读数、评论数解析规则从手机采集流程中拆出。
+- `crawl_results` 增加 `workflow` 字段，并新增基于 `crawl_tasks` / `crawl_results` 的可选待处理查询路径。
 - `crawler_apps` 框架表从 App Profile 自动同步，不再在 DB 层硬编码。
 - `source_app='unknown'` 会按 URL 重新识别，避免历史 unknown 数据走错链路。
 - 截图优先使用 `adb exec-out screencap -p`，避免 `adb shell screencap + pull` 的慢路径。
 
 ## 后续优化顺序
 
-1. 新增本地 Excel Source/Sink：复用 `utils/tabular_links.py`，验证数据源替换不影响 App 抓取。
-2. 把业务查询逐步从 `posts` 迁移到 `crawl_tasks` / `crawl_results`，降低兼容表负担。
-3. 给 App Adapter 增加轻量单元测试，尤其是财付通 OCR 明细解析。
+1. 把 Excel Source/Sink 接入独立 workflow 或命令行，形成完整 Excel 全链路。
+2. 灰度打开 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS`，把业务查询逐步从 `posts` 迁移到 `crawl_tasks` / `crawl_results`。
+3. 给 App Adapter 和 `mobile/parsers.py` 增加轻量单元测试，尤其是财付通 OCR 明细解析。
 4. 把真实手机链路测试整理成固定脚本，覆盖支付宝、蚂蚁财富、财付通各 1 条样例。
 5. 继续压缩 `integrations/qq_docs.py`，只保留确实需要对外兼容的旧函数。

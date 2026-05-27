@@ -225,8 +225,11 @@ apps/finance_crawler/crawlers/tenpay.py
 | `crawlers/registry.py` | App Profile / Adapter 注册中心 |
 | `mobile/capture_engine.py` | ADB、deep link、截图、XML、OCR |
 | `mobile/crawler.py` | 通用页面状态、账号/阅读/评论解析、Adapter 调度 |
+| `mobile/parsers.py` | 通用金融社区帖子账号、正文、阅读数、评论数解析 |
 | `sources/tencent_docs.py` | 腾讯文档数据源 |
+| `sources/excel.py` | 本地 Excel 数据源 |
 | `sinks/tencent_docs.py` | 腾讯文档结果写回适配 |
+| `sinks/excel.py` | 本地 Excel 结果写回适配 |
 | `integrations/tencent_docs/client.py` | 腾讯文档 OpenAPI client |
 | `integrations/tencent_docs/rows.py` | 腾讯文档行号定位 |
 | `integrations/tencent_docs/write_requests.py` | 腾讯文档 request 构造 |
@@ -258,3 +261,5 @@ python .\scripts\crawl_one_link.py --skip-check "帖子链接"
 新增数据源只改 `sources/`，不要让 App 采集层知道数据来自腾讯文档还是 Excel。
 
 新增写回目标只改 `sinks/` 和 `integrations/`，不要让 workflow 直接拼第三方 API 请求。
+
+`check` / `batch` 默认仍走 `posts` 兼容表。需要灰度验证框架表主路径时，可以打开 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS=true`，让待处理查询改用 `crawl_tasks` / `crawl_results`。

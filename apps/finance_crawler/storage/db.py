@@ -80,6 +80,26 @@ def _ensure_column(cursor, table: str, column: str, ddl: str) -> None:
         cursor.execute(f"ALTER TABLE `{table}` ADD COLUMN {ddl}")
 
 
+def _index_exists(cursor, table: str, index_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.statistics
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND index_name = %s
+        LIMIT 1
+        """,
+        (Config.DB_NAME, table, index_name),
+    )
+    return cursor.fetchone() is not None
+
+
+def _ensure_index(cursor, table: str, index_name: str, ddl: str) -> None:
+    if not _index_exists(cursor, table, index_name):
+        cursor.execute(f"ALTER TABLE `{table}` ADD INDEX {index_name} {ddl}")
+
+
 def _backfill_source_app(cursor) -> None:
     cursor.execute(
         """
@@ -184,6 +204,8 @@ def init_db() -> None:
                 "source_app",
                 "source_app VARCHAR(32) NOT NULL DEFAULT 'unknown'",
             )
+            _ensure_column(cursor, "crawl_results", "workflow", "workflow VARCHAR(64) NULL")
+            _ensure_index(cursor, "crawl_results", "idx_result_workflow", "(workflow)")
             _backfill_source_app(cursor)
 
         conn.commit()
@@ -301,6 +323,11 @@ def get_eligible_posts(limit: int | None = None) -> list[dict[str, Any]]:
 
 
 def get_pending_check_posts() -> list[dict[str, Any]]:
+    if Config.USE_FRAMEWORK_TASKS_FOR_WORKFLOWS:
+        from apps.finance_crawler.storage.framework_db import get_pending_check_tasks
+
+        return get_pending_check_tasks(Config.FETCH_LIMIT or 1000)
+
     cutoff = datetime.now() - timedelta(hours=Config.POST_ELIGIBLE_HOURS)
     conn = get_conn()
     try:
@@ -352,6 +379,11 @@ def update_check_result(
 
 
 def get_pending_batch_posts(limit: int | None = None) -> list[dict[str, Any]]:
+    if Config.USE_FRAMEWORK_TASKS_FOR_WORKFLOWS:
+        from apps.finance_crawler.storage.framework_db import get_pending_batch_tasks
+
+        return get_pending_batch_tasks(limit)
+
     if Config.BATCH_NEXT_DAY_ONLY:
         cutoff = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     else:

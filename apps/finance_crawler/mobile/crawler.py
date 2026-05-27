@@ -25,6 +25,7 @@ from apps.finance_crawler.mobile.capture_engine import (
     stable_key,
     try_ocr,
 )
+from apps.finance_crawler.mobile import parsers as community_parsers
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.logger import get_logger
@@ -148,67 +149,7 @@ def detect_page_status() -> tuple[str, str | None]:
 
 
 def extract_account_name(texts: list[str]) -> str:
-    ignore_exact = {
-        "关注",
-        "已关注",
-        "评论",
-        "阅读",
-        "点赞",
-        "分享",
-        "收藏",
-        "回复",
-        "打开",
-        "展开",
-        "查看更多",
-        "头像",
-        "返回",
-        "更多",
-    }
-    ignore_contains = {
-        "支付宝",
-        "蚂蚁财富",
-        "理财",
-        "基金",
-        "阅读",
-        "评论",
-        "点赞",
-        "关注",
-        "开启护眼模式",
-        "NFC",
-        "蓝牙",
-        "手机信号",
-        "正在充电",
-        "振铃器",
-    }
-
-    def usable(text: str) -> bool:
-        cleaned = text.strip()
-        if not cleaned or len(cleaned) > 30:
-            return False
-        if cleaned in ignore_exact:
-            return False
-        if any(word in cleaned for word in ignore_contains):
-            return False
-        if re.fullmatch(r"\d{1,2}:\d{2}", cleaned):
-            return False
-        if re.search(r"https?://|ur\.alipay\.com|\d{4}-\d{2}-\d{2}", cleaned):
-            return False
-        if re.search(r"^\d+$", cleaned):
-            return False
-        return True
-
-    for index, text in enumerate(texts[:40]):
-        if text.strip() != "头像":
-            continue
-        for candidate in texts[index + 1 : index + 6]:
-            if usable(candidate):
-                return candidate.strip()
-
-    for text in texts[:40]:
-        cleaned = text.strip()
-        if usable(cleaned):
-            return cleaned
-    return ""
+    return community_parsers.extract_account_name(texts)
 
 
 def check_post_exists_and_account(post_id: int) -> dict[str, Any]:
@@ -313,20 +254,7 @@ def _is_post_content_noise(text: str) -> bool:
 
 
 def extract_post_content(texts: list[str]) -> str:
-    content_parts: list[str] = []
-    for text in _current_post_scope_texts(texts):
-        cleaned = (text or "").strip()
-        if not cleaned:
-            continue
-        if _is_post_content_stop(cleaned):
-            break
-        if _is_post_content_noise(cleaned):
-            continue
-        # The first long/business text after author metadata is the post body.
-        if len(cleaned) < 8 and not content_parts:
-            continue
-        content_parts.append(cleaned)
-    return "\n".join(dict.fromkeys(content_parts))
+    return community_parsers.extract_post_content(texts)
 
 
 def _normalize_count_text(text: str) -> str:
@@ -340,53 +268,7 @@ def _normalize_count_text(text: str) -> str:
 
 
 def parse_numbers_with_presence(texts: list[str]) -> tuple[int, int, bool, bool]:
-    scoped_texts = _current_post_scope_texts(texts)
-    read_count = 0
-    comment_count = 0
-    read_found = False
-
-    no_comments = any(
-        "暂无评论" in text or "点击抢首评" in text or "说说你的想法" in text
-        for text in scoped_texts
-    )
-    comment_found = no_comments
-    number = r"(?P<num>\d+(?:[,.]\d+)*(?:\.\d+)?\s*[万wWkK千]?)"
-    for text in _number_candidates(scoped_texts):
-        compact = _normalize_count_text(text)
-        for pattern in (
-            rf"{number}(?:次)?(?:阅读|浏览|查看|阅)",
-            rf"(?:阅读|浏览|查看|阅)(?:量|数)?{number}",
-        ):
-            match = re.search(pattern, compact)
-            if match:
-                prefix = compact[: match.start()]
-                if any(word in prefix for word in ("评论", "回复", "留言")):
-                    continue
-                read_found = True
-                read_count = max(read_count, _parse_count_token(match.group("num")))
-        for pattern in (
-            rf"{number}(?:条)?(?:评论|回复|留言|评)",
-            rf"(?:评论|回复|留言|评)(?:数|量)?{number}",
-        ):
-            match = re.search(pattern, compact)
-            if match:
-                prefix = compact[: match.start()]
-                suffix = compact[match.end() :]
-                if any(word in prefix for word in ("阅读", "浏览", "查看")):
-                    continue
-                if any(word in suffix for word in ("阅读", "浏览", "查看")):
-                    continue
-                if (
-                    match.start() == 0
-                    and match.end() == len(compact)
-                    and re.search(r"[万wWkK千]", match.group("num"))
-                ):
-                    continue
-                comment_found = True
-                comment_count = max(comment_count, _parse_count_token(match.group("num")))
-    if no_comments:
-        comment_count = 0
-    return read_count, comment_count, read_found, comment_found
+    return community_parsers.parse_numbers_with_presence(texts)
 
 
 def parse_numbers(texts: list[str]) -> tuple[int, int]:

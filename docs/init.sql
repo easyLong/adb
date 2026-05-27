@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS crawl_results (
     legacy_post_id INT NULL,
     app_type VARCHAR(64) NOT NULL,
     url VARCHAR(1000) NOT NULL,
+    workflow VARCHAR(64) NULL,
     status VARCHAR(32) NOT NULL,
     account_name VARCHAR(255) NULL,
     content MEDIUMTEXT NULL,
@@ -143,6 +144,7 @@ CREATE TABLE IF NOT EXISTS crawl_results (
     INDEX idx_result_task (task_id),
     INDEX idx_result_legacy_post (legacy_post_id),
     INDEX idx_result_app (app_type),
+    INDEX idx_result_workflow (workflow),
     INDEX idx_result_status (status),
     INDEX idx_result_url (url(191)),
     INDEX idx_crawled_at (crawled_at)

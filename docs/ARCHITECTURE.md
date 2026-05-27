@@ -91,6 +91,7 @@ Windows 是控制端和数据处理端：
 | 数据源层 | `sources/*` | 将腾讯文档、Excel、API 等来源转成统一候选记录 |
 | App 适配层 | `crawlers/*` | 链接识别、目标包名、deep link 改写、App 专属解析 |
 | 手机采集层 | `mobile/*` | ADB、uiautomator2、截图、XML、OCR、通用账号/阅读/评论解析 |
+| 通用解析层 | `mobile/parsers.py` | 金融社区帖子账号、正文、阅读数、评论数解析规则 |
 | 工作流层 | `workflows/*` | fetch、initial check、batch crawl 的业务编排 |
 | 写回层 | `sinks/*` | 将采集结果写回业务系统 |
 | 外部集成层 | `integrations/*` | 腾讯文档 OpenAPI 等第三方系统底层能力 |
@@ -117,10 +118,13 @@ apps/finance_crawler/
   mobile/
     capture_engine.py
     crawler.py
+    parsers.py
   sources/
     tencent_docs.py
+    excel.py
   sinks/
     tencent_docs.py
+    excel.py
   integrations/
     qq_docs.py
     tencent_docs/
@@ -186,6 +190,7 @@ App 差异被拆成两类对象。
 | source_type | 文件 | 说明 |
 | --- | --- | --- |
 | `tencent_docs` | `sources/tencent_docs.py` | 从腾讯文档读取候选链接 |
+| `excel` | `sources/excel.py` | 从本地 `.xlsx` 读取候选链接 |
 
 `utils/tabular_links.py` 承担表格类数据的公共解析能力，包括：
 
@@ -194,7 +199,7 @@ App 差异被拆成两类对象。
 - 根据发布时间筛选符合延迟条件的候选链接。
 - 根据 URL 识别 `source_app`。
 
-新增本地 Excel 数据源时，优先复用 `utils/tabular_links.py`，只把“如何读取 Excel 行”放进 `sources/excel.py`。
+本地 Excel 数据源已经复用 `utils/tabular_links.py`，只把“如何读取 Excel 行”放进 `sources/excel.py`。默认列配置沿用腾讯文档的 0-based 列索引，也可以在实例化时传入 `post_time_col` 和 `url_col`。
 
 ## 写回扩展机制
 
@@ -205,6 +210,7 @@ App 差异被拆成两类对象。
 | sink_type | 文件 | 说明 |
 | --- | --- | --- |
 | `tencent_docs` | `sinks/tencent_docs.py` | 写回初检和批处理结果 |
+| `excel` | `sinks/excel.py` | 写回账号、阅读数、评论数、状态和截图路径到本地 `.xlsx` |
 
 腾讯文档底层能力进一步拆在 `integrations/tencent_docs/`：
 
@@ -242,6 +248,8 @@ App 差异被拆成两类对象。
 
 默认库名仍是 `alipay_crawler`，这是历史兼容选择，不代表当前应用仍只服务支付宝。后续如果要改库名，应单独做数据迁移。
 
+`check` / `batch` 默认仍从 `posts` 查询，保证现有业务链路稳定。现在已经新增 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS` 开关和基于 `crawl_tasks` / `crawl_results` 的待处理查询函数，后续可以灰度切换，让 `posts` 逐步退化为兼容层。
+
 ## 运行入口
 
 项目级入口：
@@ -266,8 +274,8 @@ python -m apps.finance_crawler.app --supervise
 
 ## 当前后续优化方向
 
-1. 新增本地 Excel Source/Sink，验证数据源和写回目标替换不会影响 App 采集层。
-2. 给 `tabular_links.py`、`link_source.py`、`crawlers/tenpay.py` 增加稳定单元测试。
-3. 逐步让业务查询从 `posts` 迁移到 `crawl_tasks` / `crawl_results`。
+1. 给 `tabular_links.py`、`link_source.py`、`mobile/parsers.py`、`crawlers/tenpay.py` 增加稳定单元测试。
+2. 灰度打开 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS`，逐步让业务查询从 `posts` 迁移到 `crawl_tasks` / `crawl_results`。
+3. 把本地 Excel Source/Sink 接入一个独立 workflow 或命令行，形成完整 Excel 全链路。
 4. 把真实手机链路测试整理成固定脚本，覆盖支付宝、蚂蚁财富、财付通各 1 条样例。
 5. 继续压缩 `integrations/qq_docs.py`，只保留确实需要对外兼容的旧函数。
