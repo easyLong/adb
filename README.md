@@ -137,6 +137,8 @@ Windows 负责调度、读写腾讯文档、读写 MySQL、解析链接、发 AD
 - `FETCH_LIMIT` / `BATCH_LIMIT`
 - `SCROLL_TIMES` / `BATCH_MAX_CAPTURE_PAGES`
 - `TENPAY_PACKAGE`
+- `WRITEBACK_SINK_TYPE`
+- `WRITEBACK_EXCEL_PATH` / `WRITEBACK_EXCEL_SAVE_AS` / `WRITEBACK_EXCEL_SHEET_NAME`
 - `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS`
 
 默认 MySQL 库名仍是 `alipay_crawler`，这是为了兼容历史本地数据；应用目录已经改为 `finance_crawler`。

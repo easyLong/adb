@@ -154,6 +154,7 @@ apps/finance_crawler/
     alerts.py
     framework_events.py
     report.py
+    writeback.py
   utils/
     device_health.py
     link_source.py
@@ -221,7 +222,7 @@ App 差异被拆成两类对象。
 
 ## 写回扩展机制
 
-写回目标通过 `ResultSink` 隔离。当前腾讯文档既是数据源，也可以是写回目标，但两者职责分开。
+写回目标通过 `ResultSink` 和 `services/writeback.py` 隔离。当前腾讯文档既是数据源，也可以是写回目标，但两者职责分开。workflow 只调用写回服务准备写回计划和批量提交结果，不再直接读取腾讯文档快照、解析行号或实例化 `TencentDocsSink`。
 
 当前已有：
 
@@ -229,6 +230,8 @@ App 差异被拆成两类对象。
 | --- | --- | --- |
 | `tencent_docs` | `sinks/tencent_docs.py` | 写回初检和批处理结果 |
 | `excel` | `sinks/excel.py` | 写回账号、阅读数、评论数、状态和截图路径到本地 `.xlsx` |
+
+当前默认写回服务由 `WRITEBACK_SINK_TYPE` 选择，默认值是 `tencent_docs`。目前已注册 `tencent_docs` 和 `excel` 两类写回服务。Excel 写回使用来源记录里的行号直接写入本地文件，需要配置 `WRITEBACK_EXCEL_PATH`，可选配置 `WRITEBACK_EXCEL_SAVE_AS` 和 `WRITEBACK_EXCEL_SHEET_NAME`。后续接入飞书或其他在线文档时，应新增对应 sink 和 writeback service 工厂，避免修改 `workflows/initial_check.py` 和 `workflows/batch_crawl.py`。
 
 腾讯文档底层能力进一步拆在 `integrations/tencent_docs/`：
 

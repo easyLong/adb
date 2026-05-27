@@ -11,7 +11,7 @@ from apps.finance_crawler.mobile.crawler import (
     resolve_short_url,
 )
 from apps.finance_crawler.services.alerts import send_alert
-from apps.finance_crawler.sinks.tencent_docs import TencentDocsSink
+from apps.finance_crawler.services.writeback import WritebackPlan, default_writeback_service
 from apps.finance_crawler.storage.crawl_repository import (
     PendingWriteback,
     get_pending_initial_check_records,
@@ -42,7 +42,7 @@ def _status_counts(results: list[dict]) -> tuple[int, int, int]:
 def run_initial_check() -> list[dict]:
     start_time = time.time()
     budget = OperationBudget("check")
-    sink = TencentDocsSink()
+    writeback_service = default_writeback_service()
     posts = budget.limit_items(get_pending_initial_check_records())
     total = len(posts)
     logger.info("initial check started: total=%s", total)
@@ -61,15 +61,11 @@ def run_initial_check() -> list[dict]:
         log_task("check", "error", str(exc), time.time() - start_time)
         raise
 
-    try:
-        sheet_rows, start_row = sink.fetch_grid()
-    except Exception as exc:
-        logger.warning("failed to load Tencent Docs row snapshot; writeback will be skipped: %s", exc)
-        sheet_rows, start_row = [], 0
+    writeback_service.load_snapshot()
 
     deep_links = resolve_urls(posts, resolve_short_url, logger)
     results: list[dict] = []
-    writebacks: list[dict] = []
+    writebacks: list[WritebackPlan] = []
     writeback_records: list[PendingWriteback] = []
     stop_reason: str | None = None
 
@@ -109,17 +105,8 @@ def run_initial_check() -> list[dict]:
         )
         budget.record_status(result["status"])
 
-        row_index = None
-        if result["status"] in {"success", "not_found"} and sheet_rows:
-            try:
-                row_index = sink.resolve_row_index_for_url(
-                    url,
-                    preferred_row_index=post.get("doc_row_index"),
-                    rows=sheet_rows,
-                    start_row=start_row,
-                )
-            except Exception as exc:
-                logger.warning("unsafe initial writeback skipped id=%s: %s", post_id, exc)
+        writeback_plan = writeback_service.prepare_initial_check(post=post, result=result)
+        row_index = writeback_plan.row_index
 
         task_id, result_id = record_crawl_result(
             post=post,
@@ -133,14 +120,8 @@ def run_initial_check() -> list[dict]:
             error=result.get("error"),
         )
 
-        if row_index:
-            writebacks.append(
-                {
-                    "row_index": row_index,
-                    "exists": result["status"] == "success",
-                    "account_name": result.get("account_name"),
-                }
-            )
+        if writeback_plan.can_write and row_index:
+            writebacks.append(writeback_plan)
             writeback_records.append(
                 PendingWriteback(
                     post_id=post_id,
@@ -149,25 +130,15 @@ def run_initial_check() -> list[dict]:
                     row_index=row_index,
                 )
             )
-        elif result["status"] == "error":
-            logger.warning("technical error skipped Tencent Docs writeback id=%s", post_id)
-            record_sink_writeback(
-                post_id=post_id,
-                sink_type="tencent_docs",
-                status="skipped",
-                task_id=task_id,
-                result_id=result_id,
-                error=result.get("error") or "technical error skipped writeback",
-            )
         else:
-            logger.warning("row not found; skipped Tencent Docs writeback id=%s", post_id)
+            logger.warning("skipped %s writeback id=%s: %s", writeback_plan.sink_type, post_id, writeback_plan.skip_reason)
             record_sink_writeback(
                 post_id=post_id,
-                sink_type="tencent_docs",
+                sink_type=writeback_plan.sink_type,
                 status="skipped",
                 task_id=task_id,
                 result_id=result_id,
-                error="row not found",
+                error=writeback_plan.skip_reason,
             )
 
         result_with_post = dict(result)
@@ -179,10 +150,10 @@ def run_initial_check() -> list[dict]:
 
     if writebacks:
         try:
-            sink.write_initial_check_results(writebacks)
+            writeback_service.write_initial_check_results(writebacks)
             record_pending_writebacks(
                 records=writeback_records,
-                sink_type="tencent_docs",
+                sink_type=writeback_service.sink_type,
                 status="success",
             )
         except Exception as exc:
@@ -190,7 +161,7 @@ def run_initial_check() -> list[dict]:
             logger.warning("initial check batch writeback failed: %s", exc)
             record_pending_writebacks(
                 records=writeback_records,
-                sink_type="tencent_docs",
+                sink_type=writeback_service.sink_type,
                 status="error",
                 error=str(exc),
             )

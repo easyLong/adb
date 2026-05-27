@@ -14,7 +14,7 @@ from apps.finance_crawler.mobile.crawler import (
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.services.alerts import send_alert
 from apps.finance_crawler.services.report import generate_report
-from apps.finance_crawler.sinks.tencent_docs import TencentDocsSink
+from apps.finance_crawler.services.writeback import WritebackPlan, default_writeback_service
 from apps.finance_crawler.storage.crawl_repository import (
     PendingWriteback,
     get_pending_batch_records,
@@ -50,7 +50,7 @@ def _empty_result(status: str = "error", error: str | None = None) -> dict:
 def run_batch_crawl(limit: int | None = None) -> list[dict]:
     start_time = time.time()
     budget = OperationBudget("batch")
-    sink = TencentDocsSink()
+    writeback_service = default_writeback_service()
     task_limit = Config.BATCH_LIMIT if limit is None else limit
     posts = get_pending_batch_records(task_limit)
     posts = budget.limit_items(posts)
@@ -71,16 +71,19 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
         log_task("batch", "error", str(exc), time.time() - start_time)
         raise
 
-    try:
-        sheet_rows, start_row = sink.fetch_grid()
-    except Exception as exc:
-        send_alert("Tencent Docs row snapshot failed", str(exc), level="warning", dedupe_key="docs_snapshot")
-        logger.warning("failed to load Tencent Docs row snapshot; writeback will be skipped: %s", exc)
-        sheet_rows, start_row = [], 0
+    writeback_service.load_snapshot(
+        alert=lambda error, dedupe_key: send_alert(
+            "Tencent Docs row snapshot failed",
+            error,
+            level="warning",
+            dedupe_key=dedupe_key or "docs_snapshot",
+        ),
+        warning_dedupe_key="docs_snapshot",
+    )
 
     deep_links = resolve_urls(posts, resolve_short_url, logger)
     results: list[dict] = []
-    writebacks: list[dict] = []
+    writebacks: list[WritebackPlan] = []
     writeback_records: list[PendingWriteback] = []
     written_post_ids: list[int] = []
     stop_reason: str | None = None
@@ -133,17 +136,8 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
         )
         scrape_duration = time.perf_counter() - item_start
 
-        row_index = None
-        if sheet_rows:
-            try:
-                row_index = sink.resolve_row_index_for_url(
-                    url,
-                    preferred_row_index=post.get("doc_row_index"),
-                    rows=sheet_rows,
-                    start_row=start_row,
-                )
-            except Exception as exc:
-                logger.warning("unsafe batch writeback skipped id=%s: %s", post_id, exc)
+        writeback_plan = writeback_service.prepare_batch(post=post, result=result)
+        row_index = writeback_plan.row_index
 
         task_id, result_id = record_crawl_result(
             post=post,
@@ -165,16 +159,8 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
             error=result.get("error"),
         )
 
-        if row_index:
-            writebacks.append(
-                {
-                    "row_index": row_index,
-                    "read_count": result.get("read_count") or 0,
-                    "comment_count": result.get("comment_count") or 0,
-                    "batch_status": result["status"],
-                    "screenshot_path": result.get("screenshot_path"),
-                }
-            )
+        if writeback_plan.can_write and row_index:
+            writebacks.append(writeback_plan)
             written_post_ids.append(post_id)
             writeback_records.append(
                 PendingWriteback(
@@ -185,14 +171,14 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
                 )
             )
         else:
-            logger.warning("row not found; skipped Tencent Docs writeback id=%s", post_id)
+            logger.warning("skipped %s writeback id=%s: %s", writeback_plan.sink_type, post_id, writeback_plan.skip_reason)
             record_sink_writeback(
                 post_id=post_id,
-                sink_type="tencent_docs",
+                sink_type=writeback_plan.sink_type,
                 status="skipped",
                 task_id=task_id,
                 result_id=result_id,
-                error="row not found",
+                error=writeback_plan.skip_reason,
             )
 
         result_with_post = dict(result)
@@ -209,11 +195,11 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
 
     if writebacks:
         try:
-            sink.write_batch_results(writebacks)
+            writeback_service.write_batch_results(writebacks)
             mark_writebacks_done(written_post_ids)
             record_pending_writebacks(
                 records=writeback_records,
-                sink_type="tencent_docs",
+                sink_type=writeback_service.sink_type,
                 status="success",
             )
         except Exception as exc:
@@ -221,7 +207,7 @@ def run_batch_crawl(limit: int | None = None) -> list[dict]:
             logger.warning("batch writeback failed: %s", exc)
             record_pending_writebacks(
                 records=writeback_records,
-                sink_type="tencent_docs",
+                sink_type=writeback_service.sink_type,
                 status="error",
                 error=str(exc),
             )

@@ -41,7 +41,10 @@ class ExcelSink:
             for item in rows:
                 row_index = int(item["row_index"])
                 exists = bool(item.get("exists"))
-                self._set_cell(worksheet, row_index, self.account_col, item.get("account_name") or "" if exists else "N")
+                value = item.get("account_name") or ""
+                if not exists:
+                    value = "N"
+                self._set_cell(worksheet, row_index, self.account_col, value)
             self._save(workbook)
         finally:
             workbook.close()

@@ -230,6 +230,10 @@ apps/finance_crawler/crawlers/tenpay.py
 | `REPORT_TIME` | `11:30` | 每日报告时间 |
 | `FETCH_LIMIT` | `10` | 单次 fetch 导入数量，0 表示全部 |
 | `BATCH_LIMIT` | `0` | 单次 batch 数量，0 表示全部 |
+| `WRITEBACK_SINK_TYPE` | `tencent_docs` | 默认写回目标服务 |
+| `WRITEBACK_EXCEL_PATH` | 空 | `WRITEBACK_SINK_TYPE=excel` 时的本地 Excel 路径 |
+| `WRITEBACK_EXCEL_SAVE_AS` | 空 | Excel 写回另存路径，空则覆盖原文件 |
+| `WRITEBACK_EXCEL_SHEET_NAME` | 空 | Excel 工作表名，空则使用活动工作表 |
 
 ## 模块职责速查
 
@@ -256,6 +260,7 @@ apps/finance_crawler/crawlers/tenpay.py
 | `integrations/tencent_docs/write_requests.py` | 腾讯文档 request 构造 |
 | `integrations/tencent_docs/screenshots.py` | 腾讯文档截图上传和降级 |
 | `integrations/tencent_docs/writeback.py` | 腾讯文档批量写回编排 |
+| `services/writeback.py` | workflow 面向的写回服务和 sink 工厂，当前支持 `tencent_docs` 和 `excel` |
 | `workflows/tencent_docs_fetch.py` | 数据源导入 workflow |
 | `workflows/initial_check.py` | 初检 workflow |
 | `workflows/batch_crawl.py` | 批量采集 workflow |
@@ -282,7 +287,7 @@ python .\scripts\crawl_one_link.py --skip-check "帖子链接"
 
 新增数据源只改 `sources/`，不要让 App 采集层知道数据来自腾讯文档还是 Excel。
 
-新增写回目标只改 `sinks/` 和 `integrations/`，不要让 workflow 直接拼第三方 API 请求。
+新增写回目标优先改 `sinks/`、`integrations/` 和 `services/writeback.py` 的服务工厂，不要让 workflow 直接拼第三方 API 请求或处理行号定位。
 
 `check` / `batch` 默认仍走 `posts` 兼容表，但 workflow 已经通过 `storage/crawl_repository.py` 访问任务、结果保存和写回记录入口。需要灰度验证框架表主路径时，可以打开 `USE_FRAMEWORK_TASKS_FOR_WORKFLOWS=true`，让待处理查询改用 `crawl_tasks` / `crawl_results`。
 
