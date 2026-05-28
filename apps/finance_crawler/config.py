@@ -59,7 +59,10 @@ class Config:
     )
     QQ_FILE_ID = _env("TENCENT_DOC_FILE_ID", "DY1hCSG96TkVySmp1")
     QQ_SHEET_ID = _env("TENCENT_DOC_SHEET_ID", "BB08J2")
-    QQ_READ_RANGE = _env("TENCENT_DOC_READ_RANGE", "A1:P625")
+    QQ_READ_RANGE = _env("TENCENT_DOC_READ_RANGE", "A1:Q2000")
+    QQ_SCAN_MODE = _env("TENCENT_DOC_SCAN_MODE", "today")
+    QQ_SCAN_DATE = _env("TENCENT_DOC_SCAN_DATE", "")
+    QQ_SHEET_TITLE_FILTER = _env("TENCENT_DOC_SHEET_TITLE_FILTER", "")
 
     QQ_ACCESS_TOKEN = _env("TENCENT_DOC_ACCESS_TOKEN")
     QQ_CLIENT_ID = _env("TENCENT_DOC_CLIENT_ID")
@@ -68,10 +71,11 @@ class Config:
     QQ_TOKEN_URL = _env("TENCENT_DOC_TOKEN_URL", "https://docs.qq.com/oauth/v2/token")
     QQ_WRITE_DELAY = _env_float("TENCENT_DOC_WRITE_DELAY", 0.3)
     QQ_BATCH_UPDATE_SIZE = _env_int("TENCENT_DOC_BATCH_UPDATE_SIZE", 5)
+    QQ_READ_CHUNK_ROWS = _env_int("TENCENT_DOC_READ_CHUNK_ROWS", 200)
     VALIDATE_DOC_ROW_BEFORE_WRITE = _env_bool("VALIDATE_DOC_ROW_BEFORE_WRITE", True)
 
     # Sheet column indexes, zero-based. Defaults match the test sheet:
-    # J=post time, N=post link, O=read count, P=comment count.
+    # J=post time, M=screenshot, N=post link, O=read count, P=comment count.
     QQ_COL_POST_TIME = _env_int("TENCENT_DOC_COL_POST_TIME", 9)
     QQ_COL_URL = _env_int("TENCENT_DOC_COL_URL", 13)
     QQ_COL_ACCOUNT_NAME = _env_int("TENCENT_DOC_COL_ACCOUNT_NAME", 11)
@@ -79,7 +83,7 @@ class Config:
     QQ_COL_COMMENT_COUNT = _env_int("TENCENT_DOC_COL_COMMENT_COUNT", 15)
     QQ_COL_CHECK_STATUS = _env_int("TENCENT_DOC_COL_CHECK_STATUS", 16)
     QQ_COL_DETAIL_STATUS = _env_int("TENCENT_DOC_COL_DETAIL_STATUS", 16)
-    QQ_COL_SCREENSHOT = _env_int("TENCENT_DOC_COL_SCREENSHOT", 17)
+    QQ_COL_SCREENSHOT = _env_int("TENCENT_DOC_COL_SCREENSHOT", 12)
     SCREENSHOT_PUBLIC_BASE_URL = _env("SCREENSHOT_PUBLIC_BASE_URL", "")
     QQ_UPLOAD_SCREENSHOTS = _env_bool(
         "TENCENT_DOC_UPLOAD_SCREENSHOTS",
@@ -94,8 +98,8 @@ class Config:
     FETCH_INTERVAL_MINUTES = _env_int("FETCH_INTERVAL_MINUTES", 5)
     INITIAL_CHECK_DELAY_HOURS = _env_float("INITIAL_CHECK_DELAY_HOURS", 2.0)
     FETCH_ONLY_ELIGIBLE = _env_bool("FETCH_ONLY_ELIGIBLE", False)
-    # 10 for testing. Set FETCH_LIMIT=0 to import all discovered rows.
-    FETCH_LIMIT = _env_int("FETCH_LIMIT", 10)
+    # 0 means import all discovered rows. Set a positive value for test runs.
+    FETCH_LIMIT = _env_int("FETCH_LIMIT", 0)
     DETAIL_LIMIT = _env_int("DETAIL_LIMIT", 0)
     DETAIL_TIME = _env("DETAIL_TIME", "10:00")
     REPORT_TIME = _env("REPORT_TIME", "11:30")

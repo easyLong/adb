@@ -7,8 +7,8 @@ from apps.finance_crawler.integrations.tencent_docs import client
 from apps.finance_crawler.utils import tabular_links
 
 
-def get_row_index_map() -> dict[str, int]:
-    rows, start_row = client.fetch_grid()
+def get_row_index_map(doc: client.DocInfo | None = None) -> dict[str, int]:
+    rows, start_row = client.fetch_grid(doc=doc)
     mapping: dict[str, int] = {}
     for offset, row in enumerate(rows):
         if len(row) <= Config.QQ_COL_URL:
@@ -25,10 +25,11 @@ def resolve_row_index_for_url(
     preferred_row_index: int | None = None,
     rows: list[list[str]] | None = None,
     start_row: int | None = None,
+    doc: client.DocInfo | None = None,
 ) -> int | None:
     """Resolve the current sheet row for a URL and guard against stale rows."""
     if rows is None or start_row is None:
-        rows, start_row = client.fetch_grid()
+        rows, start_row = client.fetch_grid(doc=doc)
 
     target = (url or "").strip()
     if not target:

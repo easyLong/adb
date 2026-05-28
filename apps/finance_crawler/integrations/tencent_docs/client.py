@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,17 @@ IMAGE_UPLOAD_URL = "https://docs.qq.com/openapi/resources/v2/images"
 class DocInfo:
     file_id: str
     sheet_id: str
+
+
+@dataclass(frozen=True)
+class SheetInfo:
+    file_id: str
+    sheet_id: str
+    title: str
+
+    @property
+    def doc(self) -> DocInfo:
+        return DocInfo(self.file_id, self.sheet_id)
 
 
 def parse_doc_url(url: str) -> DocInfo:
@@ -133,9 +145,9 @@ def check_response(data: dict[str, Any]) -> None:
         raise RuntimeError(f"腾讯文档 API 返回错误: {data}")
 
 
-def fetch_sheet_title() -> str:
-    doc = configured_doc()
-    url = f"{BASE_URL}/files/{doc.file_id}"
+def fetch_file_sheets(file_id: str | None = None) -> list[SheetInfo]:
+    resolved_file_id = file_id or configured_doc().file_id
+    url = f"{BASE_URL}/files/{resolved_file_id}"
     response = requests.get(
         url,
         headers=headers(),
@@ -147,13 +159,29 @@ def fetch_sheet_title() -> str:
     check_response(data)
 
     properties = data.get("data", {}).get("properties", data.get("properties", []))
+    sheets: list[SheetInfo] = []
     for item in properties:
-        if item.get("sheetId") == doc.sheet_id:
-            title = str(item.get("title") or "").strip()
-            logger.info("current sheet: %s (%s)", title, doc.sheet_id)
-            return title
+        sheet_id = str(item.get("sheetId") or "").strip()
+        if not sheet_id:
+            continue
+        sheets.append(
+            SheetInfo(
+                file_id=resolved_file_id,
+                sheet_id=sheet_id,
+                title=str(item.get("title") or "").strip(),
+            )
+        )
+    return sheets
 
-    logger.warning("sheet title not found for sheetId=%s", doc.sheet_id)
+
+def fetch_sheet_title(doc: DocInfo | None = None) -> str:
+    resolved_doc = doc or configured_doc()
+    for item in fetch_file_sheets(resolved_doc.file_id):
+        if item.sheet_id == resolved_doc.sheet_id:
+            logger.info("current sheet: %s (%s)", item.title, resolved_doc.sheet_id)
+            return item.title
+
+    logger.warning("sheet title not found for sheetId=%s", resolved_doc.sheet_id)
     return ""
 
 
@@ -169,6 +197,18 @@ def cell_to_text(cell: dict[str, Any] | Any) -> str:
         return str(value.get("text") or "").strip()
     if "number" in value:
         return str(value.get("number") or "").strip()
+    if "time" in value and isinstance(value["time"], dict):
+        time_value = value["time"]
+        year = int(time_value.get("year") or 0)
+        month = int(time_value.get("month") or 0)
+        day = int(time_value.get("day") or 0)
+        hour = int(time_value.get("hour") or 0)
+        minute = int(time_value.get("minute") or 0)
+        second = int(time_value.get("second") or 0)
+        time_text = f"{hour:02d}:{minute:02d}:{second:02d}"
+        if year and month and day:
+            return f"{year:04d}-{month:02d}-{day:02d} {time_text}"
+        return time_text
     if "link" in value and isinstance(value["link"], dict):
         return str(value["link"].get("url") or value["link"].get("text") or "").strip()
     if "location" in value and isinstance(value["location"], dict):
@@ -184,21 +224,73 @@ def grid_to_rows(grid_data: dict[str, Any]) -> tuple[list[list[str]], int]:
     return rows, int(grid_data.get("startRow", 0))
 
 
-def fetch_grid(range_a1: str | None = None) -> tuple[list[list[str]], int]:
-    doc = configured_doc()
+def fetch_raw_grid(range_a1: str | None = None, doc: DocInfo | None = None) -> dict[str, Any]:
+    resolved_doc = doc or configured_doc()
     range_text = range_a1 or Config.QQ_READ_RANGE
     encoded_range = quote(range_text, safe=":")
-    url = f"{BASE_URL}/files/{doc.file_id}/{doc.sheet_id}/{encoded_range}"
+    url = f"{BASE_URL}/files/{resolved_doc.file_id}/{resolved_doc.sheet_id}/{encoded_range}"
 
     response = requests.get(url, headers=headers(), timeout=20)
     response.raise_for_status()
     data = response.json()
     check_response(data)
+    return data.get("data", {}).get("gridData", data.get("gridData", {}))
 
-    grid_data = data.get("data", {}).get("gridData", data.get("gridData", {}))
+
+def fetch_grid(range_a1: str | None = None, doc: DocInfo | None = None) -> tuple[list[list[str]], int]:
+    range_text = range_a1 or Config.QQ_READ_RANGE
+    chunked_ranges = _chunk_a1_range(range_text, Config.QQ_READ_CHUNK_ROWS)
+    if chunked_ranges:
+        rows: list[list[str]] = []
+        first_start_row: int | None = None
+        for chunk_range in chunked_ranges:
+            try:
+                chunk_rows, chunk_start_row = _fetch_grid_once(chunk_range, doc=doc)
+            except RuntimeError as exc:
+                if rows and _is_range_boundary_error(exc):
+                    logger.info("Tencent Docs range boundary reached at %s: %s", chunk_range, exc)
+                    break
+                raise
+            if first_start_row is None:
+                first_start_row = chunk_start_row
+            rows.extend(chunk_rows)
+        logger.info("read Tencent Docs rows=%s range=%s chunks=%s", len(rows), range_text, len(chunked_ranges))
+        return rows, first_start_row or 0
+    return _fetch_grid_once(range_text, doc=doc)
+
+
+def _fetch_grid_once(range_text: str, doc: DocInfo | None = None) -> tuple[list[list[str]], int]:
+    grid_data = fetch_raw_grid(range_text, doc=doc)
     rows, start_row = grid_to_rows(grid_data)
     logger.info("read Tencent Docs rows=%s range=%s", len(rows), range_text)
     return rows, start_row
+
+
+def _chunk_a1_range(range_text: str, chunk_rows: int) -> list[str]:
+    if chunk_rows <= 0:
+        return []
+    match = re.fullmatch(r"([A-Z]+)(\d+):([A-Z]+)(\d+)", range_text.strip(), re.IGNORECASE)
+    if not match:
+        return []
+
+    start_col, start_row_text, end_col, end_row_text = match.groups()
+    start_row = int(start_row_text)
+    end_row = int(end_row_text)
+    if end_row - start_row + 1 <= chunk_rows:
+        return []
+
+    ranges = []
+    current = start_row
+    while current <= end_row:
+        chunk_end = min(current + chunk_rows - 1, end_row)
+        ranges.append(f"{start_col}{current}:{end_col}{chunk_end}")
+        current = chunk_end + 1
+    return ranges
+
+
+def _is_range_boundary_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "invalid param error: 'range' invalid" in text or "RangeSize Validate error" in text
 
 
 def upload_image(image_path: str | Path) -> str:
@@ -225,12 +317,12 @@ def upload_image(image_path: str | Path) -> str:
     return str(image_id)
 
 
-def post_batch_update(requests_payload: list[dict[str, Any]], log_context: str) -> None:
+def post_batch_update(requests_payload: list[dict[str, Any]], log_context: str, doc: DocInfo | None = None) -> None:
     if not requests_payload:
         return
 
-    doc = configured_doc()
-    url = f"{BASE_URL}/files/{doc.file_id}/batchUpdate"
+    resolved_doc = doc or configured_doc()
+    url = f"{BASE_URL}/files/{resolved_doc.file_id}/batchUpdate"
     chunk_size = max(Config.QQ_BATCH_UPDATE_SIZE, 1)
     for index in range(0, len(requests_payload), chunk_size):
         chunk = requests_payload[index : index + chunk_size]

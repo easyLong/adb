@@ -105,6 +105,9 @@ def parse_source_time(value: str, sheet_title: str = "") -> datetime | None:
     text = _normalize_date_text(value)
     if not text:
         return None
+    if sheet_date and re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", text):
+        parts = [int(part) for part in text.split(":")]
+        return datetime(*sheet_date, parts[0], parts[1], parts[2] if len(parts) == 3 else 0)
 
     formats = [
         "%Y-%m-%d %H:%M:%S",

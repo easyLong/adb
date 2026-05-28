@@ -29,6 +29,8 @@ from apps.finance_crawler.mobile.crawler import (
     scrape_record_content,
 )
 from apps.finance_crawler.domain.task_types import DETAIL_CRAWL_TASK_TYPE
+from apps.finance_crawler.services.remarks import detail_remark
+from apps.finance_crawler.services.runtime_config import disable_data_source
 from apps.finance_crawler.storage.framework_db import (
     finish_task_execution,
     start_task_execution,
@@ -140,6 +142,7 @@ def run_local_excel_detail() -> list[dict[str, Any]]:
         return results
     finally:
         workbook.close()
+        disable_data_source("EXCEL_DETAIL_INPUT_PATH", updated_by="excel_detail")
 
 
 def _input_path() -> Path:
@@ -350,7 +353,7 @@ def _write_result(worksheet, item: dict[str, Any]) -> None:
     elif status in {"not_found", "deleted"}:
         _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_ACCOUNT_NAME, "N")
 
-    _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_STATUS, status)
+    _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_STATUS, detail_remark(item))
     _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_DURATION, item.get("duration"))
     _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_ERROR, item.get("error") or "")
     _set_cell(worksheet, row_index, Config.EXCEL_DETAIL_COL_SOURCE, item.get("source_app") or "")

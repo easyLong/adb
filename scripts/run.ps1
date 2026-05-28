@@ -1,12 +1,16 @@
 param(
     [string]$App = "finance_crawler",
 
-    [ValidateSet("scheduler", "supervisor", "db", "fetch", "check", "detail", "excel-detail", "report")]
+    [ValidateSet("scheduler", "supervisor", "db", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report")]
     [string]$Task = "scheduler",
 
     [string]$Python = "python",
     [string]$TencentEnvFile = "D:\password\tengxun.txt",
-    [string]$MysqlEnvFile = "D:\password\mysql.txt"
+    [string]$MysqlEnvFile = "D:\password\mysql.txt",
+    [string]$TencentDocUrl = "",
+    [string]$ExcelInputPath = "",
+    [string]$SingleLink = "",
+    [string[]]$ConfigSet = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,6 +72,27 @@ if ($Task -eq "scheduler") {
     & $Python -m $Module
 } elseif ($Task -eq "supervisor") {
     & $Python -m $Module --supervise
+} elseif ($Task -eq "config") {
+    $ConfigArgs = @("--once", "config")
+    if ($TencentDocUrl) {
+        $ConfigArgs += @("--tencent-doc-url", $TencentDocUrl)
+    }
+    if ($ExcelInputPath) {
+        $ConfigArgs += @("--excel-input-path", $ExcelInputPath)
+    }
+    if ($SingleLink) {
+        $ConfigArgs += @("--single-link", $SingleLink)
+    }
+    foreach ($Item in $ConfigSet) {
+        $ConfigArgs += @("--config-set", $Item)
+    }
+    & $Python -m $Module @ConfigArgs
+} elseif ($Task -eq "link-detail") {
+    $LinkArgs = @("--once", "link-detail")
+    if ($SingleLink) {
+        $LinkArgs += @("--single-link", $SingleLink)
+    }
+    & $Python -m $Module @LinkArgs
 } else {
     & $Python -m $Module --once $Task
 }

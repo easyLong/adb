@@ -17,13 +17,16 @@ def cell_request(
     value: Any,
     background_color: dict[str, int] | None = None,
     text_format: dict[str, Any] | None = None,
+    cell_format: dict[str, Any] | None = None,
+    doc: client.DocInfo | None = None,
 ) -> dict[str, Any]:
+    resolved_doc = doc or client.configured_doc()
     cell: dict[str, Any] = {
         "cellValue": {
             "text": "" if value is None else str(value),
         }
     }
-    cell_format = {}
+    cell_format = dict(cell_format or {})
     if background_color:
         cell_format["backgroundColor"] = background_color
     if text_format:
@@ -33,7 +36,7 @@ def cell_request(
 
     return {
         "updateRangeRequest": {
-            "sheetId": client.configured_doc().sheet_id,
+            "sheetId": resolved_doc.sheet_id,
             "gridData": {
                 "startRow": row_index - 1,
                 "startColumn": col_index,
@@ -47,10 +50,12 @@ def row_cells_request(
     row_index: int,
     start_col_index: int,
     values: list[Any],
+    doc: client.DocInfo | None = None,
 ) -> dict[str, Any]:
+    resolved_doc = doc or client.configured_doc()
     return {
         "updateRangeRequest": {
-            "sheetId": client.configured_doc().sheet_id,
+            "sheetId": resolved_doc.sheet_id,
             "gridData": {
                 "startRow": row_index - 1,
                 "startColumn": start_col_index,
@@ -81,7 +86,8 @@ def screenshot_cell_value(path_text: str | None) -> str:
     return str(path)
 
 
-def screenshot_cell_request(row_index: int, path_text: str | None) -> dict[str, Any]:
+def screenshot_cell_request(row_index: int, path_text: str | None, doc: client.DocInfo | None = None) -> dict[str, Any]:
+    resolved_doc = doc or client.configured_doc()
     value = screenshot_cell_value(path_text)
     if value.startswith(("http://", "https://")):
         cell = {
@@ -97,7 +103,7 @@ def screenshot_cell_request(row_index: int, path_text: str | None) -> dict[str, 
 
     return {
         "updateRangeRequest": {
-            "sheetId": client.configured_doc().sheet_id,
+            "sheetId": resolved_doc.sheet_id,
             "gridData": {
                 "startRow": row_index - 1,
                 "startColumn": Config.QQ_COL_SCREENSHOT,
@@ -133,13 +139,14 @@ def image_display_size(path: Path) -> tuple[float, float]:
     return float(original_width), float(original_height)
 
 
-def screenshot_image_request(row_index: int, path_text: str) -> dict[str, Any]:
+def screenshot_image_request(row_index: int, path_text: str, doc: client.DocInfo | None = None) -> dict[str, Any]:
+    resolved_doc = doc or client.configured_doc()
     path = Path(path_text)
     image_id = client.upload_image(path)
     width, height = image_display_size(path)
     return {
         "insertImageRequest": {
-            "sheetId": client.configured_doc().sheet_id,
+            "sheetId": resolved_doc.sheet_id,
             "imageData": [
                 {
                     "type": 1,

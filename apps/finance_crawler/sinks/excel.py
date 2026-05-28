@@ -127,4 +127,4 @@ class ExcelSink:
 
 
 def _detail_status(item: dict[str, Any]) -> Any:
-    return item.get("detail_status")
+    return item.get("detail_remark") or item.get("detail_status")

@@ -12,7 +12,11 @@ from apps.finance_crawler.utils.logger import get_logger
 logger = get_logger("tencent_docs_screenshots")
 
 
-def post_screenshot_images(rows: list[tuple[int, str]]) -> list[dict[str, Any]]:
+def post_screenshot_images(
+    rows: list[tuple[int, str]],
+    *,
+    doc: client.DocInfo | None = None,
+) -> list[dict[str, Any]]:
     """Insert screenshots and return text/link fallback requests for failures."""
     requests_with_fallback: list[tuple[dict[str, Any], dict[str, Any]]] = []
     fallback_requests: list[dict[str, Any]] = []
@@ -21,8 +25,8 @@ def post_screenshot_images(rows: list[tuple[int, str]]) -> list[dict[str, Any]]:
         try:
             requests_with_fallback.append(
                 (
-                    write_requests.screenshot_image_request(row_index, path_text),
-                    write_requests.screenshot_cell_request(row_index, path_text),
+                    write_requests.screenshot_image_request(row_index, path_text, doc=doc),
+                    write_requests.screenshot_cell_request(row_index, path_text, doc=doc),
                 )
             )
             logger.info("Tencent Docs uploaded screenshot row=%s path=%s", row_index, path_text)
@@ -30,7 +34,7 @@ def post_screenshot_images(rows: list[tuple[int, str]]) -> list[dict[str, Any]]:
                 time.sleep(Config.QQ_IMAGE_UPLOAD_DELAY)
         except Exception as exc:
             logger.warning("Tencent Docs screenshot upload failed row=%s: %s", row_index, exc)
-            fallback_requests.append(write_requests.screenshot_cell_request(row_index, path_text))
+            fallback_requests.append(write_requests.screenshot_cell_request(row_index, path_text, doc=doc))
 
     if not requests_with_fallback:
         return fallback_requests
@@ -42,6 +46,7 @@ def post_screenshot_images(rows: list[tuple[int, str]]) -> list[dict[str, Any]]:
             client.post_batch_update(
                 [request for request, _ in chunk],
                 "insert_screenshot_images",
+                doc=doc,
             )
         except Exception as exc:
             logger.warning("Tencent Docs insert screenshot images failed: %s", exc)

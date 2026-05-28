@@ -13,6 +13,7 @@ adb devices
 
 ```powershell
 .\scripts\run.ps1 -Task db
+.\scripts\run.ps1 -Task config
 .\scripts\run.ps1 -Task fetch
 .\scripts\run.ps1 -Task check
 .\scripts\run.ps1 -Task detail
@@ -21,6 +22,32 @@ adb devices
 .\scripts\run.ps1 -Task scheduler
 .\scripts\run.ps1 -Task supervisor
 ```
+
+## 数据源链接表
+
+部署到新的 Windows 服务器后，先初始化数据库，再把业务输入写入数据源链接表：
+
+```powershell
+.\scripts\run.ps1 -Task db
+.\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
+```
+
+临时本地 Excel 跑批：
+
+```powershell
+.\scripts\run.ps1 -Task config -ExcelInputPath "D:\demo\input.xlsx"
+.\scripts\run.ps1 -Task excel-detail
+```
+
+单条链接测试：
+
+```powershell
+.\scripts\run.ps1 -Task link-detail -SingleLink "https://ur.alipay.com/..."
+```
+
+数据源入口保存在 MySQL 表 `data_source_links` 中，任务启动时会自动加载并覆盖环境变量。
+在线文档数据源保持 `active` 长期监测；本地 Excel 和单条测试链接跑完后会自动改为 `unavailable`。
+任务提交和执行仍使用现有的 `crawl_task_submissions`、`crawl_task_executions` 表。在线腾讯文档默认只提交当天 sheet 的任务；本地 Excel 跑批不要求日期，链接行会直接提交并执行。
 
 Python 模块入口：
 

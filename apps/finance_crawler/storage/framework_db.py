@@ -39,6 +39,24 @@ def _record_key_for_url(url: str) -> str:
     return f"url:{hashlib.sha1(normalized.encode('utf-8')).hexdigest()}"
 
 
+def _record_key_for_source_row(
+    *,
+    source_type: str,
+    source_name: str | None,
+    source_locator: dict[str, Any] | None,
+    url: str,
+) -> str:
+    locator = source_locator or {}
+    if source_type == "tencent_docs":
+        return _hash_key(
+            "tencent_docs_sheet_url",
+            locator.get("file_id"),
+            locator.get("sheet_id"),
+            _normalize_url_for_record_key(url),
+        )
+    return _record_key_for_url(url)
+
+
 def _parse_detail_time(value: str) -> datetime_time:
     parts = [int(part) for part in (value or "10:00").split(":")]
     if len(parts) == 2:
@@ -87,6 +105,20 @@ def _column_exists(cursor, table: str, column: str) -> bool:
     return cursor.fetchone() is not None
 
 
+def _table_exists(cursor, table: str) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = %s
+          AND table_name = %s
+        LIMIT 1
+        """,
+        (_current_schema(cursor), table),
+    )
+    return cursor.fetchone() is not None
+
+
 def _ensure_column(cursor, table: str, column: str, ddl: str) -> None:
     if not _column_exists(cursor, table, column):
         cursor.execute(f"ALTER TABLE `{table}` ADD COLUMN {ddl}")
@@ -110,6 +142,128 @@ def _index_exists(cursor, table: str, index_name: str) -> bool:
 def _ensure_index(cursor, table: str, index_name: str, ddl: str) -> None:
     if not _index_exists(cursor, table, index_name):
         cursor.execute(f"ALTER TABLE `{table}` ADD INDEX {index_name} {ddl}")
+
+
+def _ensure_unique_index(cursor, table: str, index_name: str, ddl: str) -> None:
+    if not _index_exists(cursor, table, index_name):
+        cursor.execute(f"ALTER TABLE `{table}` ADD UNIQUE KEY {index_name} {ddl}")
+
+
+def _ensure_submission_object_key(cursor) -> None:
+    _ensure_column(
+        cursor,
+        "crawl_task_submissions",
+        "crawl_object_key",
+        "crawl_object_key VARCHAR(191) NULL",
+    )
+    if _column_exists(cursor, "crawl_task_submissions", "source_record_key"):
+        cursor.execute(
+            """
+            UPDATE crawl_task_submissions
+            SET crawl_object_key = source_record_key
+            WHERE crawl_object_key IS NULL
+              AND source_record_key IS NOT NULL
+            """
+        )
+        cursor.execute(
+            """
+            ALTER TABLE crawl_task_submissions
+            MODIFY source_record_key VARCHAR(191) NULL
+            """
+        )
+    cursor.execute(
+        """
+        UPDATE crawl_task_submissions
+        SET crawl_object_key = CONCAT('legacy:', id)
+        WHERE crawl_object_key IS NULL
+           OR crawl_object_key = ''
+        """
+    )
+
+
+def _ensure_data_source_links_table(cursor) -> None:
+    if _table_exists(cursor, "runtime_config") and not _table_exists(cursor, "data_source_links"):
+        cursor.execute("RENAME TABLE runtime_config TO data_source_links")
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_source_links (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            source_key VARCHAR(128) NOT NULL,
+            data_source_link TEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            description VARCHAR(255) NULL,
+            updated_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_data_source_key (source_key),
+            INDEX idx_data_source_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+
+    if _column_exists(cursor, "data_source_links", "config_key"):
+        cursor.execute(
+            """
+            ALTER TABLE data_source_links
+            CHANGE COLUMN config_key source_key VARCHAR(128) NOT NULL
+            """
+        )
+
+    if _column_exists(cursor, "data_source_links", "enabled") and not _column_exists(
+        cursor, "data_source_links", "status"
+    ):
+        cursor.execute(
+            """
+            ALTER TABLE data_source_links
+            CHANGE COLUMN enabled status VARCHAR(32) NOT NULL DEFAULT 'active'
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE data_source_links
+            SET status = CASE
+                WHEN status IN ('1', 'active') THEN 'active'
+                ELSE 'unavailable'
+            END
+            """
+        )
+    elif not _column_exists(cursor, "data_source_links", "status"):
+        cursor.execute(
+            """
+            ALTER TABLE data_source_links
+            ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'active' AFTER data_source_link
+            """
+        )
+
+    has_source_link = _column_exists(cursor, "data_source_links", "data_source_link")
+    has_config_value = _column_exists(cursor, "data_source_links", "config_value")
+    if has_config_value and not has_source_link:
+        cursor.execute(
+            """
+            ALTER TABLE data_source_links
+            CHANGE COLUMN config_value data_source_link TEXT NULL
+            """
+        )
+        return
+    if not has_source_link:
+        cursor.execute(
+            """
+            ALTER TABLE data_source_links
+            ADD COLUMN data_source_link TEXT NULL AFTER source_key
+            """
+        )
+        return
+    if has_config_value:
+        cursor.execute(
+            """
+            UPDATE data_source_links
+            SET data_source_link = config_value
+            WHERE (data_source_link IS NULL OR data_source_link = '')
+              AND config_value IS NOT NULL
+            """
+        )
+        cursor.execute("ALTER TABLE data_source_links DROP COLUMN config_value")
 
 
 def ensure_framework_tables(cursor) -> None:
@@ -148,6 +302,11 @@ def ensure_framework_tables(cursor) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+
+    _ensure_data_source_links_table(cursor)
+    from apps.finance_crawler.services.runtime_config import ensure_runtime_config_defaults
+
+    ensure_runtime_config_defaults(cursor)
 
     cursor.execute(
         """
@@ -289,6 +448,13 @@ def ensure_framework_tables(cursor) -> None:
         """
     )
 
+    _ensure_submission_object_key(cursor)
+    _ensure_unique_index(
+        cursor,
+        "crawl_task_submissions",
+        "uk_submission_object_record",
+        "(source_type, crawl_object_key, task_type)",
+    )
     _ensure_index(
         cursor,
         "crawl_task_submissions",
@@ -477,7 +643,12 @@ def upsert_source_record_submissions_tx(
         resolved_source_name,
         source_config,
     )
-    object_key = _record_key_for_url(url)
+    object_key = _record_key_for_source_row(
+        source_type=source_type,
+        source_name=resolved_source_name,
+        source_locator=source_locator,
+        url=url,
+    )
 
     submissions: dict[str, int] = {}
     locator = dict(source_locator or {})
@@ -572,7 +743,13 @@ def upsert_excel_row_submission(
 
     source_type = "excel"
     source_name = _hash_key("excel_source", path, sheet_name)
-    object_key = _record_key_for_url(url)
+    object_key = _hash_key(
+        "excel_row",
+        path,
+        sheet_name,
+        row_index,
+        _normalize_url_for_record_key(url),
+    )
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
@@ -1004,7 +1181,12 @@ def update_task_execution_writeback(
 
 
 def request_task_rerun(submission_id: int, *, scheduled_at: datetime | None = None) -> None:
-    """Move a submission back to pending without mutating old executions."""
+    """Move a submission back to pending without mutating old executions.
+
+    Manual reruns append a new execution attempt. Keep the submission attempt
+    counter aligned with historical executions so the next attempt number does
+    not collide with the `(submission_id, attempt_no)` unique key.
+    """
 
     from apps.finance_crawler.storage.db import get_conn
 
@@ -1013,14 +1195,26 @@ def request_task_rerun(submission_id: int, *, scheduled_at: datetime | None = No
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                UPDATE crawl_task_submissions
-                SET status = 'pending',
-                    scheduled_at = %s,
-                    last_error = NULL
-                WHERE id = %s
-                  AND status <> 'running'
+                UPDATE crawl_task_submissions s
+                LEFT JOIN (
+                    SELECT submission_id, COALESCE(MAX(attempt_no), 0) AS latest_attempt
+                    FROM crawl_task_executions
+                    WHERE submission_id = %s
+                    GROUP BY submission_id
+                ) e ON e.submission_id = s.id
+                SET s.status = 'pending',
+                    s.scheduled_at = %s,
+                    s.attempts = GREATEST(s.attempts, COALESCE(e.latest_attempt, 0)),
+                    s.max_attempts = GREATEST(
+                        s.max_attempts,
+                        s.attempts + 1,
+                        COALESCE(e.latest_attempt, 0) + 1
+                    ),
+                    s.last_error = NULL
+                WHERE s.id = %s
+                  AND s.status <> 'running'
                 """,
-                (scheduled_at, submission_id),
+                (submission_id, scheduled_at, submission_id),
             )
         conn.commit()
     except Exception:

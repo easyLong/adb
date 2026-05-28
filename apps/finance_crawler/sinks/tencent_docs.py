@@ -15,8 +15,12 @@ class TencentDocsSink:
 
     sink_type = "tencent_docs"
 
-    def fetch_grid(self, range_a1: str | None = None) -> tuple[list[list[str]], int]:
-        return tencent_docs_client.fetch_grid(range_a1)
+    def fetch_grid(
+        self,
+        range_a1: str | None = None,
+        doc: tencent_docs_client.DocInfo | None = None,
+    ) -> tuple[list[list[str]], int]:
+        return tencent_docs_client.fetch_grid(range_a1, doc=doc)
 
     def resolve_row_index_for_url(
         self,
@@ -24,8 +28,9 @@ class TencentDocsSink:
         preferred_row_index: int | None = None,
         rows: list[list[str]] | None = None,
         start_row: int | None = None,
+        doc: tencent_docs_client.DocInfo | None = None,
     ) -> int | None:
-        return tencent_docs_rows.resolve_row_index_for_url(url, preferred_row_index, rows, start_row)
+        return tencent_docs_rows.resolve_row_index_for_url(url, preferred_row_index, rows, start_row, doc=doc)
 
     def write_initial_check_results(self, rows: list[dict[str, Any]]) -> None:
         tencent_docs_writeback.write_initial_check_results(rows)
@@ -78,8 +83,11 @@ class TencentDocsSink:
 _DEFAULT_SINK = TencentDocsSink()
 
 
-def fetch_grid(range_a1: str | None = None) -> tuple[list[list[str]], int]:
-    return _DEFAULT_SINK.fetch_grid(range_a1)
+def fetch_grid(
+    range_a1: str | None = None,
+    doc: tencent_docs_client.DocInfo | None = None,
+) -> tuple[list[list[str]], int]:
+    return _DEFAULT_SINK.fetch_grid(range_a1, doc=doc)
 
 
 def resolve_row_index_for_url(
@@ -87,8 +95,9 @@ def resolve_row_index_for_url(
     preferred_row_index: int | None = None,
     rows: list[list[str]] | None = None,
     start_row: int | None = None,
+    doc: tencent_docs_client.DocInfo | None = None,
 ) -> int | None:
-    return _DEFAULT_SINK.resolve_row_index_for_url(url, preferred_row_index, rows, start_row)
+    return _DEFAULT_SINK.resolve_row_index_for_url(url, preferred_row_index, rows, start_row, doc=doc)
 
 
 def write_initial_check_results(rows: list[dict[str, Any]]) -> None:

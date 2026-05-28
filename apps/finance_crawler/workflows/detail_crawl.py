@@ -87,10 +87,6 @@ def run_detail_crawl(limit: int | None = None) -> list[dict]:
 
     deep_links = resolve_urls(records, resolve_short_url, logger)
     results: list[dict] = []
-    writebacks: list[WritebackPlan] = []
-    writeback_records: list[PendingWriteback] = []
-    writeback_execution_ids: dict[int, int] = {}
-    writeback_locators: dict[int, dict] = {}
     stop_reason: str | None = None
 
     for idx, record in enumerate(records, start=1):
@@ -174,16 +170,15 @@ def run_detail_crawl(limit: int | None = None) -> list[dict]:
         )
 
         if writeback_plan.can_write and row_index:
-            writebacks.append(writeback_plan)
-            writeback_execution_ids[record_id] = execution_id
-            writeback_locators[record_id] = writeback_plan.locator
-            writeback_records.append(
-                PendingWriteback(
+            writeback_status, writeback_error = _write_single_detail_result(
+                writeback_service=writeback_service,
+                writeback_plan=writeback_plan,
+                pending_writeback=PendingWriteback(
                     record_id=record_id,
                     task_id=task_id,
                     result_id=result_id,
                     row_index=row_index,
-                )
+                ),
             )
         else:
             logger.warning("skipped %s writeback id=%s: %s", writeback_plan.sink_type, record_id, writeback_plan.skip_reason)
@@ -195,21 +190,23 @@ def run_detail_crawl(limit: int | None = None) -> list[dict]:
                 result_id=result_id,
                 error=writeback_plan.skip_reason,
             )
+            writeback_status = "skipped"
+            writeback_error = writeback_plan.skip_reason
 
         _finish_execution(
             execution_id,
             result=result,
             metrics=metrics,
-            writeback_status="pending" if writeback_plan.can_write and row_index else "skipped",
+            writeback_status=writeback_status,
             writeback_locator=writeback_plan.locator,
-            writeback_error=None if writeback_plan.can_write and row_index else writeback_plan.skip_reason,
+            writeback_error=writeback_error,
         )
-        if not (writeback_plan.can_write and row_index):
+        if writeback_status == "error":
             _update_execution_writeback(
                 execution_id,
-                writeback_status="skipped",
+                writeback_status="error",
                 writeback_locator=writeback_plan.locator,
-                writeback_error=writeback_plan.skip_reason,
+                writeback_error=writeback_error,
             )
 
         result_with_record = dict(result)
@@ -223,38 +220,6 @@ def run_detail_crawl(limit: int | None = None) -> list[dict]:
                 max(Config.DETAIL_POST_DELAY_MAX, Config.DETAIL_POST_DELAY_MIN),
             )
         )
-
-    if writebacks:
-        try:
-            writeback_service.write_detail_results(writebacks)
-            record_pending_writebacks(
-                records=writeback_records,
-                sink_type=writeback_service.sink_type,
-                status="success",
-            )
-            for record_id in writeback_execution_ids:
-                execution_id = writeback_execution_ids.get(record_id)
-                if execution_id:
-                    _update_execution_writeback(
-                        execution_id,
-                        writeback_status="success",
-                        writeback_locator=writeback_locators.get(record_id),
-                    )
-        except Exception as exc:
-            send_alert("Tencent Docs detail writeback failed", str(exc), dedupe_key="docs_detail_writeback")
-            logger.warning("detail writeback failed: %s", exc)
-            record_pending_writebacks(
-                records=writeback_records,
-                sink_type=writeback_service.sink_type,
-                status="error",
-                error=str(exc),
-            )
-            for execution_id in writeback_execution_ids.values():
-                _update_execution_writeback(
-                    execution_id,
-                    writeback_status="error",
-                    writeback_error=str(exc),
-                )
 
     success_count = sum(1 for item in results if item["status"] == "success")
     deleted_count = sum(1 for item in results if item["status"] == "deleted")
@@ -281,6 +246,38 @@ def run_detail_crawl(limit: int | None = None) -> list[dict]:
         logger.warning("report generation failed: %s", exc)
 
     return results
+
+
+def _write_single_detail_result(
+    *,
+    writeback_service,
+    writeback_plan: WritebackPlan,
+    pending_writeback: PendingWriteback,
+) -> tuple[str, str | None]:
+    try:
+        writeback_service.write_detail_results([writeback_plan])
+        record_pending_writebacks(
+            records=[pending_writeback],
+            sink_type=writeback_service.sink_type,
+            status="success",
+        )
+        return "success", None
+    except Exception as exc:
+        error = str(exc)
+        logger.warning("detail writeback failed row=%s: %s", pending_writeback.row_index, error)
+        record_pending_writebacks(
+            records=[pending_writeback],
+            sink_type=writeback_service.sink_type,
+            status="error",
+            error=error,
+        )
+        send_alert(
+            "Tencent Docs detail writeback failed",
+            error,
+            level="warning",
+            dedupe_key="docs_detail_writeback",
+        )
+        return "error", error
 
 
 def _start_execution_for_record(record: dict) -> int | None:

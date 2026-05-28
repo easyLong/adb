@@ -37,8 +37,9 @@ def fetch_and_save(limit: int | None = None) -> list[dict[str, Any]]:
                 source_type=record.source_type,
                 source_name=record.source_name,
                 source_config={
-                    "file_id": source.doc.file_id,
-                    "sheet_id": source.doc.sheet_id,
+                    "file_id": record.locator.get("file_id"),
+                    "sheet_id": record.locator.get("sheet_id"),
+                    "sheet_title": record.locator.get("sheet_title"),
                 },
                 source_locator=record.locator,
                 url=record.url,

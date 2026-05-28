@@ -85,19 +85,27 @@ excel-detail
 | O | 14 | `TENCENT_DOC_COL_READ_COUNT` | 阅读数 |
 | P | 15 | `TENCENT_DOC_COL_COMMENT_COUNT` | 评论数 |
 | Q | 16 | `TENCENT_DOC_COL_DETAIL_STATUS` | 详情采集状态 |
-| R | 17 | `TENCENT_DOC_COL_SCREENSHOT` | 首屏截图 |
+| M | 12 | `TENCENT_DOC_COL_SCREENSHOT` | 首屏截图 |
 
 写回前会用 URL 校验目标行号。同一 URL 出现多行时会跳过写回，避免写错行。
+
+fetch 提交任务的基础条件：工作表标题必须带日期，发帖时间列必须填写时分，帖子链接列必须存在且可解析；系统会用标题日期和发帖时间列的时分拼成完整发帖时间。
+
+默认 fetch 会扫描同一个腾讯文档文件中标题日期等于当天的工作表；历史工作表不再提交新任务。需要补扫历史日期时，可设置 `TENCENT_DOC_SCAN_DATE=YYYY-MM-DD`。
 
 ## 常用配置
 
 | 配置 | 说明 |
 | --- | --- |
 | `FETCH_INTERVAL_MINUTES` | 拉取数据源间隔 |
+| `TENCENT_DOC_READ_RANGE` | 腾讯文档读取范围，默认 `A1:Q2000` |
+| `TENCENT_DOC_SCAN_MODE` | 腾讯文档工作表扫描模式，默认 `today`；可选 `single`/`date`/`filter`/`all` |
+| `TENCENT_DOC_SCAN_DATE` | 补扫指定日期工作表，例如 `2026-05-27` |
+| `TENCENT_DOC_SHEET_TITLE_FILTER` | 按标题关键词筛选工作表 |
 | `CHECK_INTERVAL_MINUTES` | 初检间隔 |
 | `INITIAL_CHECK_DELAY_HOURS` | 初检相对 `source_time` 的延迟小时数 |
 | `DETAIL_TIME` | 每日详情采集时间 |
-| `FETCH_LIMIT` | 单次 fetch 数量 |
+| `FETCH_LIMIT` | 单次 fetch 导入数量，默认 0 表示导入全部候选；测试时可设为正数 |
 | `CHECK_LIMIT` | 单次初检任务数量 |
 | `DETAIL_LIMIT` | 单次详情采集数量，0 表示不限制 |
 | `DETAIL_MAX_RETRIES` | 详情任务最大执行次数 |
