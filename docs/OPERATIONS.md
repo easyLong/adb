@@ -18,48 +18,59 @@ adb devices
 .\scripts\run.ps1 -Task check
 .\scripts\run.ps1 -Task detail
 .\scripts\run.ps1 -Task excel-detail
+.\scripts\run.ps1 -Task link-detail
 .\scripts\run.ps1 -Task report
 .\scripts\run.ps1 -Task scheduler
 .\scripts\run.ps1 -Task supervisor
 ```
 
-## 数据源链接表
-
-部署到新的 Windows 服务器后，先初始化数据库，再把业务输入写入数据源链接表：
-
-```powershell
-.\scripts\run.ps1 -Task db
-.\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
-```
-
-临时本地 Excel 跑批：
-
-```powershell
-.\scripts\run.ps1 -Task config -ExcelInputPath "D:\demo\input.xlsx"
-.\scripts\run.ps1 -Task excel-detail
-```
-
-单条链接测试：
-
-```powershell
-.\scripts\run.ps1 -Task link-detail -SingleLink "https://ur.alipay.com/..."
-```
-
-数据源入口保存在 MySQL 表 `data_source_links` 中，任务启动时会自动加载并覆盖环境变量。
-在线文档数据源保持 `active` 长期监测；本地 Excel 和单条测试链接跑完后会自动改为 `unavailable`。
-任务提交和执行仍使用现有的 `crawl_task_submissions`、`crawl_task_executions` 表。在线腾讯文档默认只提交当天 sheet 的任务；本地 Excel 跑批不要求日期，链接行会直接提交并执行。
-
 Python 模块入口：
 
 ```powershell
+python -m apps.finance_crawler.app --once config
 python -m apps.finance_crawler.app --once fetch
 python -m apps.finance_crawler.app --once check
 python -m apps.finance_crawler.app --once detail
 python -m apps.finance_crawler.app --once excel-detail
+python -m apps.finance_crawler.app --once link-detail
 python -m apps.finance_crawler.app --once report
 ```
 
-## 推荐测试顺序
+## 配置任务源
+
+查看当前任务源：
+
+```powershell
+.\scripts\run.ps1 -Task config
+```
+
+设置在线腾讯文档：
+
+```powershell
+.\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
+```
+
+设置本地 Excel：
+
+```powershell
+.\scripts\run.ps1 -Task config -ExcelInputPath "D:\demo\input.xlsx"
+```
+
+设置单条测试链接：
+
+```powershell
+.\scripts\run.ps1 -Task config -SingleLink "https://ur.alipay.com/..."
+```
+
+临时设置其它运行参数：
+
+```powershell
+.\scripts\run.ps1 -Task config -ConfigSet "TENCENT_DOC_SCAN_MODE=date" -ConfigSet "TENCENT_DOC_SCAN_DATE=2026-05-27"
+```
+
+任务源入口保存在 MySQL `data_source_links` 表。任务启动时会自动加载并覆盖环境变量。
+
+## 推荐在线测试顺序
 
 1. 初始化数据库。
 
@@ -67,43 +78,55 @@ python -m apps.finance_crawler.app --once report
 .\scripts\run.ps1 -Task db
 ```
 
-2. 拉取候选链接。
+2. 配置腾讯文档。
+
+```powershell
+.\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
+```
+
+3. 拉取候选链接。
 
 ```powershell
 .\scripts\run.ps1 -Task fetch
 ```
 
-3. 手机保持解锁，跑初检。
+4. 手机保持解锁，跑初检。
 
 ```powershell
 .\scripts\run.ps1 -Task check
 ```
 
-4. 跑详情采集。
+5. 跑详情采集。
 
 ```powershell
 .\scripts\run.ps1 -Task detail
 ```
 
-5. 生成报告。
+## 本地 Excel 直接详情采集
 
 ```powershell
-.\scripts\run.ps1 -Task report
+.\scripts\run.ps1 -Task config -ExcelInputPath "D:\demo\input.xlsx"
+.\scripts\run.ps1 -Task excel-detail
 ```
 
-## 本地 Excel 直接详情采集
+也可以继续用环境变量：
 
 ```powershell
 $env:EXCEL_DETAIL_INPUT_PATH = "D:\demo\input.xlsx"
 $env:EXCEL_DETAIL_OUTPUT_PATH = "D:\demo\output.xlsx"
 $env:EXCEL_DETAIL_SOURCE_FILTER = "alipay,antfortune,tenpay"
-$env:EXCEL_DETAIL_ALIPAY_LIMIT = "50"
-$env:EXCEL_DETAIL_ANTFORTUNE_LIMIT = "50"
-$env:EXCEL_DETAIL_TENPAY_LIMIT = "0"
 .\scripts\run.ps1 -Task excel-detail
 ```
 
 ## 单链接测试
+
+推荐使用新入口：
+
+```powershell
+.\scripts\run.ps1 -Task link-detail -SingleLink "https://ur.alipay.com/..."
+```
+
+仍可使用调试脚本直接输出完整 JSON：
 
 ```powershell
 python .\scripts\crawl_one_link.py "<url>"
@@ -164,7 +187,8 @@ $env:DETAIL_ENABLE_OCR = "true"
 
 - 检查 `TENCENT_DOC_ACCESS_TOKEN` 是否过期。
 - 检查 `TENCENT_DOC_CLIENT_ID`、`TENCENT_DOC_OPEN_ID`。
-- 检查 `TENCENT_DOC_FILE_ID` 和 `TENCENT_DOC_SHEET_ID`。
+- 检查 `TENCENT_DOC_URL` 是否正确写入 `data_source_links`。
+- 检查 `TENCENT_DOC_SCAN_MODE` 和 `TENCENT_DOC_SCAN_DATE` 是否匹配目标工作表。
 - 检查 `TENCENT_DOC_READ_RANGE` 是否覆盖目标行。
 
 ### 阅读数或评论数不准

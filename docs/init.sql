@@ -4,6 +4,27 @@ CREATE DATABASE IF NOT EXISTS finance_crawler
 
 USE finance_crawler;
 
+CREATE TABLE IF NOT EXISTS data_source_links (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    source_key VARCHAR(128) NOT NULL,
+    data_source_link TEXT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    description TEXT NULL,
+    updated_by VARCHAR(64) NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_source_key (source_key),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO data_source_links (source_key, data_source_link, status, description, updated_by)
+VALUES
+    ('TENCENT_DOC_URL', '', 'active', 'Tencent Docs source URL', 'system'),
+    ('EXCEL_DETAIL_INPUT_PATH', '', 'unavailable', 'Local Excel detail input path', 'system'),
+    ('SINGLE_TEST_LINK', '', 'unavailable', 'One-shot single detail test link', 'system')
+ON DUPLICATE KEY UPDATE
+    description = VALUES(description);
+
 CREATE TABLE IF NOT EXISTS crawl_sources (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     source_type VARCHAR(64) NOT NULL,
