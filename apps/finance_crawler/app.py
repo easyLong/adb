@@ -78,7 +78,7 @@ def _register_jobs() -> None:
         logger.info("registered check every %s minutes", Config.CHECK_INTERVAL_MINUTES)
 
     schedule.every().day.at(Config.DETAIL_TIME).do(safe_run, run_detail, "detail_crawl")
-    logger.info("registered detail crawl daily at %s, limit=%s", Config.DETAIL_TIME, Config.DETAIL_LIMIT)
+    logger.info("registered detail crawl daily at %s", Config.DETAIL_TIME)
 
     schedule.every().day.at(Config.REPORT_TIME).do(
         safe_run, generate_report, "report"

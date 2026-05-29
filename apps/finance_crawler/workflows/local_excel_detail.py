@@ -17,9 +17,6 @@ from typing import Any
 
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawlers.constants import (
-    SOURCE_ALIPAY,
-    SOURCE_ANTFORTUNE,
-    SOURCE_TENPAY,
     SOURCE_UNKNOWN,
 )
 from apps.finance_crawler.mobile.crawler import (
@@ -42,13 +39,6 @@ from apps.finance_crawler.utils.link_source import detect_link_source
 from apps.finance_crawler.utils.logger import get_logger
 
 logger = get_logger("excel_detail_workflow")
-
-_SOURCE_LIMITS = {
-    SOURCE_ALIPAY: Config.EXCEL_DETAIL_ALIPAY_LIMIT,
-    SOURCE_ANTFORTUNE: Config.EXCEL_DETAIL_ANTFORTUNE_LIMIT,
-    SOURCE_TENPAY: Config.EXCEL_DETAIL_TENPAY_LIMIT,
-}
-
 
 @dataclass(frozen=True)
 class ExcelDetailTarget:
@@ -193,10 +183,6 @@ def _pick_targets(worksheet) -> list[ExcelDetailTarget]:
             continue
         if Config.EXCEL_DETAIL_ONLY_EMPTY and _has_existing_result(worksheet, row_index):
             continue
-        if _source_limit_reached(source_app, source_counts[source_app]):
-            continue
-        if Config.EXCEL_DETAIL_LIMIT and len(targets) >= Config.EXCEL_DETAIL_LIMIT:
-            break
         source_counts[source_app] += 1
         targets.append(ExcelDetailTarget(row_index=row_index, source_app=source_app, url=url))
     return targets
@@ -389,11 +375,6 @@ def _has_existing_result(worksheet, row_index: int) -> bool:
         Config.EXCEL_DETAIL_COL_STATUS,
     )
     return any(_cell_value(worksheet, row_index, column) for column in columns if column >= 0)
-
-
-def _source_limit_reached(source_app: str, current_count: int) -> bool:
-    limit = _SOURCE_LIMITS.get(source_app, 0)
-    return bool(limit and current_count >= limit)
 
 
 def _source_filter() -> set[str]:

@@ -128,14 +128,11 @@ link-detail -SingleLink
 | `CHECK_INTERVAL_MINUTES` | 初检间隔 |
 | `INITIAL_CHECK_DELAY_HOURS` | 初检相对 `source_time` 的延迟小时数 |
 | `DETAIL_TIME` | 每日详情采集时间 |
-| `FETCH_LIMIT` | 单次 fetch 数量 |
-| `CHECK_LIMIT` | 单次初检任务数量 |
-| `DETAIL_LIMIT` | 单次详情采集数量，0 表示不限制 |
+| `FETCH_LIMIT` | 单次 fetch 导入数量，默认 0 表示导入全部候选；测试时可设为正数 |
 | `DETAIL_MAX_RETRIES` | 详情任务最大执行次数 |
 | `DETAIL_MAX_CAPTURE_PAGES` | 详情采集最多主帖截图页数 |
 | `DETAIL_ENABLE_OCR` | 是否启用 OCR |
 | `DETAIL_REQUIRES_CHECK_SUCCESS` | 详情采集是否等待初检成功 |
-| `MAX_RECORDS_PER_RUN` | 单次任务最多处理记录数，0 表示不限制 |
 | `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 输入文件 |
 | `EXCEL_DETAIL_OUTPUT_PATH` | 本地 Excel 输出文件 |
 | `WRITEBACK_SINK_TYPE` | 写回目标，支持 `tencent_docs`、`excel` |

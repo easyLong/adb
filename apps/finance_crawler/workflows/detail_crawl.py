@@ -55,11 +55,12 @@ def run_detail_crawl(limit: int | None = None) -> list[dict]:
     start_time = time.time()
     budget = OperationBudget("detail_crawl")
     writeback_service = default_writeback_service()
-    task_limit = Config.DETAIL_LIMIT if limit is None else limit
-    records = get_pending_detail_records(task_limit)
+    if limit is not None:
+        logger.info("detail crawl count limit ignored: %s", limit)
+    records = get_pending_detail_records()
     records = budget.limit_items(records)
     total = len(records)
-    logger.info("detail crawl started: total=%s limit=%s", total, task_limit)
+    logger.info("detail crawl started: total=%s", total)
 
     if not records:
         log_task("detail_crawl", "success", "no pending records", time.time() - start_time)

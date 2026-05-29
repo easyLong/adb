@@ -32,15 +32,13 @@ class PendingWriteback:
 def get_pending_initial_check_records() -> list[dict]:
     """Return records that need the existence/account check."""
 
-    from apps.finance_crawler.config import Config
-
-    return get_pending_check_submissions(Config.CHECK_LIMIT or 1000)
+    return get_pending_check_submissions()
 
 
-def get_pending_detail_records(limit: int | None = None) -> list[dict]:
+def get_pending_detail_records() -> list[dict]:
     """Return records that need full detail crawling."""
 
-    return get_pending_detail_submissions(limit)
+    return get_pending_detail_submissions()
 
 
 def record_crawl_result(

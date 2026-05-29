@@ -1339,7 +1339,7 @@ def insert_crawl_result(
         conn.close()
 
 
-def get_pending_check_submissions(limit: int) -> list[dict[str, Any]]:
+def get_pending_check_submissions() -> list[dict[str, Any]]:
     """Return due initial-check records from task submissions."""
     from apps.finance_crawler.storage.db import get_conn
 
@@ -1357,13 +1357,11 @@ def get_pending_check_submissions(limit: int) -> list[dict[str, Any]]:
           AND (s.scheduled_at IS NULL OR s.scheduled_at <= %s)
           AND s.attempts < s.max_attempts
         ORDER BY s.source_time ASC
-        LIMIT %s
     """
     now = datetime.now()
     params: list[Any] = [
         INITIAL_CHECK_TASK_TYPE,
         now,
-        limit,
     ]
     conn = get_conn()
     try:
