@@ -100,7 +100,12 @@ _DISPLAY_LABELS: dict[str, str] = {
 
 def ensure_runtime_config_defaults(cursor) -> None:
     rows = [
-        ("TENCENT_DOC_URL", Config.QQ_DOC_URL, "active", _DESCRIPTIONS["TENCENT_DOC_URL"]),
+        (
+            "TENCENT_DOC_URL",
+            Config.QQ_DOC_URL,
+            "active" if Config.QQ_DOC_URL else "unavailable",
+            _DESCRIPTIONS["TENCENT_DOC_URL"],
+        ),
         (
             "EXCEL_DETAIL_INPUT_PATH",
             Config.EXCEL_DETAIL_INPUT_PATH,

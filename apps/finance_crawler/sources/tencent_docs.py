@@ -83,6 +83,8 @@ class TencentDocsSource:
                         "sheet_id": sheet_id,
                         "sheet_title": item.get("sheet_title"),
                         "row_index": row_index,
+                        "source_time_text": item.get("source_time_text"),
+                        "detail_only": item.get("detail_only"),
                     },
                     raw=_json_safe_item(item),
                 )
@@ -173,7 +175,10 @@ def _ensure_result_headers(
             )
         )
     if requests_payload:
-        tencent_docs_client.post_batch_update(requests_payload, "ensure_result_headers", doc=doc)
+        try:
+            tencent_docs_client.post_batch_update(requests_payload, "ensure_result_headers", doc=doc)
+        except Exception as exc:
+            logger.warning("Tencent Docs result header update skipped: %s", exc)
 
 
 def _header_cells(doc: tencent_docs_client.DocInfo | None = None) -> list[dict[str, Any]]:

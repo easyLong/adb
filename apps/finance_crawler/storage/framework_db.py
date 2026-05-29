@@ -623,6 +623,7 @@ def upsert_source_record_submissions_tx(
     source_time: datetime | None = None,
     source_app: str | None = None,
     now: datetime | None = None,
+    skip_initial_check: bool = False,
     created_by: str = "fetch",
 ) -> dict[str, int]:
     """Create the planned task submissions for one source record.
@@ -652,7 +653,7 @@ def upsert_source_record_submissions_tx(
 
     submissions: dict[str, int] = {}
     locator = dict(source_locator or {})
-    if not _should_skip_initial_check(source_time, now):
+    if not skip_initial_check and not _should_skip_initial_check(source_time, now):
         submissions[INITIAL_CHECK_TASK_TYPE] = upsert_task_submission_tx(
             cursor,
             task_type=INITIAL_CHECK_TASK_TYPE,
@@ -696,6 +697,7 @@ def upsert_source_record_submissions(
     source_time: datetime | None = None,
     source_app: str | None = None,
     now: datetime | None = None,
+    skip_initial_check: bool = False,
     created_by: str = "fetch",
 ) -> dict[str, int]:
     """Create or refresh planned task submissions for one source record."""
@@ -715,6 +717,7 @@ def upsert_source_record_submissions(
                 source_time=source_time,
                 source_app=source_app,
                 now=now,
+                skip_initial_check=skip_initial_check,
                 created_by=created_by,
             )
         conn.commit()

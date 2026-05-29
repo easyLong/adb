@@ -96,6 +96,20 @@ def parse_time_from_cell(value: str) -> tuple[int, int, int] | None:
     return None
 
 
+def is_post_market_marker(value: str) -> bool:
+    text = _normalize_date_text(value)
+    return any(marker in text for marker in ("盘后", "盤後"))
+
+
+def _post_market_time() -> tuple[int, int, int]:
+    parts = [int(part) for part in Config.QQ_POST_MARKET_TIME.split(":")]
+    if len(parts) == 2:
+        return parts[0], parts[1], 0
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    raise ValueError(f"invalid TENCENT_DOC_POST_MARKET_TIME: {Config.QQ_POST_MARKET_TIME}")
+
+
 def parse_source_time(value: str, sheet_title: str = "") -> datetime | None:
     sheet_date = parse_sheet_date(sheet_title)
     cell_time = parse_time_from_cell(value)
@@ -105,6 +119,8 @@ def parse_source_time(value: str, sheet_title: str = "") -> datetime | None:
     text = _normalize_date_text(value)
     if not text:
         return None
+    if sheet_date and is_post_market_marker(text):
+        return datetime(*sheet_date, *_post_market_time())
     if sheet_date and re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", text):
         parts = [int(part) for part in text.split(":")]
         return datetime(*sheet_date, parts[0], parts[1], parts[2] if len(parts) == 3 else 0)
@@ -150,7 +166,9 @@ def eligible_candidates(
             continue
 
         url = row[url_col].strip()
-        source_time = parse_source_time(row[source_time_col], sheet_title)
+        source_time_text = row[source_time_col]
+        detail_only = is_post_market_marker(source_time_text)
+        source_time = parse_source_time(source_time_text, sheet_title)
         if not url or not source_time:
             continue
         if not is_supported_crawl_url(url):
@@ -163,6 +181,8 @@ def eligible_candidates(
                 "url": url,
                 "source_app": detect_link_source(url),
                 "source_time": source_time,
+                "source_time_text": source_time_text,
+                "detail_only": detail_only,
                 "row_index": row_index,
                 "age_hours": round((now - source_time).total_seconds() / 3600, 2),
             }

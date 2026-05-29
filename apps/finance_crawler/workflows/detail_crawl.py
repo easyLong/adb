@@ -51,6 +51,46 @@ def _empty_result(status: str = "error", error: str | None = None) -> dict:
     }
 
 
+def _is_blank_target_result(result: dict) -> bool:
+    if result.get("status") != "error":
+        return False
+    return "post content was not detected" in str(result.get("error") or "")
+
+
+def _open_and_scrape_with_blank_retry(
+    *,
+    opened_url: str,
+    record_id: int,
+    source_app: str,
+) -> tuple[dict, float]:
+    open_duration = 0.0
+    attempts = max(1, Config.DETAIL_BLANK_REOPEN_RETRIES + 1)
+    result: dict = {}
+
+    for attempt in range(1, attempts + 1):
+        open_start = time.perf_counter()
+        open_url(opened_url)
+        open_duration += time.perf_counter() - open_start
+        result = scrape_record_content(record_id, source_app=source_app)
+
+        if not _is_blank_target_result(result) or attempt >= attempts:
+            if attempt > 1:
+                metrics = dict(result.get("app_metrics") or {})
+                metrics["blank_reopen_attempts"] = attempt - 1
+                result["app_metrics"] = metrics
+            return result, open_duration
+
+        logger.warning(
+            "blank target page detected id=%s attempt=%s/%s; reopening link",
+            record_id,
+            attempt,
+            attempts,
+        )
+        time.sleep(Config.DETAIL_BLANK_REOPEN_WAIT)
+
+    return result, open_duration
+
+
 def run_detail_crawl(limit: int | None = None) -> list[dict]:
     start_time = time.time()
     budget = OperationBudget("detail_crawl")
@@ -110,10 +150,11 @@ def run_detail_crawl(limit: int | None = None) -> list[dict]:
         open_duration = 0.0
 
         try:
-            open_start = time.perf_counter()
-            open_url(deep_links.get(record_id, url))
-            open_duration = time.perf_counter() - open_start
-            result = scrape_record_content(record_id, source_app=source_app)
+            result, open_duration = _open_and_scrape_with_blank_retry(
+                opened_url=deep_links.get(record_id, url),
+                record_id=record_id,
+                source_app=source_app,
+            )
         except DeviceUnavailable as exc:
             reset_device_session()
             _finish_execution(

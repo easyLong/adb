@@ -24,6 +24,44 @@ adb devices
 .\scripts\run.ps1 -Task supervisor
 ```
 
+## 数据源链接表
+
+部署到新的 Windows 服务器后，先初始化数据库，再把业务输入写入数据源链接表：
+
+```powershell
+.\scripts\run.ps1 -Task db
+.\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
+```
+
+临时本地 Excel 跑批：
+
+```powershell
+.\scripts\run.ps1 -Task config -ExcelInputPath "D:\demo\input.xlsx"
+.\scripts\run.ps1 -Task excel-detail
+```
+
+单条链接测试：
+
+```powershell
+.\scripts\run.ps1 -Task link-detail -SingleLink "https://ur.alipay.com/..."
+```
+
+补扫历史日期并只补详情：
+
+```powershell
+$env:TENCENT_DOC_SCAN_DATE = "2026-05-27"
+.\scripts\run.ps1 -Task fetch
+
+$env:TENCENT_DOC_SCAN_DATE = "2026-05-26"
+.\scripts\run.ps1 -Task fetch
+
+.\scripts\run.ps1 -Task detail
+```
+
+数据源入口保存在 MySQL 表 `data_source_links` 中，任务启动时会自动加载并覆盖环境变量。
+在线文档数据源保持 `active` 长期监测；本地 Excel 和单条测试链接跑完后会自动改为 `unavailable`。
+任务提交和执行仍使用现有的 `crawl_task_submissions`、`crawl_task_executions` 表。在线腾讯文档默认只提交当天 sheet 的任务；本地 Excel 跑批不要求日期，链接行会直接提交并执行。
+
 Python 模块入口：
 
 ```powershell
@@ -182,6 +220,7 @@ $env:DETAIL_ENABLE_OCR = "true"
 - `adb devices` 必须是 `device`。
 - 确认目标 App 已安装并登录。
 - 手动打开分享链接确认能进入详情页。
+- 支付宝偶发白屏时，详情采集会自动重开同一链接。可通过 `DETAIL_BLANK_REOPEN_RETRIES` 和 `DETAIL_BLANK_REOPEN_WAIT` 调整重试。
 
 ### 腾讯文档读不到数据
 

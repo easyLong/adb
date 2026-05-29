@@ -12,6 +12,13 @@
 
 程序会自动从 `TENCENT_DOC_URL` 解析 `file_id` 和 `sheet_id`，不需要手动写入配置表。
 
+| 信息 | 处理方式 |
+| --- | --- |
+| 腾讯文档 `file_id` / `sheet_id` | 程序从 `TENCENT_DOC_URL` 自动解析，不写入配置表。 |
+| 在线文档扫描规则 | 默认只扫描当天日期的 sheet；临时补扫历史日期时使用 `TENCENT_DOC_SCAN_DATE` 环境变量。 |
+| 在线文档读取范围 | 使用程序默认配置。 |
+| 本地 Excel 输出路径 | 默认写回原文件。 |
+
 ## 查看配置
 
 ```powershell
@@ -31,6 +38,17 @@
 .\scripts\run.ps1 -Task config -ConfigSet "TENCENT_DOC_SCAN_MODE=date" -ConfigSet "TENCENT_DOC_SCAN_DATE=2026-05-27"
 .\scripts\run.ps1 -Task fetch
 ```
+
+临时只补详情：
+
+```powershell
+$env:TENCENT_DOC_SCAN_DATE = "2026-05-27"
+.\scripts\run.ps1 -Task fetch
+.\scripts\run.ps1 -Task detail
+$env:TENCENT_DOC_SCAN_DATE = ""
+```
+
+历史日期通常只补详情。只要当前时间已经晚于发帖日期次日 `DETAIL_TIME`，程序会跳过初检，只提交 `detail_crawl`。
 
 常见扫描模式：
 

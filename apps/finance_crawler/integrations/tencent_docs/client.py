@@ -59,6 +59,8 @@ def parse_doc_url(url: str) -> DocInfo:
 def configured_doc() -> DocInfo:
     if Config.QQ_FILE_ID and Config.QQ_SHEET_ID:
         return DocInfo(Config.QQ_FILE_ID, Config.QQ_SHEET_ID)
+    if not Config.QQ_DOC_URL:
+        raise RuntimeError("TENCENT_DOC_URL is not configured")
     return parse_doc_url(Config.QQ_DOC_URL)
 
 

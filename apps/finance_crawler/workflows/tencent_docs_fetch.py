@@ -45,6 +45,7 @@ def fetch_and_save(limit: int | None = None) -> list[dict[str, Any]]:
                 url=record.url,
                 source_time=record.source_time,
                 source_app=source_app,
+                skip_initial_check=bool(record.raw.get("detail_only")),
                 created_by="fetch_docs",
             )
             by_source[source_app] = by_source.get(source_app, 0) + 1

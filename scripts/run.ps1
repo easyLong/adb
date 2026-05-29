@@ -47,15 +47,6 @@ function Load-MysqlEnv {
 Load-TencentEnv $TencentEnvFile
 Load-MysqlEnv $MysqlEnvFile
 
-if (-not $env:TENCENT_DOC_URL) {
-    $env:TENCENT_DOC_URL = "https://docs.qq.com/sheet/DY1hCSG96TkVySmp1?tab=BB08J2"
-}
-if (-not $env:TENCENT_DOC_FILE_ID) {
-    $env:TENCENT_DOC_FILE_ID = "DY1hCSG96TkVySmp1"
-}
-if (-not $env:TENCENT_DOC_SHEET_ID) {
-    $env:TENCENT_DOC_SHEET_ID = "BB08J2"
-}
 if (-not $env:ADB_PATH) {
     $BundledAdb = Join-Path $Root "platform-tools\adb.exe"
     if (Test-Path -LiteralPath $BundledAdb) {

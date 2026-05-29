@@ -53,16 +53,14 @@ class Config:
     DB_CONNECT_TIMEOUT = _env_int("MYSQL_CONNECT_TIMEOUT", 10)
 
     # Tencent Docs OpenAPI
-    QQ_DOC_URL = _env(
-        "TENCENT_DOC_URL",
-        "https://docs.qq.com/sheet/DY1hCSG96TkVySmp1?tab=BB08J2",
-    )
-    QQ_FILE_ID = _env("TENCENT_DOC_FILE_ID", "DY1hCSG96TkVySmp1")
-    QQ_SHEET_ID = _env("TENCENT_DOC_SHEET_ID", "BB08J2")
+    QQ_DOC_URL = _env("TENCENT_DOC_URL")
+    QQ_FILE_ID = _env("TENCENT_DOC_FILE_ID")
+    QQ_SHEET_ID = _env("TENCENT_DOC_SHEET_ID")
     QQ_READ_RANGE = _env("TENCENT_DOC_READ_RANGE", "A1:Q2000")
     QQ_SCAN_MODE = _env("TENCENT_DOC_SCAN_MODE", "today")
     QQ_SCAN_DATE = _env("TENCENT_DOC_SCAN_DATE", "")
     QQ_SHEET_TITLE_FILTER = _env("TENCENT_DOC_SHEET_TITLE_FILTER", "")
+    QQ_POST_MARKET_TIME = _env("TENCENT_DOC_POST_MARKET_TIME", "15:30")
 
     QQ_ACCESS_TOKEN = _env("TENCENT_DOC_ACCESS_TOKEN")
     QQ_CLIENT_ID = _env("TENCENT_DOC_CLIENT_ID")
@@ -100,7 +98,7 @@ class Config:
     FETCH_ONLY_ELIGIBLE = _env_bool("FETCH_ONLY_ELIGIBLE", False)
     # 0 means import all discovered rows. Set a positive value for test runs.
     FETCH_LIMIT = _env_int("FETCH_LIMIT", 0)
-    DETAIL_TIME = _env("DETAIL_TIME", "10:00")
+    DETAIL_TIME = _env("DETAIL_TIME", "08:00")
     REPORT_TIME = _env("REPORT_TIME", "11:30")
 
     ENABLE_CHECKER = _env_bool("ENABLE_CHECKER", True)
@@ -150,6 +148,8 @@ class Config:
     SCROLL_TIMES = _env_int("SCROLL_TIMES", 2)
     DETAIL_MAX_CAPTURE_PAGES = _env_int("DETAIL_MAX_CAPTURE_PAGES", 3)
     PAGE_LOAD_WAIT = _env_float("PAGE_LOAD_WAIT", 3.0)
+    DETAIL_BLANK_REOPEN_RETRIES = _env_int("DETAIL_BLANK_REOPEN_RETRIES", 2)
+    DETAIL_BLANK_REOPEN_WAIT = _env_float("DETAIL_BLANK_REOPEN_WAIT", 2.0)
     DETAIL_POST_DELAY_MIN = _env_float("DETAIL_POST_DELAY_MIN", 1.0)
     DETAIL_POST_DELAY_MAX = _env_float("DETAIL_POST_DELAY_MAX", 2.0)
     DETAIL_SCROLL_WAIT = _env_float("DETAIL_SCROLL_WAIT", 0.8)

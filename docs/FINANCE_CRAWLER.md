@@ -120,17 +120,32 @@ link-detail -SingleLink
 
 写回前会用 URL 校验目标行号。同一 URL 出现多行时会跳过写回，避免写错行。
 
+fetch 提交任务的基础条件：工作表标题必须带日期，发帖时间列必须填写时分，帖子链接列必须存在且可解析；系统会用标题日期和发帖时间列的时分拼成完整发帖时间。
+
+默认 fetch 会扫描同一个腾讯文档文件中标题日期等于当天的工作表；历史工作表不再提交新任务。需要补扫历史日期时，可设置 `TENCENT_DOC_SCAN_DATE=YYYY-MM-DD`。
+
+历史日期一般只补详情：当 `source_time` 已经超过次日 `DETAIL_TIME` 时，fetch 会跳过 `initial_check`，只提交 `detail_crawl`。发帖时间写成 `盘后` / `盤後` 时，会使用工作表标题日期加 `TENCENT_DOC_POST_MARKET_TIME`，默认 `15:30`，同样只走次日详情任务。
+
+支付宝 H5 偶发只打开空白 Nebula 容器时，详情采集会把“没有正文、没有阅读数、没有评论数”的空白目标页识别出来，自动重开同一个 deep link 再采。重试后如果进入删除页，会按 `deleted/内容不见了` 写回；仍然空白才记为错误。
+
 ## 常用配置
 
 | 配置 | 说明 |
 | --- | --- |
 | `FETCH_INTERVAL_MINUTES` | 拉取数据源间隔 |
+| `TENCENT_DOC_READ_RANGE` | 腾讯文档读取范围，默认 `A1:Q2000` |
+| `TENCENT_DOC_SCAN_MODE` | 腾讯文档工作表扫描模式，默认 `today`；可选 `single`/`date`/`filter`/`all` |
+| `TENCENT_DOC_SCAN_DATE` | 补扫指定日期工作表，例如 `2026-05-27` |
+| `TENCENT_DOC_SHEET_TITLE_FILTER` | 按标题关键词筛选工作表 |
+| `TENCENT_DOC_POST_MARKET_TIME` | `盘后` 发帖时间兜底时分，默认 `15:30` |
 | `CHECK_INTERVAL_MINUTES` | 初检间隔 |
 | `INITIAL_CHECK_DELAY_HOURS` | 初检相对 `source_time` 的延迟小时数 |
 | `DETAIL_TIME` | 每日详情采集时间 |
 | `FETCH_LIMIT` | 单次 fetch 导入数量，默认 0 表示导入全部候选；测试时可设为正数 |
 | `DETAIL_MAX_RETRIES` | 详情任务最大执行次数 |
 | `DETAIL_MAX_CAPTURE_PAGES` | 详情采集最多主帖截图页数 |
+| `DETAIL_BLANK_REOPEN_RETRIES` | 详情页空白时重开同一链接的次数，默认 2 |
+| `DETAIL_BLANK_REOPEN_WAIT` | 空白页重开前等待秒数，默认 2.0 |
 | `DETAIL_ENABLE_OCR` | 是否启用 OCR |
 | `DETAIL_REQUIRES_CHECK_SUCCESS` | 详情采集是否等待初检成功 |
 | `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 输入文件 |
