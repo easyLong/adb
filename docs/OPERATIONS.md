@@ -182,6 +182,10 @@ python .\scripts\crawl_one_link.py "<url>" --record-id 10001
 
 supervisor 会看护调度器，异常退出后自动重启。设备断开、未授权、离线或多设备未指定 `DEVICE_SERIAL` 时，本轮 `check` / `detail` 会中止并告警。
 
+Windows 服务器上也可以直接双击项目根目录的 `start_supervisor.cmd` 启动主流程。窗口保持打开表示主流程正在运行；需要停止时关闭该窗口即可。如果启动失败，窗口会停留在错误输出处，方便排查。
+
+需要手动补跑在线腾讯文档历史日期的详情任务时，可以双击项目根目录的 `backfill_detail_by_date.cmd`，按提示输入日期，例如 `2026-05-26,2026-05-27`。脚本会临时使用 `TENCENT_DOC_SCAN_MODE=date` 和对应日期执行 `fetch`，再设置 `DETAIL_SOURCE_DATES` 只消费这些日期的 `detail` 任务；这些临时变量只作用于本次窗口，不会把长期主流程改成历史补跑模式。
+
 ## 截图和 OCR
 
 截图优先走：

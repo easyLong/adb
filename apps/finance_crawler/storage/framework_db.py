@@ -79,6 +79,20 @@ def _should_skip_initial_check(source_time: datetime, now: datetime | None = Non
     return (now or datetime.now()) >= _detail_scheduled_at(source_time)
 
 
+def _detail_source_dates_filter() -> list[str]:
+    raw = str(getattr(_config(), "DETAIL_SOURCE_DATES", "") or "").strip()
+    if not raw:
+        return []
+    dates: list[str] = []
+    for item in raw.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        datetime.strptime(value, "%Y-%m-%d")
+        dates.append(value)
+    return dates
+
+
 def _hash_key(prefix: str, *parts: Any) -> str:
     raw = "\x1f".join(str(part or "") for part in parts)
     return f"{prefix}:{hashlib.sha1(raw.encode('utf-8')).hexdigest()}"
@@ -1400,6 +1414,13 @@ def get_pending_detail_submissions(limit: int | None = None) -> list[dict[str, A
           )
         """
         check_params = [INITIAL_CHECK_TASK_TYPE, INITIAL_CHECK_TASK_TYPE]
+    date_filter = _detail_source_dates_filter()
+    date_clause = ""
+    date_params: list[Any] = []
+    if date_filter:
+        placeholders = ", ".join(["%s"] * len(date_filter))
+        date_clause = f"AND DATE(s.source_time) IN ({placeholders})"
+        date_params = date_filter
     sql = f"""
         SELECT
             s.id AS submission_id,
@@ -1413,12 +1434,14 @@ def get_pending_detail_submissions(limit: int | None = None) -> list[dict[str, A
           AND s.status IN ('pending', 'failed_retryable')
           AND (s.scheduled_at IS NULL OR s.scheduled_at <= %s)
           AND s.attempts < s.max_attempts
+          {date_clause}
           {check_clause}
         ORDER BY s.source_time ASC
     """
     params: list[Any] = [
         DETAIL_CRAWL_TASK_TYPE,
         datetime.now(),
+        *date_params,
         *check_params,
     ]
     if limit and limit > 0:
