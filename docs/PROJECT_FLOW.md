@@ -209,9 +209,11 @@ services/remarks.py
 | task_type | 调度时间 | 作用 |
 | --- | --- | --- |
 | `initial_check` | `source_time + INITIAL_CHECK_DELAY_HOURS` | 判断帖子是否存在，提取账号 |
-| `detail_crawl` | `source_time` 日期次日 `DETAIL_TIME` | 采集详情内容、阅读、评论、截图和 App 专属指标 |
+| `detail_crawl` | `source_time` 日期次日 `DETAIL_TIME` 生成 `scheduled_at`；实际由详情队列轮询 `scheduled_at <= now` 的任务 | 采集详情内容、阅读、评论、截图和 App 专属指标 |
 
 如果导入时已经晚于详情采集窗口，会跳过 `initial_check`，只生成 `detail_crawl`。
+
+详情任务不再依赖每日 `DETAIL_TIME` 那一个触发瞬间。`DETAIL_TIME` 只用于给任务生成 `scheduled_at`，scheduler 按 `DETAIL_INTERVAL_MINUTES` 定期扫描到期任务。只要任务满足 `scheduled_at <= now`、状态可运行、重试次数未耗尽，就会被下一轮详情扫描消费；这样程序或手机在 08:00 不可用时，恢复后也能自动补跑。
 
 ## 5. 腾讯文档扫描规则
 

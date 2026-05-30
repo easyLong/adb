@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `.env` | `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE` | 只用于连接 MySQL，不提交 Git |
 | `data_source_links` | `TENCENT_DOC_URL`、`EXCEL_DETAIL_INPUT_PATH`、`SINGLE_TEST_LINK` | 数据从哪里来 |
-| `app_config` | `TENCENT_DOC_*`、`APP_OPEN_RECOVERY_RETRIES`、`APP_RESTART_WAIT` | 应用级运行配置：腾讯文档 OpenAPI 身份、App 采集保护参数 |
+| `app_config` | `TENCENT_DOC_*`、`APP_OPEN_RECOVERY_RETRIES`、`APP_RESTART_WAIT`、`DETAIL_INTERVAL_MINUTES`、`TASK_RUNNING_TIMEOUT_MINUTES` | 应用级运行配置：腾讯文档 OpenAPI 身份、App 采集和调度保护参数 |
 
 程序启动任务前会调用 `load_runtime_config()`，先从 `data_source_links` 读取任务入口，再从 `app_config` 读取腾讯文档 OpenAPI 和 App 采集保护配置，并覆盖到当前进程的 `Config`。
 
@@ -38,7 +38,7 @@ MYSQL_DATABASE=finance_crawler
 | --- | --- | --- |
 | 任务源配置 | `data_source_links` | 在线腾讯文档、本地 Excel、单条测试链接 |
 | 腾讯文档 OpenAPI | `app_config` | 读写腾讯文档所需身份 |
-| App 采集保护 | `app_config` | 白屏、系统更新弹窗、App 卡死时的自动恢复参数 |
+| App 采集和调度保护 | `app_config` | 白屏、系统更新弹窗、App 卡死时的自动恢复参数，以及详情队列轮询间隔 |
 
 `app_config.is_secret=1` 的值会在命令行里打码显示。
 
@@ -106,13 +106,17 @@ ON DUPLICATE KEY UPDATE
 ```powershell
 .\scripts\run.ps1 -Task config `
   -ConfigSet "APP_OPEN_RECOVERY_RETRIES=1" `
-  -ConfigSet "APP_RESTART_WAIT=2.0"
+  -ConfigSet "APP_RESTART_WAIT=2.0" `
+  -ConfigSet "DETAIL_INTERVAL_MINUTES=10" `
+  -ConfigSet "TASK_RUNNING_TIMEOUT_MINUTES=360"
 ```
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `APP_OPEN_RECOVERY_RETRIES` | `1` | 技术性异常时重启 App 并重新打开链接的次数 |
 | `APP_RESTART_WAIT` | `2.0` | `force-stop` 后重新打开链接前等待秒数 |
+| `DETAIL_INTERVAL_MINUTES` | `10` | 到期详情任务轮询间隔；每轮消费 `scheduled_at <= now` 的任务 |
+| `TASK_RUNNING_TIMEOUT_MINUTES` | `360` | `running` 任务超过该时间无心跳时，视为异常中断并转回可重试或最终失败 |
 
 ## 腾讯文档 URL 解析
 

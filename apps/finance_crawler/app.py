@@ -77,8 +77,14 @@ def _register_jobs() -> None:
         )
         logger.info("registered check every %s minutes", Config.CHECK_INTERVAL_MINUTES)
 
-    schedule.every().day.at(Config.DETAIL_TIME).do(safe_run, run_detail, "detail_crawl")
-    logger.info("registered detail crawl daily at %s", Config.DETAIL_TIME)
+    if Config.DETAIL_INTERVAL_MINUTES > 0:
+        schedule.every(Config.DETAIL_INTERVAL_MINUTES).minutes.do(
+            safe_run, run_detail, "detail_crawl_due"
+        )
+        logger.info(
+            "registered detail due-task scan every %s minutes; task due time is scheduled_at <= now",
+            Config.DETAIL_INTERVAL_MINUTES,
+        )
 
     schedule.every().day.at(Config.REPORT_TIME).do(
         safe_run, generate_report, "report"
@@ -100,6 +106,9 @@ def run_forever() -> None:
 
     logger.info("sync Tencent Docs once on startup")
     safe_run(fetch_and_save, "fetch_docs_init")
+    if Config.DETAIL_INTERVAL_MINUTES > 0:
+        logger.info("scan due detail tasks once on startup")
+        safe_run(run_detail, "detail_crawl_due_init")
 
     logger.info("scheduler running; press Ctrl+C to stop")
     while True:

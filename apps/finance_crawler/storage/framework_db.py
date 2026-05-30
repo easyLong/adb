@@ -1381,6 +1381,7 @@ def get_pending_check_submissions() -> list[dict[str, Any]]:
     """Return due initial-check records from task submissions."""
     from apps.finance_crawler.storage.db import get_conn
 
+    recover_stale_running_submissions(task_type=INITIAL_CHECK_TASK_TYPE)
     finalize_exhausted_submissions(task_type=INITIAL_CHECK_TASK_TYPE)
 
     sql = """
@@ -1416,7 +1417,9 @@ def get_pending_detail_submissions(limit: int | None = None) -> list[dict[str, A
     """Return due detail-crawl records from task submissions."""
     from apps.finance_crawler.storage.db import get_conn
 
+    recover_stale_running_submissions(task_type=DETAIL_CRAWL_TASK_TYPE)
     finalize_exhausted_submissions(task_type=DETAIL_CRAWL_TASK_TYPE)
+    finalize_detail_submissions_blocked_by_initial_check()
 
     check_clause = ""
     check_params: list[Any] = []
@@ -1512,6 +1515,128 @@ def finalize_exhausted_submissions(*, task_type: str | None = None) -> int:
                 WHERE {where}
                 """,
                 params,
+            )
+            affected = int(cursor.rowcount or 0)
+        conn.commit()
+        return affected
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def recover_stale_running_submissions(*, task_type: str | None = None) -> int:
+    """Return abandoned running submissions to a terminal/retryable state."""
+
+    timeout_minutes = int(getattr(_config(), "TASK_RUNNING_TIMEOUT_MINUTES", 0) or 0)
+    if timeout_minutes <= 0:
+        return 0
+
+    from apps.finance_crawler.storage.db import get_conn
+
+    cutoff = datetime.now() - timedelta(minutes=timeout_minutes)
+    error = f"task running timeout after {timeout_minutes} minutes; reset by scheduler"
+    where = """
+        s.status = 'running'
+        AND e.status = 'running'
+        AND e.heartbeat_at < %s
+    """
+    params: list[Any] = [cutoff]
+    if task_type:
+        where += " AND s.task_type = %s"
+        params.append(task_type)
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    s.id AS submission_id,
+                    s.attempts,
+                    s.max_attempts,
+                    e.id AS execution_id
+                FROM crawl_task_submissions s
+                JOIN crawl_task_executions e ON e.id = s.latest_execution_id
+                WHERE {where}
+                FOR UPDATE
+                """,
+                params,
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                conn.commit()
+                return 0
+
+            summary = _json_dumps(
+                {
+                    "status": "error",
+                    "account_name": None,
+                    "screenshot_path": None,
+                    "writeback_status": "skipped",
+                    "error": error,
+                }
+            )
+            now = datetime.now()
+            for row in rows:
+                status = (
+                    "failed_final"
+                    if int(row["attempts"] or 0) >= int(row["max_attempts"] or 1)
+                    else "failed_retryable"
+                )
+                cursor.execute(
+                    """
+                    UPDATE crawl_task_executions
+                    SET status = 'error',
+                        error = %s,
+                        writeback_status = COALESCE(writeback_status, 'skipped'),
+                        heartbeat_at = %s,
+                        finished_at = COALESCE(finished_at, %s)
+                    WHERE id = %s
+                    """,
+                    (error, now, now, row["execution_id"]),
+                )
+                cursor.execute(
+                    """
+                    UPDATE crawl_task_submissions
+                    SET status = %s,
+                        last_error = %s,
+                        result_summary_json = %s
+                    WHERE id = %s
+                    """,
+                    (status, error, summary, row["submission_id"]),
+                )
+        conn.commit()
+        return len(rows)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def finalize_detail_submissions_blocked_by_initial_check() -> int:
+    """Close detail tasks that will never run because initial check was not found."""
+
+    from apps.finance_crawler.storage.db import get_conn
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE crawl_task_submissions d
+                JOIN crawl_task_submissions i
+                  ON i.crawl_object_key = d.crawl_object_key
+                 AND i.task_type = %s
+                 AND i.status = 'not_found'
+                SET d.status = 'not_found',
+                    d.last_error = 'initial check not_found; detail skipped'
+                WHERE d.task_type = %s
+                  AND d.status IN ('pending', 'failed_retryable')
+                """,
+                (INITIAL_CHECK_TASK_TYPE, DETAIL_CRAWL_TASK_TYPE),
             )
             affected = int(cursor.rowcount or 0)
         conn.commit()

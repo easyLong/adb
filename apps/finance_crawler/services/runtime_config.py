@@ -61,6 +61,7 @@ _CONFIG_ATTRS: dict[str, str] = {
     "FETCH_LIMIT": "FETCH_LIMIT",
     "CHECK_INTERVAL_MINUTES": "CHECK_INTERVAL_MINUTES",
     "DETAIL_TIME": "DETAIL_TIME",
+    "DETAIL_INTERVAL_MINUTES": "DETAIL_INTERVAL_MINUTES",
     "REPORT_TIME": "REPORT_TIME",
     "EXCEL_DETAIL_INPUT_PATH": "EXCEL_DETAIL_INPUT_PATH",
     "EXCEL_DETAIL_OUTPUT_PATH": "EXCEL_DETAIL_OUTPUT_PATH",
@@ -77,6 +78,7 @@ _CONFIG_ATTRS: dict[str, str] = {
     "CRAWL_ACTIVE_START": "CRAWL_ACTIVE_START",
     "CRAWL_ACTIVE_END": "CRAWL_ACTIVE_END",
     "CRAWL_MAX_TASK_SECONDS": "CRAWL_MAX_TASK_SECONDS",
+    "TASK_RUNNING_TIMEOUT_MINUTES": "TASK_RUNNING_TIMEOUT_MINUTES",
 }
 
 _DATA_SOURCE_KEYS: tuple[str, ...] = (
@@ -96,6 +98,8 @@ _OPENAPI_CONFIG_KEYS: tuple[str, ...] = (
 _APP_BEHAVIOR_CONFIG_KEYS: tuple[str, ...] = (
     "APP_OPEN_RECOVERY_RETRIES",
     "APP_RESTART_WAIT",
+    "DETAIL_INTERVAL_MINUTES",
+    "TASK_RUNNING_TIMEOUT_MINUTES",
 )
 
 _APP_CONFIG_KEYS: tuple[str, ...] = _OPENAPI_CONFIG_KEYS + _APP_BEHAVIOR_CONFIG_KEYS
@@ -133,12 +137,16 @@ _DESCRIPTIONS.update(
     {
         "APP_OPEN_RECOVERY_RETRIES": "Retry count for transient blank/update/stuck app pages after force-stopping the target app.",
         "APP_RESTART_WAIT": "Seconds to wait after force-stopping the target app before reopening the link.",
+        "DETAIL_INTERVAL_MINUTES": "Minutes between due detail-crawl queue scans. Each scan consumes tasks with scheduled_at <= now.",
+        "TASK_RUNNING_TIMEOUT_MINUTES": "Minutes before a running task is considered abandoned and returned to retry/final state.",
     }
 )
 _DISPLAY_LABELS.update(
     {
         "APP_OPEN_RECOVERY_RETRIES": "App recovery retries",
         "APP_RESTART_WAIT": "App restart wait",
+        "DETAIL_INTERVAL_MINUTES": "Detail queue interval",
+        "TASK_RUNNING_TIMEOUT_MINUTES": "Running task timeout",
     }
 )
 
@@ -356,8 +364,8 @@ def grouped_runtime_config() -> list[RuntimeConfigDisplayGroup]:
             items=tuple(_display_items(values, _OPENAPI_CONFIG_KEYS)),
         ),
         RuntimeConfigDisplayGroup(
-            title="App 采集保护",
-            description="手机 App 白屏、系统更新弹窗、卡死时的自动恢复策略。",
+            title="App 采集和调度保护",
+            description="手机 App 白屏、系统更新弹窗、卡死时的自动恢复策略，以及到期详情任务轮询间隔。",
             items=tuple(_display_items(values, _APP_BEHAVIOR_CONFIG_KEYS)),
         ),
     ]

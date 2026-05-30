@@ -65,18 +65,12 @@ def _generate_framework_report(target_date: date) -> str:
             cursor.execute(
                 """
                 SELECT COUNT(*) AS cnt
-                FROM crawl_task_submissions d
-                LEFT JOIN crawl_task_executions de ON de.id = d.latest_execution_id
-                JOIN crawl_task_submissions i
-                  ON i.crawl_object_key = d.crawl_object_key
-                 AND i.task_type = %s
-                JOIN crawl_task_executions ie ON ie.id = i.latest_execution_id
-                WHERE d.task_type = %s
-                  AND DATE(d.source_time) = %s
-                  AND COALESCE(de.status, d.status) = 'pending'
-                  AND ie.status = 'not_found'
+                FROM crawl_task_submissions i
+                WHERE i.task_type = %s
+                  AND DATE(i.source_time) = %s
+                  AND i.status = 'not_found'
                 """,
-                (INITIAL_CHECK_TASK_TYPE, DETAIL_CRAWL_TASK_TYPE, target_date),
+                (INITIAL_CHECK_TASK_TYPE, target_date),
             )
             initial_check_failed = cursor.fetchone()["cnt"]
 

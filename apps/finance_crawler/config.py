@@ -124,6 +124,7 @@ class Config:
     # 0 means import all discovered rows. Set a positive value for test runs.
     FETCH_LIMIT = _env_int("FETCH_LIMIT", 0)
     DETAIL_TIME = _env("DETAIL_TIME", "08:00")
+    DETAIL_INTERVAL_MINUTES = _env_int("DETAIL_INTERVAL_MINUTES", 10)
     REPORT_TIME = _env("REPORT_TIME", "11:30")
 
     ENABLE_CHECKER = _env_bool("ENABLE_CHECKER", True)
@@ -154,6 +155,7 @@ class Config:
     EXCEL_DETAIL_COL_SOURCE = _env_int("EXCEL_DETAIL_COL_SOURCE", 17)
     CRAWL_MAX_TASK_SECONDS = _env_int("CRAWL_MAX_TASK_SECONDS", 0)
     CRAWL_MAX_CONSECUTIVE_ERRORS = _env_int("CRAWL_MAX_CONSECUTIVE_ERRORS", 5)
+    TASK_RUNNING_TIMEOUT_MINUTES = _env_int("TASK_RUNNING_TIMEOUT_MINUTES", 360)
     URL_RESOLVE_WORKERS = _env_int("URL_RESOLVE_WORKERS", 4)
     CRAWL_ACTIVE_START = _env("CRAWL_ACTIVE_START", "")
     CRAWL_ACTIVE_END = _env("CRAWL_ACTIVE_END", "")
