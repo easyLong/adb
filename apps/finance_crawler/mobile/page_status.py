@@ -7,10 +7,14 @@ from typing import Any
 NOT_FOUND_KEYWORDS = (
     "内容不存在",
     "内容不见了",
+    "内容不见了，先去看看其他的吧",
+    "当前内容已删除",
+    "该内容已删除",
     "已被删除",
     "页面不存在",
     "帖子不见了",
     "该内容无法查看",
+    "无法查看该内容",
 )
 ERROR_KEYWORDS = (
     "网络不给力",
@@ -18,6 +22,8 @@ ERROR_KEYWORDS = (
     "请求超时",
     "连接失败",
     "稍后再试",
+    "页面加载失败",
+    "服务异常",
 )
 OK_KEYWORDS = (
     "阅读",
@@ -25,6 +31,13 @@ OK_KEYWORDS = (
     "点赞",
     "关注",
     "理财",
+    "发表观点",
+    "转发",
+    "热度",
+    "最新",
+    "讨论区",
+    "去查看明细",
+    "腾讯理财通",
 )
 
 
@@ -47,6 +60,6 @@ def detect_page_status_from_texts(texts: list[str]) -> tuple[str, str | None]:
     for keyword in ERROR_KEYWORDS:
         if keyword in joined:
             return "error", keyword
-    if any(keyword in joined for keyword in OK_KEYWORDS) or len(texts) >= 5:
+    if any(keyword in joined for keyword in OK_KEYWORDS):
         return "success", None
     return "error", "page status is unknown or too few controls were found"

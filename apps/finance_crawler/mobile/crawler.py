@@ -30,14 +30,27 @@ from apps.finance_crawler.utils.logger import get_logger
 
 logger = get_logger("crawler")
 
+TRANSIENT_OPEN_ERROR_KEYWORDS = (
+    "account name was not detected",
+    "page status is unknown",
+    "post content was not detected",
+    "网络不给力",
+    "加载失败",
+    "请求超时",
+    "连接失败",
+    "稍后再试",
+    "页面加载失败",
+    "服务异常",
+)
+
 
 def _dump_records() -> list[dict[str, Any]]:
     xml_text = device().dump_hierarchy(compressed=False)
     return collect_ui_records(xml_text, 0)
 
 
-def read_texts_from_screen() -> list[str]:
-    return records_to_texts(_dump_records(), min_length=2)
+def read_texts_from_screen(*, min_length: int = 2) -> list[str]:
+    return records_to_texts(_dump_records(), min_length=min_length)
 
 
 def detect_page_status() -> tuple[str, str | None]:
@@ -56,9 +69,25 @@ def check_record_exists_and_account(record_id: int) -> dict[str, Any]:
     if status == "error":
         return {"status": "error", "exists": False, "account_name": None, "error": error_msg}
 
-    texts = read_texts_from_screen()
+    texts = read_texts_from_screen(min_length=1)
     account_name = extract_account_name(texts)
+    if not account_name:
+        return {
+            "status": "error",
+            "exists": False,
+            "account_name": None,
+            "error": "account name was not detected",
+        }
     return {"status": "success", "exists": True, "account_name": account_name, "error": None}
+
+
+def is_transient_open_failure(result: dict[str, Any]) -> bool:
+    """Return True when an error may be fixed by restarting/reopening the app."""
+
+    if result.get("status") not in {"error"}:
+        return False
+    error = str(result.get("error") or "")
+    return not error or any(keyword in error for keyword in TRANSIENT_OPEN_ERROR_KEYWORDS)
 
 
 def take_screenshot(record_id: int) -> str | None:

@@ -25,6 +25,31 @@ VALUES
 ON DUPLICATE KEY UPDATE
     description = VALUES(description);
 
+CREATE TABLE IF NOT EXISTS app_config (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    config_key VARCHAR(128) NOT NULL,
+    config_value TEXT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    is_secret TINYINT NOT NULL DEFAULT 0,
+    description VARCHAR(255) NULL,
+    updated_by VARCHAR(64) NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_app_config_key (config_key),
+    INDEX idx_app_config_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO app_config (config_key, config_value, status, is_secret, description, updated_by)
+VALUES
+    ('TENCENT_DOC_CLIENT_ID', '', 'unavailable', 1, 'Tencent Docs OpenAPI Client-Id', 'system'),
+    ('TENCENT_DOC_OPEN_ID', '', 'unavailable', 1, 'Tencent Docs OpenAPI Open-Id', 'system'),
+    ('TENCENT_DOC_ACCESS_TOKEN', '', 'unavailable', 1, 'Tencent Docs OpenAPI Access-Token', 'system'),
+    ('TENCENT_DOC_CLIENT_SECRET', '', 'unavailable', 1, 'Tencent Docs OpenAPI Client-Secret', 'system'),
+    ('TENCENT_DOC_TOKEN_URL', 'https://docs.qq.com/oauth/v2/token', 'active', 0, 'Tencent Docs OpenAPI token URL', 'system')
+ON DUPLICATE KEY UPDATE
+    is_secret = VALUES(is_secret),
+    description = VALUES(description);
+
 CREATE TABLE IF NOT EXISTS crawl_sources (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     source_type VARCHAR(64) NOT NULL,

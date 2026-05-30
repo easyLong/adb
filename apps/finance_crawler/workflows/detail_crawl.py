@@ -6,11 +6,13 @@ import random
 import time
 
 from apps.finance_crawler.mobile.crawler import (
+    is_transient_open_failure,
     open_url,
     reset_device_session,
     resolve_short_url,
     scrape_record_content,
 )
+from apps.finance_crawler.mobile.device_session import restart_app_for_url
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.services.alerts import send_alert
 from apps.finance_crawler.services.report import generate_report
@@ -66,6 +68,7 @@ def _open_and_scrape_with_blank_retry(
     open_duration = 0.0
     attempts = max(1, Config.DETAIL_BLANK_REOPEN_RETRIES + 1)
     result: dict = {}
+    restarts = 0
 
     for attempt in range(1, attempts + 1):
         open_start = time.perf_counter()
@@ -73,19 +76,24 @@ def _open_and_scrape_with_blank_retry(
         open_duration += time.perf_counter() - open_start
         result = scrape_record_content(record_id, source_app=source_app)
 
-        if not _is_blank_target_result(result) or attempt >= attempts:
-            if attempt > 1:
+        should_recover = _is_blank_target_result(result) or is_transient_open_failure(result)
+        if not should_recover or attempt >= attempts:
+            if attempt > 1 or restarts:
                 metrics = dict(result.get("app_metrics") or {})
-                metrics["blank_reopen_attempts"] = attempt - 1
+                metrics["blank_reopen_attempts"] = max(0, attempt - 1)
+                metrics["app_restart_attempts"] = restarts
                 result["app_metrics"] = metrics
             return result, open_duration
 
         logger.warning(
-            "blank target page detected id=%s attempt=%s/%s; reopening link",
+            "transient detail page failure id=%s attempt=%s/%s error=%s; restarting app and reopening link",
             record_id,
             attempt,
             attempts,
+            result.get("error"),
         )
+        if restart_app_for_url(opened_url, source_app=source_app):
+            restarts += 1
         time.sleep(Config.DETAIL_BLANK_REOPEN_WAIT)
 
     return result, open_duration

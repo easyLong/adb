@@ -12,9 +12,11 @@ from apps.finance_crawler.mobile.capture_engine import (
     connect_uiautomator,
     is_lockscreen_showing,
     open_app_link,
+    run_adb,
     resolve_app_deep_link,
     set_device_awake,
 )
+from apps.finance_crawler.crawlers.registry import get_app_profile, target_package_for_url
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.logger import get_logger
 
@@ -46,6 +48,14 @@ def reset_device_session() -> None:
 def device():
     global _device, _device_serial
     serial = assert_device_ready()
+    if _device is not None and _device_serial == serial:
+        try:
+            _device.info
+            return _device
+        except Exception as exc:
+            logger.warning("uiautomator2 session stale, reconnecting: %s", exc)
+            reset_device_session()
+
     if _device is None or _device_serial != serial:
         _device_serial = serial
         _device = connect_uiautomator(serial)
@@ -86,3 +96,23 @@ def open_url(url: str) -> None:
     _prepare_device_if_needed(serial)
     open_app_link(url, serial=serial)
     time.sleep(Config.PAGE_LOAD_WAIT)
+
+
+def restart_app_for_url(url: str, *, source_app: str | None = None) -> bool:
+    """Force-stop the target app for a URL before reopening a stuck/blank page."""
+
+    _prepare_adb_path()
+    serial = assert_device_ready()
+    package_name = target_package_for_url(url)
+    if not package_name and source_app:
+        profile = get_app_profile(source_app)
+        package_name = profile.package_name if profile else None
+    if not package_name:
+        logger.warning("app restart skipped; package not resolved url=%s source=%s", url, source_app)
+        return False
+
+    logger.warning("force-stopping app package=%s url=%s", package_name, url)
+    run_adb(["shell", "am", "force-stop", package_name], serial=serial, timeout=10)
+    reset_device_session()
+    time.sleep(Config.APP_RESTART_WAIT)
+    return True

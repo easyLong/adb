@@ -156,6 +156,7 @@ def main() -> int:
     parser.add_argument("--tencent-doc-url", default="", help="set runtime Tencent Docs URL")
     parser.add_argument("--excel-input-path", default="", help="set runtime Excel detail input path")
     parser.add_argument("--single-link", default="", help="set one-shot detail test link")
+    parser.add_argument("--report-date", default="", help="report date in YYYY-MM-DD format")
     parser.add_argument(
         "--supervise",
         action="store_true",
@@ -215,7 +216,7 @@ def main() -> int:
     if args.once == "report":
         init_db()
         load_runtime_config()
-        print(generate_report())
+        print(generate_report(args.report_date or None))
         return 0
 
     try:

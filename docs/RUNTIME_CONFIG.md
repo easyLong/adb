@@ -1,23 +1,30 @@
-# 运行时任务源配置
+# 运行时配置
 
-`data_source_links` 只保存最关键的任务源入口，不保存系统内部派生字段。程序启动具体任务前会调用 `load_runtime_config()`，把这些入口加载到 `Config`。
+项目根目录 `.env` 只负责 MySQL 连接。任务源、腾讯文档 OpenAPI 身份等运行时配置统一放在 MySQL，避免再依赖 `D:\password\*.txt`、`G:\passwd\*.txt` 这类本地密码文件。
 
-## 配置项
+## 配置分层
 
-| source_key | data_source_link | status |
+| 位置 | 保存内容 | 说明 |
 | --- | --- | --- |
-| `TENCENT_DOC_URL` | 在线腾讯文档链接。调度器常驻后会持续扫描目标文档。 | 通常保持 `active` |
-| `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 文件路径。手动执行一次 `excel-detail`。 | 跑完后 `unavailable` |
-| `SINGLE_TEST_LINK` | 单条测试链接。手动执行一次 `link-detail`。 | 跑完后 `unavailable` |
+| `.env` | `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE` | 只用于连接 MySQL，不提交 Git |
+| `data_source_links` | `TENCENT_DOC_URL`、`EXCEL_DETAIL_INPUT_PATH`、`SINGLE_TEST_LINK` | 数据从哪里来 |
+| `app_config` | `TENCENT_DOC_*`、`APP_OPEN_RECOVERY_RETRIES`、`APP_RESTART_WAIT` | 应用级运行配置：腾讯文档 OpenAPI 身份、App 采集保护参数 |
 
-程序会自动从 `TENCENT_DOC_URL` 解析 `file_id` 和 `sheet_id`，不需要手动写入配置表。
+程序启动任务前会调用 `load_runtime_config()`，先从 `data_source_links` 读取任务入口，再从 `app_config` 读取腾讯文档 OpenAPI 和 App 采集保护配置，并覆盖到当前进程的 `Config`。
 
-| 信息 | 处理方式 |
-| --- | --- |
-| 腾讯文档 `file_id` / `sheet_id` | 程序从 `TENCENT_DOC_URL` 自动解析，不写入配置表。 |
-| 在线文档扫描规则 | 默认只扫描当天日期的 sheet；临时补扫历史日期时使用 `TENCENT_DOC_SCAN_DATE` 环境变量。 |
-| 在线文档读取范围 | 使用程序默认配置。 |
-| 本地 Excel 输出路径 | 默认写回原文件。 |
+## 根目录 .env
+
+参考 `.env.example`：
+
+```dotenv
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=your-mysql-password
+MYSQL_DATABASE=finance_crawler
+```
+
+`.env` 已加入 `.gitignore`。不要把腾讯文档 key、token、OpenId 写进 `.env`。
 
 ## 查看配置
 
@@ -25,85 +32,107 @@
 .\scripts\run.ps1 -Task config
 ```
 
-## 在线腾讯文档
+输出会分成三组：
+
+| 分组 | 来源表 | 作用 |
+| --- | --- | --- |
+| 任务源配置 | `data_source_links` | 在线腾讯文档、本地 Excel、单条测试链接 |
+| 腾讯文档 OpenAPI | `app_config` | 读写腾讯文档所需身份 |
+| App 采集保护 | `app_config` | 白屏、系统更新弹窗、App 卡死时的自动恢复参数 |
+
+`app_config.is_secret=1` 的值会在命令行里打码显示。
+
+## 设置腾讯文档 OpenAPI
+
+更新 key 或 token 时直接写 MySQL 配置表，推荐通过命令：
+
+```powershell
+.\scripts\run.ps1 -Task config `
+  -ConfigSet "TENCENT_DOC_CLIENT_ID=你的client_id" `
+  -ConfigSet "TENCENT_DOC_OPEN_ID=你的open_id" `
+  -ConfigSet "TENCENT_DOC_ACCESS_TOKEN=你的access_token"
+```
+
+如果使用 `client_secret` 自动换 token：
+
+```powershell
+.\scripts\run.ps1 -Task config `
+  -ConfigSet "TENCENT_DOC_CLIENT_ID=你的client_id" `
+  -ConfigSet "TENCENT_DOC_OPEN_ID=你的open_id" `
+  -ConfigSet "TENCENT_DOC_CLIENT_SECRET=你的client_secret"
+```
+
+也可以直接 SQL 更新：
+
+```sql
+INSERT INTO app_config (config_key, config_value, status, is_secret, description, updated_by)
+VALUES
+  ('TENCENT_DOC_ACCESS_TOKEN', '<new-token>', 'active', 1, 'Tencent Docs OpenAPI Access-Token', 'manual')
+ON DUPLICATE KEY UPDATE
+  config_value = VALUES(config_value),
+  status = 'active',
+  is_secret = VALUES(is_secret),
+  updated_by = VALUES(updated_by);
+```
+
+## 设置任务源
+
+在线腾讯文档：
 
 ```powershell
 .\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
 .\scripts\run.ps1 -Task supervisor
 ```
 
-补扫指定日期：
-
-```powershell
-.\scripts\run.ps1 -Task config -ConfigSet "TENCENT_DOC_SCAN_MODE=date" -ConfigSet "TENCENT_DOC_SCAN_DATE=2026-05-27"
-.\scripts\run.ps1 -Task fetch
-```
-
-临时只补详情：
-
-```powershell
-$env:TENCENT_DOC_SCAN_DATE = "2026-05-27"
-.\scripts\run.ps1 -Task fetch
-.\scripts\run.ps1 -Task detail
-$env:TENCENT_DOC_SCAN_DATE = ""
-```
-
-历史日期通常只补详情。只要当前时间已经晚于发帖日期次日 `DETAIL_TIME`，程序会跳过初检，只提交 `detail_crawl`。
-
-常见扫描模式：
-
-| 模式 | 说明 |
-| --- | --- |
-| `single` | 只读 URL 中指定 sheet |
-| `today` | 只读当天日期 sheet |
-| `date` | 只读 `TENCENT_DOC_SCAN_DATE` 指定日期 sheet |
-| `filter` | 按 `TENCENT_DOC_SHEET_TITLE_FILTER` 过滤 |
-| `all` | 扫描全部 sheet |
-
-## 本地 Excel
+本地 Excel：
 
 ```powershell
 .\scripts\run.ps1 -Task config -ExcelInputPath "D:\demo\input.xlsx"
 .\scripts\run.ps1 -Task excel-detail
 ```
 
-执行完成后，程序会把 `EXCEL_DETAIL_INPUT_PATH` 的 `status` 改为 `unavailable`。
-
-## 单条链接
-
-直接传链接测试一次：
+单条链接：
 
 ```powershell
 .\scripts\run.ps1 -Task link-detail -SingleLink "https://ur.alipay.com/..."
 ```
 
-也可以先写入配置，再执行：
+本地 Excel 和单条链接执行完成后，程序会把对应数据源状态改成 `unavailable`，避免下次误跑。
+
+## App 采集保护配置
+
+当 App 因系统更新弹窗、白屏、页面卡死或短暂网络异常导致初检/详情采集失败时，系统会先按链接识别目标 App 包名，执行 `adb shell am force-stop <package>`，等待后重新打开同一链接再采集。真实删帖或内容不存在的 `not_found` 不会触发重启。
 
 ```powershell
-.\scripts\run.ps1 -Task config -SingleLink "https://ur.alipay.com/..."
-.\scripts\run.ps1 -Task link-detail
+.\scripts\run.ps1 -Task config `
+  -ConfigSet "APP_OPEN_RECOVERY_RETRIES=1" `
+  -ConfigSet "APP_RESTART_WAIT=2.0"
 ```
 
-执行完成后，程序会把 `SINGLE_TEST_LINK` 的 `status` 改为 `unavailable`。
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `APP_OPEN_RECOVERY_RETRIES` | `1` | 技术性异常时重启 App 并重新打开链接的次数 |
+| `APP_RESTART_WAIT` | `2.0` | `force-stop` 后重新打开链接前等待秒数 |
 
-## SQL 示例
+## 腾讯文档 URL 解析
 
-```sql
-INSERT INTO data_source_links (source_key, data_source_link, status, updated_by)
-VALUES ('TENCENT_DOC_URL', 'https://docs.qq.com/sheet/<fileId>?tab=<sheetId>', 'active', 'manual')
-ON DUPLICATE KEY UPDATE
-  data_source_link = VALUES(data_source_link),
-  status = 'active',
-  updated_by = VALUES(updated_by);
-```
+`TENCENT_DOC_URL` 只保存在 `data_source_links`。程序会自动从 URL 解析：
 
-## 与任务表的关系
-
-`data_source_links` 只负责入口配置。真正的任务仍然进入：
-
-| 表 | 用途 |
+| 字段 | 来源 |
 | --- | --- |
-| `crawl_task_submissions` | 任务提交、唯一性、状态、调度和重跑 |
-| `crawl_task_executions` | 具体执行记录、耗时、错误和结果摘要 |
+| `TENCENT_DOC_FILE_ID` | 从文档 URL 自动解析 |
+| `TENCENT_DOC_SHEET_ID` | 从文档 URL 的 `tab` 自动解析 |
+
+这两个派生值不需要手工写入配置表。
+
+## 相关表
+
+| 表 | 作用 |
+| --- | --- |
+| `data_source_links` | 保存数据源入口 |
+| `app_config` | 保存应用级配置和敏感 OpenAPI 身份 |
+| `crawl_sources` | 标准化后的来源 |
+| `crawl_task_submissions` | 任务提交、去重、排队、重试 |
+| `crawl_task_executions` | 每次执行记录 |
 | `crawl_results` | 标准化采集结果 |
-| `crawl_writebacks` | 写回目标和写回状态 |
+| `crawl_writebacks` | 写回目标和状态 |

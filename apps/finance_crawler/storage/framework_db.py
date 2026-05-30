@@ -280,6 +280,26 @@ def _ensure_data_source_links_table(cursor) -> None:
         cursor.execute("ALTER TABLE data_source_links DROP COLUMN config_value")
 
 
+def _ensure_app_config_table(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_config (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            config_key VARCHAR(128) NOT NULL,
+            config_value TEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            is_secret TINYINT NOT NULL DEFAULT 0,
+            description VARCHAR(255) NULL,
+            updated_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_app_config_key (config_key),
+            INDEX idx_app_config_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+
+
 def ensure_framework_tables(cursor) -> None:
     """Create and migrate framework-level tables used by the current workflow."""
 
@@ -318,6 +338,7 @@ def ensure_framework_tables(cursor) -> None:
     )
 
     _ensure_data_source_links_table(cursor)
+    _ensure_app_config_table(cursor)
     from apps.finance_crawler.services.runtime_config import ensure_runtime_config_defaults
 
     ensure_runtime_config_defaults(cursor)
@@ -1360,6 +1381,8 @@ def get_pending_check_submissions() -> list[dict[str, Any]]:
     """Return due initial-check records from task submissions."""
     from apps.finance_crawler.storage.db import get_conn
 
+    finalize_exhausted_submissions(task_type=INITIAL_CHECK_TASK_TYPE)
+
     sql = """
         SELECT
             s.id AS submission_id,
@@ -1392,6 +1415,8 @@ def get_pending_check_submissions() -> list[dict[str, Any]]:
 def get_pending_detail_submissions(limit: int | None = None) -> list[dict[str, Any]]:
     """Return due detail-crawl records from task submissions."""
     from apps.finance_crawler.storage.db import get_conn
+
+    finalize_exhausted_submissions(task_type=DETAIL_CRAWL_TASK_TYPE)
 
     check_clause = ""
     check_params: list[Any] = []
@@ -1453,6 +1478,47 @@ def get_pending_detail_submissions(limit: int | None = None) -> list[dict[str, A
         with conn.cursor() as cursor:
             cursor.execute(sql, params)
             return _submission_task_rows(cursor.fetchall())
+    finally:
+        conn.close()
+
+
+def finalize_exhausted_submissions(*, task_type: str | None = None) -> int:
+    """Mark retry-exhausted runnable submissions as final failures.
+
+    Older rows can be left as ``pending`` while ``attempts >= max_attempts``.
+    The queue will not pick those rows, so make the terminal state explicit
+    before reporting or fetching pending work.
+    """
+
+    from apps.finance_crawler.storage.db import get_conn
+
+    where = """
+        status IN ('pending', 'failed_retryable')
+        AND attempts >= max_attempts
+        AND max_attempts > 0
+    """
+    params: list[Any] = []
+    if task_type:
+        where += " AND task_type = %s"
+        params.append(task_type)
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE crawl_task_submissions
+                SET status = 'failed_final'
+                WHERE {where}
+                """,
+                params,
+            )
+            affected = int(cursor.rowcount or 0)
+        conn.commit()
+        return affected
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

@@ -25,10 +25,12 @@ data_source_links
 - 支持 `alipay`、`antfortune`、`tenpay` 三类 App 链路识别和打开。
 - 支持腾讯文档、本地 Excel、单条链接三类任务源。
 - 支持 `config` 命令把任务源写入 MySQL `data_source_links`。
+- 腾讯文档 OpenAPI 身份、App 采集保护等运行配置写入 MySQL `app_config`，根目录 `.env` 只保存 MySQL 连接。
 - 支持初检任务：判断帖子是否存在并提取账号。
 - 支持详情采集：账号、正文、阅读数、评论数、截图和 App 专属指标。
 - 财付通链路支持进入调仓明细，提取买入基金名称和金额。
 - 腾讯文档支持按当天、指定日期、标题过滤或全量扫描工作表。
+- 支持 App 白屏、系统更新弹窗、页面卡死时自动 force-stop 目标 App 后重新打开链接。
 - 截图优先使用 `adb exec-out screencap -p`。
 
 ## 快速开始
@@ -60,8 +62,8 @@ adb devices
 
 ```text
 apps/finance_crawler/       采集应用主目录
-docs/                       项目文档、环境变量模板、建表 SQL
-scripts/                    运行脚本和单链接测试脚本
+docs/                       项目文档、MySQL .env 示例、建表 SQL
+scripts/                    运行脚本、单链接测试、写回重放和单条修复脚本
 requirements.txt            Python 依赖
 ```
 
@@ -76,7 +78,7 @@ workflows/                  fetch / check / detail / excel-detail / link-detail
 sources/                    数据源适配器
 sinks/                      写回目标适配器
 crawlers/                   App Profile 和专属 Adapter
-mobile/                     ADB、截图、XML、OCR、页面采集
+mobile/                     ADB、App 重启恢复、截图、XML、OCR、页面采集
 integrations/               第三方 API 客户端
 storage/                    MySQL 框架表读写
 services/                   运行时配置、备注、写回、报告、告警
@@ -90,5 +92,6 @@ utils/                      链路、表格、限流、设备健康等工具
 - [docs/FINANCE_CRAWLER.md](docs/FINANCE_CRAWLER.md)：业务流程、字段、MySQL 表说明。
 - [docs/RUNTIME_CONFIG.md](docs/RUNTIME_CONFIG.md)：运行时任务源配置。
 - [docs/OPERATIONS.md](docs/OPERATIONS.md)：运行、测试、排障命令。
-- [docs/env.example.ps1](docs/env.example.ps1)：环境变量模板。
+- [.env.example](.env.example)：根目录 MySQL 连接示例。
+- [docs/env.example.ps1](docs/env.example.ps1)：旧 PowerShell 示例，仅保留 MySQL 项。
 - [docs/init.sql](docs/init.sql)：MySQL 建表 SQL。

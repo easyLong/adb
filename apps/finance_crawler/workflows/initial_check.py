@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import time
 
+from apps.finance_crawler.config import Config
+from apps.finance_crawler.mobile.device_session import restart_app_for_url
 from apps.finance_crawler.mobile.crawler import (
     check_record_exists_and_account,
+    is_transient_open_failure,
     open_url,
     reset_device_session,
     resolve_short_url,
@@ -42,6 +45,39 @@ def _status_counts(results: list[dict]) -> tuple[int, int, int]:
     not_found = sum(1 for item in results if item["status"] == "not_found")
     error = sum(1 for item in results if item["status"] == "error")
     return success, not_found, error
+
+
+def _open_and_check_with_app_recovery(
+    *,
+    opened_url: str,
+    record_id: int,
+    source_app: str,
+) -> dict:
+    attempts = max(1, Config.APP_OPEN_RECOVERY_RETRIES + 1)
+    result: dict = {}
+    restarts = 0
+
+    for attempt in range(1, attempts + 1):
+        open_url(opened_url)
+        result = check_record_exists_and_account(record_id)
+        if not is_transient_open_failure(result) or attempt >= attempts:
+            if restarts:
+                result["app_restart_attempts"] = restarts
+            return result
+
+        logger.warning(
+            "transient initial-check page failure id=%s attempt=%s/%s error=%s; restarting app",
+            record_id,
+            attempt,
+            attempts,
+            result.get("error"),
+        )
+        if restart_app_for_url(opened_url, source_app=source_app):
+            restarts += 1
+        else:
+            time.sleep(Config.APP_RESTART_WAIT)
+
+    return result
 
 
 def run_initial_check() -> list[dict]:
@@ -90,8 +126,11 @@ def run_initial_check() -> list[dict]:
         logger.info("[%s/%s] initial check source=%s id=%s", idx, total, source_app, record_id)
 
         try:
-            open_url(deep_links.get(record_id, url))
-            result = check_record_exists_and_account(record_id)
+            result = _open_and_check_with_app_recovery(
+                opened_url=deep_links.get(record_id, url),
+                record_id=record_id,
+                source_app=source_app,
+            )
         except DeviceUnavailable as exc:
             reset_device_session()
             _finish_execution(
@@ -129,6 +168,7 @@ def run_initial_check() -> list[dict]:
             metrics={
                 "exists": result.get("exists"),
                 "row_index": row_index,
+                "app_restart_attempts": result.get("app_restart_attempts"),
             },
             error=result.get("error"),
         )
@@ -163,6 +203,7 @@ def run_initial_check() -> list[dict]:
             metrics={
                 "exists": result.get("exists"),
                 "row_index": row_index,
+                "app_restart_attempts": result.get("app_restart_attempts"),
             },
             writeback_status=writeback_status,
             writeback_locator=writeback_plan.locator,

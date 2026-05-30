@@ -12,6 +12,31 @@ import shutil
 from pathlib import Path
 
 
+_PROJECT_DIR = Path(__file__).resolve().parents[2]
+
+
+def _load_project_dotenv() -> None:
+    """Load only MySQL connection settings from the project root .env file."""
+
+    path = _PROJECT_DIR / ".env"
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().lstrip("\ufeff")
+        if not key.startswith("MYSQL_"):
+            continue
+        if key in os.environ:
+            continue
+        os.environ[key] = value.strip().strip('"').strip("'")
+
+
+_load_project_dotenv()
+
+
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
@@ -42,7 +67,7 @@ def _default_adb_path(project_dir: Path) -> str:
 
 class Config:
     BASE_DIR = Path(__file__).resolve().parent
-    PROJECT_DIR = BASE_DIR.parents[1]
+    PROJECT_DIR = _PROJECT_DIR
 
     # MySQL
     DB_HOST = _env("MYSQL_HOST", "localhost")
@@ -139,6 +164,9 @@ class Config:
     DEVICE_CHECK_TIMEOUT = _env_int("DEVICE_CHECK_TIMEOUT", 8)
     DEVICE_HEALTH_CACHE_SECONDS = _env_float("DEVICE_HEALTH_CACHE_SECONDS", 8.0)
     DEVICE_PREPARE_INTERVAL_SECONDS = _env_float("DEVICE_PREPARE_INTERVAL_SECONDS", 120.0)
+    DEVICE_AUTO_RECONNECT = _env_bool("DEVICE_AUTO_RECONNECT", True)
+    DEVICE_RECONNECT_RETRIES = _env_int("DEVICE_RECONNECT_RETRIES", 3)
+    DEVICE_RECONNECT_DELAY_SECONDS = _env_float("DEVICE_RECONNECT_DELAY_SECONDS", 2.0)
     ALIPAY_PACKAGE = "com.eg.android.AlipayGphone"
     AFWEALTH_PACKAGE = "com.antfortune.wealth"
     TENPAY_PACKAGE = _env("TENPAY_PACKAGE", "com.tencent.fortuneplat")
@@ -149,6 +177,8 @@ class Config:
     SCROLL_TIMES = _env_int("SCROLL_TIMES", 2)
     DETAIL_MAX_CAPTURE_PAGES = _env_int("DETAIL_MAX_CAPTURE_PAGES", 3)
     PAGE_LOAD_WAIT = _env_float("PAGE_LOAD_WAIT", 3.0)
+    APP_OPEN_RECOVERY_RETRIES = _env_int("APP_OPEN_RECOVERY_RETRIES", 1)
+    APP_RESTART_WAIT = _env_float("APP_RESTART_WAIT", 2.0)
     DETAIL_BLANK_REOPEN_RETRIES = _env_int("DETAIL_BLANK_REOPEN_RETRIES", 2)
     DETAIL_BLANK_REOPEN_WAIT = _env_float("DETAIL_BLANK_REOPEN_WAIT", 2.0)
     DETAIL_POST_DELAY_MIN = _env_float("DETAIL_POST_DELAY_MIN", 1.0)

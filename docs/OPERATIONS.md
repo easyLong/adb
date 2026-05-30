@@ -49,13 +49,9 @@ adb devices
 补扫历史日期并只补详情：
 
 ```powershell
-$env:TENCENT_DOC_SCAN_DATE = "2026-05-27"
-.\scripts\run.ps1 -Task fetch
-
-$env:TENCENT_DOC_SCAN_DATE = "2026-05-26"
-.\scripts\run.ps1 -Task fetch
-
-.\scripts\run.ps1 -Task detail
+.\scripts\run.ps1 -Task fetch -TencentDocScanMode date -TencentDocScanDate 2026-05-27
+.\scripts\run.ps1 -Task fetch -TencentDocScanMode date -TencentDocScanDate 2026-05-26
+.\scripts\run.ps1 -Task detail -DetailSourceDates "2026-05-27,2026-05-26"
 ```
 
 数据源入口保存在 MySQL 表 `data_source_links` 中，任务启动时会自动加载并覆盖环境变量。
@@ -100,10 +96,10 @@ python -m apps.finance_crawler.app --once report
 .\scripts\run.ps1 -Task config -SingleLink "https://ur.alipay.com/..."
 ```
 
-临时设置其它运行参数：
+临时设置本次启动参数：
 
 ```powershell
-.\scripts\run.ps1 -Task config -ConfigSet "TENCENT_DOC_SCAN_MODE=date" -ConfigSet "TENCENT_DOC_SCAN_DATE=2026-05-27"
+.\scripts\run.ps1 -Task fetch -TencentDocScanMode date -TencentDocScanDate 2026-05-27
 ```
 
 任务源入口保存在 MySQL `data_source_links` 表。任务启动时会自动加载并覆盖环境变量。
@@ -184,7 +180,9 @@ supervisor 会看护调度器，异常退出后自动重启。设备断开、未
 
 Windows 服务器上也可以直接双击项目根目录的 `start_supervisor.cmd` 启动主流程。窗口保持打开表示主流程正在运行；需要停止时关闭该窗口即可。如果启动失败，窗口会停留在错误输出处，方便排查。
 
-需要手动补跑在线腾讯文档历史日期的详情任务时，可以双击项目根目录的 `backfill_detail_by_date.cmd`，按提示输入日期，例如 `2026-05-26,2026-05-27`。脚本会临时使用 `TENCENT_DOC_SCAN_MODE=date` 和对应日期执行 `fetch`，再设置 `DETAIL_SOURCE_DATES` 只消费这些日期的 `detail` 任务；这些临时变量只作用于本次窗口，不会把长期主流程改成历史补跑模式。
+需要手动补跑在线腾讯文档历史日期的详情任务时，可以双击项目根目录的 `backfill_detail_by_date.cmd`，按提示输入日期，例如 `2026-05-26,2026-05-27`。脚本会通过 `run.ps1` 的 `-TencentDocScanMode`、`-TencentDocScanDate`、`-DetailSourceDates` 临时参数执行，不会写入 `.env` 或 MySQL 配置表，也不会把长期主流程改成历史补跑模式。
+
+无线 ADB 偶发断连时，设备健康检查会自动重试并尝试 `adb connect` 上一次成功的无线 serial；如果手机刷新了无线调试端口，也会从 `adb mdns services` 发现最新 `_adb-tls-connect` 端口再连接。默认重试 3 次，每次间隔 2 秒，可通过进程环境变量 `DEVICE_RECONNECT_RETRIES`、`DEVICE_RECONNECT_DELAY_SECONDS`、`DEVICE_AUTO_RECONNECT` 临时调整。
 
 ## 截图和 OCR
 
@@ -224,14 +222,15 @@ $env:DETAIL_ENABLE_OCR = "true"
 - `adb devices` 必须是 `device`。
 - 确认目标 App 已安装并登录。
 - 手动打开分享链接确认能进入详情页。
-- 支付宝偶发白屏时，详情采集会自动重开同一链接。可通过 `DETAIL_BLANK_REOPEN_RETRIES` 和 `DETAIL_BLANK_REOPEN_WAIT` 调整重试。
+- 支付宝偶发白屏、系统更新弹窗或 App 卡死时，初检/详情会先 `am force-stop` 目标 App，再重新打开同一链接。可通过 `APP_OPEN_RECOVERY_RETRIES` 和 `APP_RESTART_WAIT` 调整重启次数和等待时间。
+- 详情页仍保留空白页重开保护。可通过 `DETAIL_BLANK_REOPEN_RETRIES` 和 `DETAIL_BLANK_REOPEN_WAIT` 调整重试。
 
 ### 腾讯文档读不到数据
 
-- 检查 `TENCENT_DOC_ACCESS_TOKEN` 是否过期。
-- 检查 `TENCENT_DOC_CLIENT_ID`、`TENCENT_DOC_OPEN_ID`。
+- 先执行 `.\scripts\run.ps1 -Task config`，检查 `app_config` 里的 `TENCENT_DOC_ACCESS_TOKEN` 是否过期。
+- 检查 `app_config` 里的 `TENCENT_DOC_CLIENT_ID`、`TENCENT_DOC_OPEN_ID` 是否已启用。
 - 检查 `TENCENT_DOC_URL` 是否正确写入 `data_source_links`。
-- 检查 `TENCENT_DOC_SCAN_MODE` 和 `TENCENT_DOC_SCAN_DATE` 是否匹配目标工作表。
+- 如果是历史补扫，检查启动参数 `-TencentDocScanMode date -TencentDocScanDate YYYY-MM-DD` 是否匹配目标工作表。
 - 检查 `TENCENT_DOC_READ_RANGE` 是否覆盖目标行。
 
 ### 阅读数或评论数不准

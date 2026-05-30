@@ -78,17 +78,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "if ('%DRY_RUN%' -eq '1') { Write-Host 'Dry run OK. No task was executed.'; exit 0 }" ^
   "foreach ($d in $dates) {" ^
   "  Write-Host ''; Write-Host ('[fetch] ' + $d);" ^
-  "  $env:TENCENT_DOC_SCAN_MODE='date';" ^
-  "  $env:TENCENT_DOC_SCAN_DATE=$d;" ^
-  "  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\run.ps1') -Task fetch;" ^
+  "  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\run.ps1') -Task fetch -TencentDocScanMode date -TencentDocScanDate $d;" ^
   "  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" ^
   "}" ^
-  "Remove-Item Env:TENCENT_DOC_SCAN_MODE -ErrorAction SilentlyContinue;" ^
-  "Remove-Item Env:TENCENT_DOC_SCAN_DATE -ErrorAction SilentlyContinue;" ^
   "Write-Host ''; Write-Host '[detail] start';" ^
-  "$env:DETAIL_SOURCE_DATES=($dates -join ',');" ^
-  "& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\run.ps1') -Task detail;" ^
-  "Remove-Item Env:DETAIL_SOURCE_DATES -ErrorAction SilentlyContinue;" ^
+  "& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\run.ps1') -Task detail -DetailSourceDates ($dates -join ',');" ^
   "exit $LASTEXITCODE"
 
 set "EXIT_CODE=%ERRORLEVEL%"

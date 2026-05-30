@@ -7,12 +7,12 @@
 | 层 | 位置 | 责任 |
 | --- | --- | --- |
 | 入口层 | `app.py`, `scripts/run.ps1`, `jobs/` | CLI、scheduler、supervisor、定时任务包装 |
-| 运行时配置层 | `services/runtime_config.py`, `data_source_links` | 保存和加载任务源入口 |
+| 运行时配置层 | `services/runtime_config.py`, `data_source_links`, `app_config` | 保存和加载任务源入口、OpenAPI 身份和 App 采集保护参数 |
 | 工作流层 | `workflows/` | 编排 fetch、initial_check、detail_crawl、excel-detail、link-detail |
 | 数据源层 | `sources/` | 读取腾讯文档、Excel、未来 API，输出 `SourceRecord` |
 | 任务框架层 | `storage/` | 任务提交、执行、结果、写回记录和 MySQL 表 |
 | App 适配层 | `crawlers/` | 链路识别、App 包名、deep link、采集计划、专属解析 |
-| 手机执行层 | `mobile/` | ADB、设备会话、截图、XML、OCR、滑动、页面状态 |
+| 手机执行层 | `mobile/` | ADB、设备会话、App 重启恢复、截图、XML、OCR、滑动、页面状态 |
 | 写回层 | `sinks/`, `services/writeback.py` | 把标准结果写回腾讯文档、Excel 或未来目标 |
 | 外部集成层 | `integrations/` | 腾讯文档等第三方 API 客户端 |
 
@@ -59,12 +59,14 @@ crawl_object_key = single_link:<sha1(run_token + url)>
 `mobile/` 提供通用执行能力，不放具体 App 业务。
 
 ```text
-mobile/device_session.py   连接设备、打开链接、维护会话
+mobile/device_session.py   连接设备、打开链接、维护会话、必要时 force-stop 目标 App
 mobile/capture_engine.py   ADB 截图、XML、OCR、滑动
 mobile/record_capture.py   按 CapturePlan 执行页面采集
 mobile/crawler.py          选择 App Adapter 并拼装结果
 mobile/parsers.py          通用金融社区文本解析
 ```
+
+`mobile/` 只处理通用执行问题，例如设备连接、App 打开、白屏/系统弹窗后的重启恢复、截图和页面状态识别。某个 App 需要点击哪里、截几页、解析哪些专属字段，仍然放到 `crawlers/<app>.py` 的 `AppCrawlerAdapter`，避免新增 App 时影响已有链路。
 
 App 差异放在 `crawlers/`：
 

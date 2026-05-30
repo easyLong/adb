@@ -22,7 +22,7 @@
 | `EXCEL_DETAIL_INPUT_PATH` / `excel` | 本地 Excel | 手动执行一次 `excel-detail` |
 | `SINGLE_TEST_LINK` / `single_link` | 单条链接 | 手动执行一次 `link-detail`，用于临时测试 |
 
-任务源入口保存在 MySQL `data_source_links` 表。应用启动任务前会加载运行时配置，并覆盖对应的 `Config` 值。
+任务源入口保存在 MySQL `data_source_links` 表。腾讯文档 OpenAPI 身份、App 采集保护等应用级配置保存在 MySQL `app_config` 表。应用启动任务前会加载运行时配置，并覆盖对应的 `Config` 值。
 
 ## 2. 总体流程
 
@@ -92,18 +92,29 @@ data_source_links(SINGLE_TEST_LINK) 或 CLI 参数 --single-link
 
 ```text
 data_source_links
+  -> app_config
   -> services/runtime_config.py
   -> Config
   -> workflows / sources / sinks
 ```
 
-目前 `data_source_links` 只保存任务源入口：
+目前运行时配置分两类。
+
+`data_source_links` 只保存任务源入口：
 
 | source_key | 含义 | 状态 |
 | --- | --- | --- |
 | `TENCENT_DOC_URL` | 在线腾讯文档链接 | 常驻 `active` |
 | `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 输入文件 | 跑完后 `unavailable` |
 | `SINGLE_TEST_LINK` | 单条测试链接 | 跑完后 `unavailable` |
+
+`app_config` 保存应用级配置：
+
+| config_key | 含义 |
+| --- | --- |
+| `TENCENT_DOC_CLIENT_ID` / `TENCENT_DOC_OPEN_ID` / `TENCENT_DOC_ACCESS_TOKEN` | 腾讯文档 OpenAPI 身份 |
+| `TENCENT_DOC_CLIENT_SECRET` / `TENCENT_DOC_TOKEN_URL` | token 自动换取配置 |
+| `APP_OPEN_RECOVERY_RETRIES` / `APP_RESTART_WAIT` | App 白屏、系统更新弹窗、卡死时的重启恢复策略 |
 
 ### 3.2 从数据源到任务
 
@@ -150,6 +161,7 @@ crawl_task_submissions
   -> workflows/initial_check.py 或 workflows/detail_crawl.py
   -> start_task_execution()
   -> mobile/device_session.py 打开链接
+  -> 技术性异常时 force-stop 目标 App 并重新打开链接
   -> mobile/crawler.py 选择 App Adapter
   -> mobile/record_capture.py 截图、XML、OCR、滑动
 ```
@@ -203,15 +215,15 @@ services/remarks.py
 
 ## 5. 腾讯文档扫描规则
 
-默认 `TENCENT_DOC_SCAN_MODE=today`，只扫描腾讯文档中标题日期等于当天的工作表。
+默认只扫描腾讯文档中标题日期等于当天的工作表。历史补扫不要写 `.env`，使用 `run.ps1` 的临时启动参数。
 
 | 配置 | 说明 |
 | --- | --- |
-| `TENCENT_DOC_SCAN_MODE=single` | 只读取 URL 中指定的单个 sheet |
-| `TENCENT_DOC_SCAN_MODE=today` | 读取当天日期 sheet |
-| `TENCENT_DOC_SCAN_MODE=date` | 读取 `TENCENT_DOC_SCAN_DATE` 指定日期 sheet |
-| `TENCENT_DOC_SCAN_MODE=filter` | 按 `TENCENT_DOC_SHEET_TITLE_FILTER` 过滤 sheet |
-| `TENCENT_DOC_SCAN_MODE=all` | 扫描全部 sheet |
+| `-TencentDocScanMode single` | 只读取 URL 中指定的单个 sheet |
+| `-TencentDocScanMode today` | 读取当天日期 sheet |
+| `-TencentDocScanMode date -TencentDocScanDate YYYY-MM-DD` | 读取指定日期 sheet |
+| `-TencentDocScanMode filter -TencentDocSheetTitleFilter 关键词` | 按标题关键词过滤 sheet |
+| `-TencentDocScanMode all` | 扫描全部 sheet |
 
 ## 6. 项目框架
 
@@ -233,6 +245,8 @@ apps/finance_crawler/
 scripts/
   run.ps1                   常用任务运行入口
   crawl_one_link.py         单链接手机采集测试脚本
+  repair_initial_check_link.py 单条初检结果复核和写回修复脚本
+  replay_tencent_docs_writebacks.py 腾讯文档写回失败重放脚本
   fill_antfortune_xlsx.py   蚂蚁财富 Excel 辅助脚本
 docs/
   PROJECT_FLOW.md           当前整体流程、数据流和框架
@@ -240,7 +254,7 @@ docs/
   FINANCE_CRAWLER.md        业务流程、字段和 MySQL 表说明
   RUNTIME_CONFIG.md         运行时任务源配置
   OPERATIONS.md             运行、测试和排障
-  env.example.ps1           环境变量模板
+  env.example.ps1           旧 PowerShell 示例；新部署优先使用根目录 .env
   init.sql                  MySQL 建表 SQL
 ```
 

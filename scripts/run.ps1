@@ -5,47 +5,67 @@ param(
     [string]$Task = "scheduler",
 
     [string]$Python = "python",
-    [string]$TencentEnvFile = "D:\password\tengxun.txt",
-    [string]$MysqlEnvFile = "D:\password\mysql.txt",
+    [string]$EnvFile = ".env",
     [string]$TencentDocUrl = "",
     [string]$ExcelInputPath = "",
     [string]$SingleLink = "",
+    [string]$ReportDate = "",
+    [string]$TencentDocScanMode = "",
+    [string]$TencentDocScanDate = "",
+    [string]$TencentDocSheetTitleFilter = "",
+    [string]$DetailSourceDates = "",
     [string[]]$ConfigSet = @()
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 
-function Load-TencentEnv {
+function Load-ProjectEnv {
     param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) {
+    $ResolvedPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path $Root $Path }
+    if (-not (Test-Path -LiteralPath $ResolvedPath)) {
         return
     }
 
-    $content = Get-Content -LiteralPath $Path -Raw
-    foreach ($line in ($content -split "`n")) {
-        if ($line -match '\$env:([A-Z0-9_]+)\s*=\s*"([^"]+)"') {
-            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
+    foreach ($line in Get-Content -LiteralPath $ResolvedPath) {
+        if ($line -match '^\s*(?:\$env:)?(\uFEFF?MYSQL_[A-Z0-9_]+)\s*=\s*(.*)\s*$') {
+            $name = $matches[1].TrimStart([char]0xFEFF)
+            $value = $matches[2].Trim().Trim('"').Trim("'")
+            [Environment]::SetEnvironmentVariable($name, $value, "Process")
         }
     }
 }
 
-function Load-MysqlEnv {
-    param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return
-    }
+Load-ProjectEnv $EnvFile
 
-    $content = Get-Content -LiteralPath $Path -Raw
-    $env:MYSQL_HOST = [regex]::Match($content, "'host':\s*'([^']+)'").Groups[1].Value
-    $env:MYSQL_PORT = [regex]::Match($content, "'port':\s*(\d+)").Groups[1].Value
-    $env:MYSQL_USER = [regex]::Match($content, "'user':\s*'([^']+)'").Groups[1].Value
-    $env:MYSQL_PASSWORD = [regex]::Match($content, "'password':\s*'([^']+)'").Groups[1].Value
-    $env:MYSQL_DATABASE = [regex]::Match($content, "'database':\s*'([^']+)'").Groups[1].Value
+if ($TencentDocScanDate -and -not $TencentDocScanMode) {
+    $TencentDocScanMode = "date"
 }
-
-Load-TencentEnv $TencentEnvFile
-Load-MysqlEnv $MysqlEnvFile
+if ($TencentDocScanMode) {
+    $AllowedScanModes = @("single", "today", "date", "filter", "all")
+    if ($AllowedScanModes -notcontains $TencentDocScanMode) {
+        throw "Invalid TencentDocScanMode: $TencentDocScanMode. Allowed: $($AllowedScanModes -join ', ')"
+    }
+    $env:TENCENT_DOC_SCAN_MODE = $TencentDocScanMode
+}
+if ($TencentDocScanDate) {
+    if ($TencentDocScanDate -notmatch '^\d{4}-\d{2}-\d{2}$') {
+        throw "Invalid TencentDocScanDate: $TencentDocScanDate. Expected yyyy-MM-dd."
+    }
+    $env:TENCENT_DOC_SCAN_DATE = $TencentDocScanDate
+}
+if ($TencentDocSheetTitleFilter) {
+    $env:TENCENT_DOC_SHEET_TITLE_FILTER = $TencentDocSheetTitleFilter
+}
+if ($DetailSourceDates) {
+    $DetailSourceDates -split "," | ForEach-Object {
+        $date = $_.Trim()
+        if ($date -and $date -notmatch '^\d{4}-\d{2}-\d{2}$') {
+            throw "Invalid DetailSourceDates item: $date. Expected comma-separated yyyy-MM-dd."
+        }
+    }
+    $env:DETAIL_SOURCE_DATES = $DetailSourceDates
+}
 
 if (-not $env:ADB_PATH) {
     $BundledAdb = Join-Path $Root "platform-tools\adb.exe"
@@ -84,6 +104,12 @@ if ($Task -eq "scheduler") {
         $LinkArgs += @("--single-link", $SingleLink)
     }
     & $Python -m $Module @LinkArgs
+} elseif ($Task -eq "report") {
+    $ReportArgs = @("--once", "report")
+    if ($ReportDate) {
+        $ReportArgs += @("--report-date", $ReportDate)
+    }
+    & $Python -m $Module @ReportArgs
 } else {
     & $Python -m $Module --once $Task
 }

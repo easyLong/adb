@@ -5,16 +5,18 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from apps.finance_crawler.config import Config
-from apps.finance_crawler.domain.task_types import DETAIL_CRAWL_TASK_TYPE
+from apps.finance_crawler.domain.task_types import DETAIL_CRAWL_TASK_TYPE, INITIAL_CHECK_TASK_TYPE
 from apps.finance_crawler.storage.db import get_conn, log_task
 from apps.finance_crawler.utils.logger import get_logger
 
 logger = get_logger("report")
 
 
-def generate_report(target_date=None) -> str:
+def generate_report(target_date: date | str | None = None) -> str:
     if target_date is None:
         target_date = date.today()
+    elif isinstance(target_date, str):
+        target_date = date.fromisoformat(target_date)
 
     return _generate_framework_report(target_date)
 
@@ -60,6 +62,24 @@ def _generate_framework_report(target_date: date) -> str:
             )
             failed = cursor.fetchone()["cnt"]
 
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM crawl_task_submissions d
+                LEFT JOIN crawl_task_executions de ON de.id = d.latest_execution_id
+                JOIN crawl_task_submissions i
+                  ON i.crawl_object_key = d.crawl_object_key
+                 AND i.task_type = %s
+                JOIN crawl_task_executions ie ON ie.id = i.latest_execution_id
+                WHERE d.task_type = %s
+                  AND DATE(d.source_time) = %s
+                  AND COALESCE(de.status, d.status) = 'pending'
+                  AND ie.status = 'not_found'
+                """,
+                (INITIAL_CHECK_TASK_TYPE, DETAIL_CRAWL_TASK_TYPE, target_date),
+            )
+            initial_check_failed = cursor.fetchone()["cnt"]
+
             read_expr = "CAST(JSON_UNQUOTE(JSON_EXTRACT(e.metrics_json, '$.read_count')) AS UNSIGNED)"
             cursor.execute(
                 f"""
@@ -93,9 +113,9 @@ def _generate_framework_report(target_date: date) -> str:
 
         report = (
             f"{target_date.month}月{target_date.day}日预发帖{total}条，"
-            f"成功发帖{success}条，失败{failed}条，"
+            f"初检失败{initial_check_failed}条，采集失败{failed}条，成功发帖{success}条，"
             f"阅读量超过{Config.READ_COUNT_THRESHOLD}的有{over_threshold}条，"
-            f"阅读数前{Config.REPORT_TOP_N}数据为{top_str}"
+            f"阅读数前三数据为{top_str}"
         )
         _save_report_file(target_date, report)
         logger.info("framework report generated: %s", report)

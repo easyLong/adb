@@ -13,6 +13,7 @@ from apps.finance_crawler.utils.logger import get_logger
 logger = get_logger("runtime_config")
 
 _DATA_SOURCE_TABLE = "data_source_links"
+_APP_CONFIG_TABLE = "app_config"
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ class RuntimeConfigItem:
     enabled: bool = True
     status: str = "active"
     description: str = ""
+    secret: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +34,7 @@ class RuntimeConfigDisplayItem:
     description: str = ""
     enabled: bool = True
     status: str = "active"
+    secret: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +52,11 @@ _CONFIG_ATTRS: dict[str, str] = {
     "TENCENT_DOC_SCAN_MODE": "QQ_SCAN_MODE",
     "TENCENT_DOC_SCAN_DATE": "QQ_SCAN_DATE",
     "TENCENT_DOC_SHEET_TITLE_FILTER": "QQ_SHEET_TITLE_FILTER",
+    "TENCENT_DOC_ACCESS_TOKEN": "QQ_ACCESS_TOKEN",
+    "TENCENT_DOC_CLIENT_ID": "QQ_CLIENT_ID",
+    "TENCENT_DOC_CLIENT_SECRET": "QQ_CLIENT_SECRET",
+    "TENCENT_DOC_OPEN_ID": "QQ_OPEN_ID",
+    "TENCENT_DOC_TOKEN_URL": "QQ_TOKEN_URL",
     "FETCH_INTERVAL_MINUTES": "FETCH_INTERVAL_MINUTES",
     "FETCH_LIMIT": "FETCH_LIMIT",
     "CHECK_INTERVAL_MINUTES": "CHECK_INTERVAL_MINUTES",
@@ -64,41 +72,83 @@ _CONFIG_ATTRS: dict[str, str] = {
     "WRITEBACK_EXCEL_SAVE_AS": "WRITEBACK_EXCEL_SAVE_AS",
     "WRITEBACK_EXCEL_SHEET_NAME": "WRITEBACK_EXCEL_SHEET_NAME",
     "DEVICE_SERIAL": "DEVICE_SERIAL",
+    "APP_OPEN_RECOVERY_RETRIES": "APP_OPEN_RECOVERY_RETRIES",
+    "APP_RESTART_WAIT": "APP_RESTART_WAIT",
     "CRAWL_ACTIVE_START": "CRAWL_ACTIVE_START",
     "CRAWL_ACTIVE_END": "CRAWL_ACTIVE_END",
     "CRAWL_MAX_TASK_SECONDS": "CRAWL_MAX_TASK_SECONDS",
 }
 
-_RUNTIME_TABLE_KEYS: tuple[str, ...] = (
+_DATA_SOURCE_KEYS: tuple[str, ...] = (
     "TENCENT_DOC_URL",
     "EXCEL_DETAIL_INPUT_PATH",
     "SINGLE_TEST_LINK",
 )
 
+_OPENAPI_CONFIG_KEYS: tuple[str, ...] = (
+    "TENCENT_DOC_CLIENT_ID",
+    "TENCENT_DOC_OPEN_ID",
+    "TENCENT_DOC_ACCESS_TOKEN",
+    "TENCENT_DOC_CLIENT_SECRET",
+    "TENCENT_DOC_TOKEN_URL",
+)
+
+_APP_BEHAVIOR_CONFIG_KEYS: tuple[str, ...] = (
+    "APP_OPEN_RECOVERY_RETRIES",
+    "APP_RESTART_WAIT",
+)
+
+_APP_CONFIG_KEYS: tuple[str, ...] = _OPENAPI_CONFIG_KEYS + _APP_BEHAVIOR_CONFIG_KEYS
+
+_SECRET_KEYS = {
+    "TENCENT_DOC_CLIENT_ID",
+    "TENCENT_DOC_OPEN_ID",
+    "TENCENT_DOC_ACCESS_TOKEN",
+    "TENCENT_DOC_CLIENT_SECRET",
+}
 
 _DESCRIPTIONS: dict[str, str] = {
-    "TENCENT_DOC_URL": "在线腾讯文档链接。配置后调度器会持续读取当天日期的工作表。",
-    "TENCENT_DOC_FILE_ID": "系统从在线文档链接自动解析出的文档 ID，一般不需要手动修改。",
-    "TENCENT_DOC_SHEET_ID": "系统从在线文档链接自动解析出的工作表 tab，一般不需要手动修改。",
-    "TENCENT_DOC_READ_RANGE": "在线文档每次读取的表格范围。",
-    "TENCENT_DOC_SCAN_MODE": "在线文档扫描模式。默认 today，只处理当天日期的工作表。",
-    "TENCENT_DOC_SCAN_DATE": "补扫日期，例如 2026-05-27。留空表示按当天日期处理。",
-    "TENCENT_DOC_SHEET_TITLE_FILTER": "工作表标题过滤词。只有 filter 模式才需要。",
-    "FETCH_INTERVAL_MINUTES": "在线文档轮询间隔，单位分钟。",
+    "TENCENT_DOC_URL": "在线腾讯文档链接。配置后调度器会持续读取目标文档。",
     "EXCEL_DETAIL_INPUT_PATH": "本地 Excel 输入文件。用于临时跑批，执行一次 excel-detail 即结束。",
     "SINGLE_TEST_LINK": "单条测试链接。用于临时测试，执行一次 link-detail 后自动停用。",
-    "EXCEL_DETAIL_OUTPUT_PATH": "本地 Excel 输出文件。留空表示写回原文件。",
-    "EXCEL_DETAIL_SOURCE_FILTER": "本地 Excel 链路筛选，例如 alipay,antfortune,tenpay。留空表示全部支持链路。",
+    "TENCENT_DOC_CLIENT_ID": "腾讯文档 OpenAPI Client-Id。",
+    "TENCENT_DOC_OPEN_ID": "腾讯文档 OpenAPI Open-Id，对应授权账号身份。",
+    "TENCENT_DOC_ACCESS_TOKEN": "腾讯文档 OpenAPI Access-Token。可选；配置后优先使用。",
+    "TENCENT_DOC_CLIENT_SECRET": "腾讯文档 OpenAPI Client-Secret。未配置 Access-Token 时用于换 token。",
+    "TENCENT_DOC_TOKEN_URL": "腾讯文档 OpenAPI token 换取地址。",
 }
 
 _DISPLAY_LABELS: dict[str, str] = {
     "TENCENT_DOC_URL": "在线文档链接",
     "EXCEL_DETAIL_INPUT_PATH": "本地 Excel 路径",
     "SINGLE_TEST_LINK": "单条测试链接",
+    "TENCENT_DOC_CLIENT_ID": "Client-Id",
+    "TENCENT_DOC_OPEN_ID": "Open-Id",
+    "TENCENT_DOC_ACCESS_TOKEN": "Access-Token",
+    "TENCENT_DOC_CLIENT_SECRET": "Client-Secret",
+    "TENCENT_DOC_TOKEN_URL": "Token URL",
 }
+
+_DESCRIPTIONS.update(
+    {
+        "APP_OPEN_RECOVERY_RETRIES": "Retry count for transient blank/update/stuck app pages after force-stopping the target app.",
+        "APP_RESTART_WAIT": "Seconds to wait after force-stopping the target app before reopening the link.",
+    }
+)
+_DISPLAY_LABELS.update(
+    {
+        "APP_OPEN_RECOVERY_RETRIES": "App recovery retries",
+        "APP_RESTART_WAIT": "App restart wait",
+    }
+)
 
 
 def ensure_runtime_config_defaults(cursor) -> None:
+    _ensure_data_source_defaults(cursor)
+    _ensure_app_config_defaults(cursor)
+
+
+def _ensure_data_source_defaults(cursor) -> None:
     rows = [
         (
             "TENCENT_DOC_URL",
@@ -114,13 +164,6 @@ def ensure_runtime_config_defaults(cursor) -> None:
         ),
         ("SINGLE_TEST_LINK", "", "unavailable", _DESCRIPTIONS["SINGLE_TEST_LINK"]),
     ]
-    cursor.execute(
-        """
-        DELETE FROM data_source_links
-        WHERE source_key NOT IN (%s, %s, %s)
-        """,
-        _RUNTIME_TABLE_KEYS,
-    )
     cursor.executemany(
         """
         INSERT INTO data_source_links (source_key, data_source_link, status, description, updated_by)
@@ -140,7 +183,44 @@ def ensure_runtime_config_defaults(cursor) -> None:
     )
 
 
+def _ensure_app_config_defaults(cursor) -> None:
+    rows = []
+    for key in _APP_CONFIG_KEYS:
+        default = _default_value_for_key(key)
+        if key == "TENCENT_DOC_TOKEN_URL" and not default:
+            default = "https://docs.qq.com/oauth/v2/token"
+        rows.append(
+            (
+                key,
+                default,
+                "active" if default else "unavailable",
+                1 if key in _SECRET_KEYS else 0,
+                _DESCRIPTIONS.get(key, ""),
+            )
+        )
+    cursor.executemany(
+        """
+        INSERT INTO app_config (config_key, config_value, status, is_secret, description, updated_by)
+        VALUES (%s, %s, %s, %s, %s, 'system')
+        ON DUPLICATE KEY UPDATE
+            is_secret = VALUES(is_secret),
+            description = VALUES(description)
+        """,
+        rows,
+    )
+
+
 def load_runtime_config() -> dict[str, str]:
+    values = _load_data_source_values()
+    values.update(_derive_tencent_doc_keys(values))
+    values.update(_load_app_config_values())
+    apply_runtime_config(values)
+    if values:
+        logger.info("runtime config loaded: %s", ", ".join(sorted(values)))
+    return values
+
+
+def _load_data_source_values() -> dict[str, str]:
     from apps.finance_crawler.storage.db import get_conn
 
     conn = get_conn()
@@ -152,25 +232,41 @@ def load_runtime_config() -> dict[str, str]:
                 FROM data_source_links
                 WHERE status = 'active'
                   AND source_key IN (%s, %s, %s)
-                """
-                ,
-                _RUNTIME_TABLE_KEYS,
+                """,
+                _DATA_SOURCE_KEYS,
             )
             rows = cursor.fetchall()
     finally:
         conn.close()
 
-    values = {
-        str(row["source_key"]): ""
-        if row["data_source_link"] is None
-        else str(row["data_source_link"])
+    return {
+        str(row["source_key"]): "" if row["data_source_link"] is None else str(row["data_source_link"])
         for row in rows
     }
-    values.update(_derive_tencent_doc_keys(values))
-    apply_runtime_config(values)
-    if values:
-        logger.info("runtime config loaded: %s", ", ".join(sorted(values)))
-    return values
+
+
+def _load_app_config_values() -> dict[str, str]:
+    from apps.finance_crawler.storage.db import get_conn
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT config_key, config_value
+                FROM {_APP_CONFIG_TABLE}
+                WHERE status = 'active'
+                  AND config_key IN ({", ".join(["%s"] * len(_APP_CONFIG_KEYS))})
+                  AND config_value IS NOT NULL
+                  AND config_value <> ''
+                """,
+                _APP_CONFIG_KEYS,
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    return {str(row["config_key"]): str(row["config_value"]) for row in rows}
 
 
 def apply_runtime_config(values: dict[str, str]) -> None:
@@ -184,6 +280,10 @@ def apply_runtime_config(values: dict[str, str]) -> None:
 
 
 def list_runtime_config() -> list[RuntimeConfigItem]:
+    return _list_data_source_config() + _list_app_config()
+
+
+def _list_data_source_config() -> list[RuntimeConfigItem]:
     from apps.finance_crawler.storage.db import get_conn
 
     conn = get_conn()
@@ -195,9 +295,8 @@ def list_runtime_config() -> list[RuntimeConfigItem]:
                 FROM data_source_links
                 WHERE source_key IN (%s, %s, %s)
                 ORDER BY source_key
-                """
-                ,
-                _RUNTIME_TABLE_KEYS,
+                """,
+                _DATA_SOURCE_KEYS,
             )
             return [
                 RuntimeConfigItem(
@@ -213,70 +312,122 @@ def list_runtime_config() -> list[RuntimeConfigItem]:
         conn.close()
 
 
+def _list_app_config() -> list[RuntimeConfigItem]:
+    from apps.finance_crawler.storage.db import get_conn
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT config_key, config_value, status, description, is_secret
+                FROM {_APP_CONFIG_TABLE}
+                WHERE config_key IN ({", ".join(["%s"] * len(_APP_CONFIG_KEYS))})
+                ORDER BY config_key
+                """,
+                _APP_CONFIG_KEYS,
+            )
+            return [
+                RuntimeConfigItem(
+                    key=str(row["config_key"]),
+                    value="" if row["config_value"] is None else str(row["config_value"]),
+                    enabled=str(row["status"]) == "active",
+                    status=str(row["status"] or ""),
+                    description=str(row.get("description") or ""),
+                    secret=bool(row.get("is_secret")),
+                )
+                for row in cursor.fetchall()
+            ]
+    finally:
+        conn.close()
+
+
 def grouped_runtime_config() -> list[RuntimeConfigDisplayGroup]:
     values = {item.key: item for item in list_runtime_config()}
+    return [
+        RuntimeConfigDisplayGroup(
+            title="任务源配置",
+            description="数据从哪里来。",
+            items=tuple(_display_items(values, _DATA_SOURCE_KEYS)),
+        ),
+        RuntimeConfigDisplayGroup(
+            title="腾讯文档 OpenAPI",
+            description="读写腾讯文档使用的 OpenAPI 身份；MySQL 连接不放这里。",
+            items=tuple(_display_items(values, _OPENAPI_CONFIG_KEYS)),
+        ),
+        RuntimeConfigDisplayGroup(
+            title="App 采集保护",
+            description="手机 App 白屏、系统更新弹窗、卡死时的自动恢复策略。",
+            items=tuple(_display_items(values, _APP_BEHAVIOR_CONFIG_KEYS)),
+        ),
+    ]
+
+
+def _display_items(values: dict[str, RuntimeConfigItem], keys: tuple[str, ...]) -> list[RuntimeConfigDisplayItem]:
     items = []
-    for key in _RUNTIME_TABLE_KEYS:
+    for key in keys:
         source = values.get(key)
-        if source:
-            raw_value = source.value
-            enabled = source.enabled
-            item_description = source.description or _DESCRIPTIONS.get(key, "")
-        else:
-            raw_value = _default_value_for_key(key)
-            enabled = True
-            status = "active"
-            item_description = _DESCRIPTIONS.get(key, "")
-        status = source.status if source else status
+        raw_value = source.value if source else _default_value_for_key(key)
         items.append(
             RuntimeConfigDisplayItem(
                 key=key,
                 label=_DISPLAY_LABELS.get(key, key),
-                value=_format_display_value(key, raw_value),
-                description=item_description,
-                enabled=enabled,
-                status=status,
+                value=_format_display_value(key, raw_value, secret=bool(source.secret if source else key in _SECRET_KEYS)),
+                description=(source.description if source else "") or _DESCRIPTIONS.get(key, ""),
+                enabled=source.enabled if source else bool(raw_value),
+                status=source.status if source else ("active" if raw_value else "unavailable"),
+                secret=bool(source.secret if source else key in _SECRET_KEYS),
             )
         )
-    return [
-        RuntimeConfigDisplayGroup(
-            title="任务源配置",
-            description="在线文档长期监测；本地 Excel 和单条测试链接执行完会自动停用。",
-            items=tuple(items),
-        )
-    ]
+    return items
 
 
 def format_runtime_config_for_cli() -> str:
     lines = [
-        "数据源链接配置",
-        "data_source_links 只保留数据源入口，其它参数由程序默认和自动解析。",
+        "运行时配置",
+        "MySQL 连接只从项目根目录 .env / 环境变量读取；其它运行配置从 MySQL 配置表读取。",
     ]
     for group in grouped_runtime_config():
         lines.append("")
         lines.append(f"[{group.title}]")
         lines.append(group.description)
         for item in group.items:
-            state = "" if item.enabled else "（已停用）"
+            state = "" if item.enabled else "（未启用）"
             lines.append(f"  {item.label}: {item.value}{state}")
     return "\n".join(lines)
 
 
 def set_runtime_config(values: dict[str, str], *, updated_by: str = "cli") -> None:
+    source_values: dict[str, str] = {}
+    app_values: dict[str, str] = {}
+    for key, value in values.items():
+        if key in _DATA_SOURCE_KEYS:
+            source_values[key] = value
+            continue
+        if key in _APP_CONFIG_KEYS:
+            app_values[key] = value
+            continue
+        raise ValueError(
+            f"unsupported config key: {key}; source keys: {', '.join(_DATA_SOURCE_KEYS)}; "
+            f"app keys: {', '.join(_APP_CONFIG_KEYS)}"
+        )
+
+    if source_values:
+        _set_data_source_config(source_values, updated_by=updated_by)
+    if app_values:
+        _set_app_config(app_values, updated_by=updated_by)
+
+    apply_runtime_config(values | _derive_tencent_doc_keys(values))
+
+
+def _set_data_source_config(values: dict[str, str], *, updated_by: str) -> None:
     from apps.finance_crawler.storage.db import get_conn
 
     rows = []
     for key, value in values.items():
-        if key not in _RUNTIME_TABLE_KEYS:
-            raise ValueError(
-                f"{_DATA_SOURCE_TABLE} only supports source keys: {', '.join(_RUNTIME_TABLE_KEYS)}"
-            )
         if key == "TENCENT_DOC_URL" and value:
             parse_doc_url(value)
         rows.append((key, value, _DESCRIPTIONS.get(key, ""), updated_by))
-
-    if not rows:
-        return
 
     conn = get_conn()
     try:
@@ -300,7 +451,43 @@ def set_runtime_config(values: dict[str, str], *, updated_by: str = "cli") -> No
     finally:
         conn.close()
 
-    apply_runtime_config(values | _derive_tencent_doc_keys(values))
+
+def _set_app_config(values: dict[str, str], *, updated_by: str) -> None:
+    from apps.finance_crawler.storage.db import get_conn
+
+    rows = [
+        (
+            key,
+            value,
+            "active" if value.strip() else "unavailable",
+            1 if key in _SECRET_KEYS else 0,
+            _DESCRIPTIONS.get(key, ""),
+            updated_by,
+        )
+        for key, value in values.items()
+    ]
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                f"""
+                INSERT INTO {_APP_CONFIG_TABLE} (config_key, config_value, status, is_secret, description, updated_by)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    config_value = VALUES(config_value),
+                    status = VALUES(status),
+                    is_secret = VALUES(is_secret),
+                    description = COALESCE(NULLIF(VALUES(description), ''), description),
+                    updated_by = VALUES(updated_by)
+                """,
+                rows,
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_data_source_link(source_key: str, *, require_enabled: bool = True) -> RuntimeConfigItem | None:
@@ -410,23 +597,12 @@ def _default_value_for_key(key: str) -> str:
     return str(getattr(Config, attr, ""))
 
 
-def _format_display_value(key: str, value: str) -> str:
+def _format_display_value(key: str, value: str, *, secret: bool = False) -> str:
     cleaned = (value or "").strip()
-    if key == "EXCEL_DETAIL_OUTPUT_PATH":
-        return cleaned or "未配置，写回原文件"
-    if key == "EXCEL_DETAIL_SOURCE_FILTER":
-        return cleaned or "全部支持链路"
     if not cleaned:
         return "未配置"
-    if key == "TENCENT_DOC_SCAN_MODE":
-        return {
-            "today": "当天工作表（推荐）",
-            "single": "只读取链接里的单个工作表",
-            "filter": "按标题过滤读取",
-            "all": "读取全部工作表",
-        }.get(cleaned, cleaned)
-    if key == "TENCENT_DOC_SCAN_DATE":
-        return f"{cleaned}（补扫指定日期）"
-    if key == "FETCH_INTERVAL_MINUTES":
-        return f"{cleaned} 分钟"
+    if secret:
+        if len(cleaned) <= 8:
+            return "***"
+        return f"{cleaned[:4]}***{cleaned[-4:]}"
     return cleaned

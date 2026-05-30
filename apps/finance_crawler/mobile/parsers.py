@@ -21,6 +21,21 @@ def extract_account_name(texts: list[str]) -> str:
         "\u5934\u50cf",
         "\u8fd4\u56de",
         "\u66f4\u591a",
+        "\u5317\u4eac",
+        "\u4e0a\u6d77",
+        "\u5929\u6d25",
+        "\u91cd\u5e86",
+        "\u6c5f\u897f",
+        "\u798f\u5efa",
+        "\u5e7f\u4e1c",
+        "\u6c5f\u82cf",
+        "\u6d59\u6c5f",
+        "\u5c71\u4e1c",
+        "\u56db\u5ddd",
+        "\u6cb3\u5357",
+        "\u6cb3\u5317",
+        "\u6e56\u5357",
+        "\u6e56\u5317",
     }
     ignore_contains = {
         "\u652f\u4ed8\u5b9d",
@@ -36,10 +51,30 @@ def extract_account_name(texts: list[str]) -> str:
         "\u84dd\u7259",
         "\u624b\u673a\u4fe1\u53f7",
         "\u6b63\u5728\u5145\u7535",
+        "\u5185\u5bb9\u4e0d\u89c1\u4e86",
+        "\u5148\u53bb\u770b\u770b\u5176\u4ed6\u7684\u5427",
+        "\u5185\u5bb9\u4e0d\u5b58\u5728",
+        "\u5df2\u88ab\u5220\u9664",
+        "\u65e0\u6cd5\u67e5\u770b\u8be5\u5185\u5bb9",
+        "\u7f51\u7edc\u4e0d\u7ed9\u529b",
+        "\u52a0\u8f7d\u5931\u8d25",
+        "\u8bf7\u6c42\u8d85\u65f6",
         "\u632f\u94c3\u5668",
+        "Android \u7cfb\u7edf\u901a\u77e5",
+        "\u7cfb\u7edf\u901a\u77e5",
+        "\u624b\u673a\u7ba1\u5bb6\u901a\u77e5",
+        "\u65e0\u7ebf\u8c03\u8bd5",
+        "\u6ca1\u6709 SIM \u5361",
+        "WLAN",
+        "\u5df2\u5b8c\u6210\u767e\u5206\u4e4b",
+        "\u6b63\u5728\u5145\u7535",
     }
 
-    def usable(text: str) -> bool:
+    relative_time_pattern = re.compile(
+        r"^(?:刚刚|\d+\s*(?:秒|分钟|小时|天|周|个月|年)前|昨天|前天|\d{1,2}[-/]\d{1,2}(?:\s*\d{1,2}:\d{2})?)$"
+    )
+
+    def usable(text: str, *, allow_numeric: bool = False) -> bool:
         cleaned = text.strip()
         if not cleaned or len(cleaned) > 30:
             return False
@@ -51,7 +86,9 @@ def extract_account_name(texts: list[str]) -> str:
             return False
         if re.search(r"https?://|ur\.alipay\.com|\d{4}-\d{2}-\d{2}", cleaned):
             return False
-        if re.search(r"^\d+$", cleaned):
+        if relative_time_pattern.fullmatch(cleaned):
+            return False
+        if re.search(r"^\d+$", cleaned) and not allow_numeric:
             return False
         return True
 
@@ -59,7 +96,7 @@ def extract_account_name(texts: list[str]) -> str:
         if text.strip() != "\u5934\u50cf":
             continue
         for candidate in texts[index + 1 : index + 6]:
-            if usable(candidate):
+            if usable(candidate, allow_numeric=True):
                 return candidate.strip()
 
     for text in texts[:40]:
@@ -218,6 +255,20 @@ def is_post_content_stop(text: str) -> bool:
 
 
 def is_post_content_noise(text: str) -> bool:
+    if any(
+        keyword in text
+        for keyword in (
+            "\u5185\u5bb9\u4e0d\u89c1\u4e86",
+            "\u5148\u53bb\u770b\u770b\u5176\u4ed6\u7684\u5427",
+            "\u5185\u5bb9\u4e0d\u5b58\u5728",
+            "\u5df2\u88ab\u5220\u9664",
+            "\u65e0\u6cd5\u67e5\u770b\u8be5\u5185\u5bb9",
+            "\u7f51\u7edc\u4e0d\u7ed9\u529b",
+            "\u52a0\u8f7d\u5931\u8d25",
+            "\u8bf7\u6c42\u8d85\u65f6",
+        )
+    ):
+        return True
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}\s*\d{1,2}:\d{2}", text):
         return True
     if text in {
