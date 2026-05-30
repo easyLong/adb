@@ -50,9 +50,20 @@ def row_cells_request(
     row_index: int,
     start_col_index: int,
     values: list[Any],
+    text_format: dict[str, Any] | None = None,
+    cell_format: dict[str, Any] | None = None,
     doc: client.DocInfo | None = None,
 ) -> dict[str, Any]:
     resolved_doc = doc or client.configured_doc()
+    cells = []
+    for value in values:
+        cell: dict[str, Any] = {"cellValue": {"text": "" if value is None else str(value)}}
+        merged_cell_format = dict(cell_format or {})
+        if text_format:
+            merged_cell_format["textFormat"] = text_format
+        if merged_cell_format:
+            cell["cellFormat"] = merged_cell_format
+        cells.append(cell)
     return {
         "updateRangeRequest": {
             "sheetId": resolved_doc.sheet_id,
@@ -61,10 +72,7 @@ def row_cells_request(
                 "startColumn": start_col_index,
                 "rows": [
                     {
-                        "values": [
-                            {"cellValue": {"text": "" if value is None else str(value)}}
-                            for value in values
-                        ]
+                        "values": cells
                     }
                 ],
             },

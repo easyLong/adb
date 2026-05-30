@@ -203,6 +203,7 @@ class Config:
     # Reports
     READ_COUNT_THRESHOLD = _env_int("READ_COUNT_THRESHOLD", 30)
     REPORT_TOP_N = _env_int("REPORT_TOP_N", 3)
+    TENCENT_DOC_REPORT_SHEET_TITLE = _env("TENCENT_DOC_REPORT_SHEET_TITLE", "内部数据报告")
 
     # Alerts and supervision
     ALERT_ENABLED = _env_bool("ALERT_ENABLED", True)

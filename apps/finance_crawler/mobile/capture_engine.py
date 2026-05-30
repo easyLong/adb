@@ -424,21 +424,54 @@ def try_ocr(image_path: Path) -> Optional[List[Dict[str, Any]]]:
     return rows
 
 
-def scroll_forward(device, duration: float = 0.35) -> bool:
-    try:
-        scrollable = device(scrollable=True)
-        if scrollable.exists:
-            if scrollable.scroll.forward():
-                return True
-    except Exception:
-        pass
-
+def scroll_forward(device, duration: float = 0.35, serial: Optional[str] = None) -> bool:
     width, height = device.window_size()
     start_x = width // 2
     start_y = int(height * 0.78)
     end_y = int(height * 0.28)
-    device.swipe(start_x, start_y, start_x, end_y, duration)
+    duration_ms = max(50, int(duration * 1000))
+    try:
+        run_adb(
+            ["shell", "input", "swipe", str(start_x), str(start_y), str(start_x), str(end_y), str(duration_ms)],
+            serial=serial,
+            timeout=8,
+        )
+        return True
+    except Exception as exc:
+        if _is_input_injection_permission_error(exc):
+            print(f"scroll skipped: input injection permission denied: {exc}", file=sys.stderr)
+            return False
+
+    try:
+        scrollable = device(scrollable=True)
+        if scrollable.exists and scrollable.scroll.forward():
+            return True
+    except Exception as exc:
+        if _is_input_injection_permission_error(exc):
+            print(f"scroll skipped: uiautomator input injection permission denied: {exc}", file=sys.stderr)
+            return False
+
+    try:
+        device.swipe(start_x, start_y, start_x, end_y, duration)
+    except Exception as exc:
+        if _is_input_injection_permission_error(exc):
+            print(f"scroll skipped: uiautomator swipe permission denied: {exc}", file=sys.stderr)
+            return False
+        raise
     return True
+
+
+def _is_input_injection_permission_error(exc: Exception) -> bool:
+    text = " ".join(
+        str(value or "")
+        for value in (
+            exc,
+            getattr(exc, "stdout", ""),
+            getattr(exc, "stderr", ""),
+            getattr(exc, "output", ""),
+        )
+    ).lower()
+    return "inject_events" in text or "injecting input events requires" in text
 
 
 def current_screen_signature(xml_text: str) -> str:
@@ -544,7 +577,7 @@ def capture_pages(
             break
         seen_screen_signatures.add(signature)
 
-        moved = scroll_forward(device)
+        moved = scroll_forward(device, serial=serial)
         if not moved:
             print("Stop: no more scrollable content.")
             break

@@ -1,5 +1,7 @@
+import subprocess
 import unittest
 
+from apps.finance_crawler.mobile.capture_engine import _is_input_injection_permission_error
 from apps.finance_crawler.mobile.page_status import detect_page_status_from_texts
 from apps.finance_crawler.mobile.crawler import is_transient_open_failure
 from apps.finance_crawler.mobile.parsers import extract_account_name
@@ -52,6 +54,25 @@ class RecoveryClassifierTests(unittest.TestCase):
         account = extract_account_name(["头像", "5小时前", "关注", "阅读"])
 
         self.assertEqual(account, "")
+
+
+class InputPermissionClassifierTests(unittest.TestCase):
+    def test_adb_input_permission_error_is_detected(self) -> None:
+        error = subprocess.CalledProcessError(
+            255,
+            ["adb", "shell", "input", "swipe"],
+            stderr="java.lang.SecurityException: Injecting input events requires INJECT_EVENTS permission",
+        )
+
+        self.assertTrue(_is_input_injection_permission_error(error))
+
+    def test_uiautomator_input_permission_error_is_detected(self) -> None:
+        error = RuntimeError(
+            "Unknown RPC error: -32001 java.lang.SecurityException: "
+            "Injecting input events requires the caller to have the INJECT_EVENTS permission"
+        )
+
+        self.assertTrue(_is_input_injection_permission_error(error))
 
 
 if __name__ == "__main__":

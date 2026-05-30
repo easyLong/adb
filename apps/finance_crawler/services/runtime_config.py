@@ -63,6 +63,7 @@ _CONFIG_ATTRS: dict[str, str] = {
     "DETAIL_TIME": "DETAIL_TIME",
     "DETAIL_INTERVAL_MINUTES": "DETAIL_INTERVAL_MINUTES",
     "REPORT_TIME": "REPORT_TIME",
+    "TENCENT_DOC_REPORT_SHEET_TITLE": "TENCENT_DOC_REPORT_SHEET_TITLE",
     "EXCEL_DETAIL_INPUT_PATH": "EXCEL_DETAIL_INPUT_PATH",
     "EXCEL_DETAIL_OUTPUT_PATH": "EXCEL_DETAIL_OUTPUT_PATH",
     "EXCEL_DETAIL_RESULT_JSONL_PATH": "EXCEL_DETAIL_RESULT_JSONL_PATH",
@@ -100,6 +101,7 @@ _APP_BEHAVIOR_CONFIG_KEYS: tuple[str, ...] = (
     "APP_RESTART_WAIT",
     "DETAIL_INTERVAL_MINUTES",
     "TASK_RUNNING_TIMEOUT_MINUTES",
+    "TENCENT_DOC_REPORT_SHEET_TITLE",
 )
 
 _APP_CONFIG_KEYS: tuple[str, ...] = _OPENAPI_CONFIG_KEYS + _APP_BEHAVIOR_CONFIG_KEYS
@@ -139,6 +141,7 @@ _DESCRIPTIONS.update(
         "APP_RESTART_WAIT": "Seconds to wait after force-stopping the target app before reopening the link.",
         "DETAIL_INTERVAL_MINUTES": "Minutes between due detail-crawl queue scans. Each scan consumes tasks with scheduled_at <= now.",
         "TASK_RUNNING_TIMEOUT_MINUTES": "Minutes before a running task is considered abandoned and returned to retry/final state.",
+        "TENCENT_DOC_REPORT_SHEET_TITLE": "Tencent Docs sheet title used for structured daily report writeback.",
     }
 )
 _DISPLAY_LABELS.update(
@@ -147,6 +150,7 @@ _DISPLAY_LABELS.update(
         "APP_RESTART_WAIT": "App restart wait",
         "DETAIL_INTERVAL_MINUTES": "Detail queue interval",
         "TASK_RUNNING_TIMEOUT_MINUTES": "Running task timeout",
+        "TENCENT_DOC_REPORT_SHEET_TITLE": "Report sheet title",
     }
 )
 

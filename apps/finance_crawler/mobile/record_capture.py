@@ -135,7 +135,7 @@ def capture_record_pages(
             logger.info("record capture stopped: repeated screen record=%s", record_id)
             break
         seen_screen_signatures.add(signature)
-        if not scroll_forward(device):
+        if not scroll_forward(device, serial=serial):
             logger.info("record capture stopped: no more scrollable content record=%s", record_id)
             break
         time.sleep(capture_plan.scroll_wait)

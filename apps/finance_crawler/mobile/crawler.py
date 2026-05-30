@@ -231,7 +231,7 @@ def scrape_record_content(record_id: int, source_app: str | None = None) -> dict
             output_dir=output_dir,
             capture_ocr_snapshot=_capture_ocr_snapshot,
             device=device,
-            scroll_forward=scroll_forward,
+            scroll_forward=lambda current_device: scroll_forward(current_device, serial=current_serial()),
             scroll_wait=capture_plan.scroll_wait,
             max_detail_scrolls=capture_plan.max_detail_scrolls,
         )
