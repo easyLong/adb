@@ -18,6 +18,7 @@ from apps.finance_crawler.mobile.capture_engine import run_adb
 from apps.finance_crawler.mobile.crawler import open_url, resolve_short_url
 from apps.finance_crawler.mobile.device_session import current_serial, device as session_device
 from apps.finance_crawler.mobile.device_session import reset_device_session
+from apps.finance_crawler.mobile.page_status import detect_page_status_from_texts, records_to_texts
 from apps.finance_crawler.mobile.parsers import normalize_count_text, parse_count_token
 from apps.finance_crawler.storage.db import log_task
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
@@ -69,19 +70,21 @@ def run_docs_link_reads(
         )
         result = _crawl_target(target)
         results.append(result)
-        if result.get("status") == "success":
-            requests_payload.append(
-                cell_request(
-                    target.row_index,
-                    Config.DOC_LINK_READS_READ_COL,
-                    result["read_count"],
-                    doc=doc,
-                )
+        read_value: Any = result["read_count"] if result.get("status") == "success" else "N"
+        requests_payload.append(
+            cell_request(
+                target.row_index,
+                Config.DOC_LINK_READS_READ_COL,
+                read_value,
+                doc=doc,
             )
-            if len(requests_payload) >= Config.QQ_BATCH_UPDATE_SIZE:
-                client.post_batch_update(requests_payload, "docs_link_reads_partial", doc=doc)
-                written_count += len(requests_payload)
-                requests_payload.clear()
+        )
+        if result.get("status") != "success":
+            result["writeback_value"] = "N"
+        if len(requests_payload) >= Config.QQ_BATCH_UPDATE_SIZE:
+            client.post_batch_update(requests_payload, "docs_link_reads_partial", doc=doc)
+            written_count += len(requests_payload)
+            requests_payload.clear()
 
     if requests_payload:
         client.post_batch_update(requests_payload, "docs_link_reads", doc=doc)
@@ -93,6 +96,7 @@ def run_docs_link_reads(
         "targets": len(targets),
         "success": sum(1 for item in results if item.get("status") == "success"),
         "failed": sum(1 for item in results if item.get("status") != "success"),
+        "marked_n": sum(1 for item in results if item.get("writeback_value") == "N"),
         "written": written_count,
         "results": results,
     }
@@ -182,6 +186,24 @@ def _crawl_target(target: DocLinkReadTarget) -> dict[str, Any]:
                     "attempts": attempt + 1,
                     "duration": round(time.perf_counter() - started, 3),
                 }
+            not_found_reason = _not_found_reason(records)
+            if not_found_reason:
+                logger.warning(
+                    "doc link read not found row=%s attempt=%s error=not_found reason=%s",
+                    target.row_index,
+                    attempt + 1,
+                    not_found_reason,
+                )
+                return {
+                    "row_index": target.row_index,
+                    "status": "error",
+                    "error": "not_found",
+                    "not_found_reason": not_found_reason,
+                    "screenshot_path": str(screenshot) if screenshot else None,
+                    "opened_url": opened_url,
+                    "attempts": attempt + 1,
+                    "duration": round(time.perf_counter() - started, 3),
+                }
             if _looks_retryable_error(records) and _tap_retry_button(records):
                 time.sleep(max(Config.PAGE_LOAD_WAIT, 4.0))
                 retry_dir = attempt_dir / "tap_retry"
@@ -205,6 +227,25 @@ def _crawl_target(target: DocLinkReadTarget) -> dict[str, Any]:
                         "row_index": target.row_index,
                         "status": "success",
                         "read_count": read_count,
+                        "screenshot_path": str(retry_screenshot) if retry_screenshot else None,
+                        "opened_url": opened_url,
+                        "attempts": attempt + 1,
+                        "used_page_retry": True,
+                        "duration": round(time.perf_counter() - started, 3),
+                    }
+                not_found_reason = _not_found_reason(retry_records)
+                if not_found_reason:
+                    logger.warning(
+                        "doc link read not found row=%s attempt=%s error=not_found reason=%s",
+                        target.row_index,
+                        attempt + 1,
+                        not_found_reason,
+                    )
+                    return {
+                        "row_index": target.row_index,
+                        "status": "error",
+                        "error": "not_found",
+                        "not_found_reason": not_found_reason,
                         "screenshot_path": str(retry_screenshot) if retry_screenshot else None,
                         "opened_url": opened_url,
                         "attempts": attempt + 1,
@@ -241,6 +282,13 @@ def _crawl_target(target: DocLinkReadTarget) -> dict[str, Any]:
             "error": str(exc),
             "duration": round(time.perf_counter() - started, 3),
         }
+
+
+def _not_found_reason(records: list[dict[str, Any]]) -> str | None:
+    status, reason = detect_page_status_from_texts(records_to_texts(records, min_length=1))
+    if status == "not_found":
+        return reason or "not_found"
+    return None
 
 
 def _force_stop_link_app(opened_url: str) -> None:

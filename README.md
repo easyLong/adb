@@ -4,6 +4,8 @@ Windows + Android + ADB 驱动的金融 App 数据采集工作台。
 
 项目通过腾讯文档、Excel 或单条链接读取待采集对象，使用真实 Android 手机打开支付宝、蚂蚁财富、财付通/腾讯理财通页面，采集帖子详情、阅读数、评论数、点赞数、截图、大 V 主页粉丝数等数据，并写回腾讯文档或本地 Excel，同时将任务、结果和写回状态沉淀到 MySQL。
 
+整体框架和数据链路见 [docs/ADB_FRAMEWORK_AND_DATA_FLOW.md](docs/ADB_FRAMEWORK_AND_DATA_FLOW.md)；脚本和常用命令见 [docs/SCRIPTS.md](docs/SCRIPTS.md)。
+
 ## 当前能力
 
 - 支持 `alipay`、`antfortune`、`tenpay` 三类 App 链接识别和打开。
@@ -50,39 +52,62 @@ adb devices
 .\scripts\run.ps1 -Task supervisor
 ```
 
-## 常用任务
+## 常用任务速查
 
 ```powershell
 # 通用腾讯文档候选链接
 .\scripts\run.ps1 -Task fetch
 .\scripts\run.ps1 -Task check
 .\scripts\run.ps1 -Task detail
+```
 
-# 单链接详情测试
+单链接详情测试：
+
+```powershell
 .\scripts\run.ps1 -Task link-detail -SingleLink "https://ur.alipay.com/..."
+```
 
-# 大 V 每日行生成，默认按配置日期或今天
+大 V 每日行生成，默认按配置日期或今天：
+
+```powershell
 .\scripts\run.ps1 -Task profile-daily-rows
 .\scripts\run.ps1 -Task profile-daily-rows -ReportDate 2026-06-04
+```
 
-# 大 V 粉丝数同步、抓取、写回
+大 V 粉丝数同步、抓取、写回：
+
+```powershell
 .\scripts\run.ps1 -Task profile-sync
 .\scripts\run.ps1 -Task profile-crawl
 .\scripts\run.ps1 -Task profile-writeback
 .\scripts\run.ps1 -Task profile-metrics
+```
 
-# 大 V 主页帖子阅读数
+大 V 主页帖子阅读数：
+
+```powershell
 .\scripts\run.ps1 -Task profile-post-reads -ReportDate 2026-06-04
+```
 
-# 需求 1 文章详情
+需求 1 文章详情：
+
+```powershell
 .\scripts\run.ps1 -Task article-details
+```
 
-# K 列链接阅读数写回 M 列
+K 列链接阅读数写回 M 列：
+
+```powershell
 .\scripts\run.ps1 -Task doc-link-reads -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>" -ReportDate 0602
+```
 
-# 报告
+报告：
+
+```powershell
 .\scripts\run.ps1 -Task report -ReportDate 2026-06-04
 ```
+
+更多任务、列偏移 tab、`.cmd` 辅助脚本和维护脚本见 [docs/SCRIPTS.md](docs/SCRIPTS.md)。
 
 ## 当前重要配置
 
@@ -115,16 +140,22 @@ apps/finance_crawler/
 scripts/
   run.ps1                   常用任务入口
 docs/
+  README.md                 文档入口
+  ADB_FRAMEWORK_AND_DATA_FLOW.md 当前整体框架和数据链路
   ARCHITECTURE.md           架构分层
   PROJECT_FLOW.md           端到端流程
   FINANCE_CRAWLER.md        业务说明
   RUNTIME_CONFIG.md         运行时配置
   OPERATIONS.md             运维手册
+  SCRIPTS.md                脚本和任务索引
   init.sql                  MySQL 建表 SQL
 ```
 
 ## 文档入口
 
+- [docs/README.md](docs/README.md)
+- [docs/ADB_FRAMEWORK_AND_DATA_FLOW.md](docs/ADB_FRAMEWORK_AND_DATA_FLOW.md)
+- [docs/SCRIPTS.md](docs/SCRIPTS.md)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/PROJECT_FLOW.md](docs/PROJECT_FLOW.md)
 - [docs/FINANCE_CRAWLER.md](docs/FINANCE_CRAWLER.md)

@@ -11,6 +11,7 @@ from apps.finance_crawler.workflows.article_details import (
     extract_tenpay_title_from_ocr,
 )
 from apps.finance_crawler.workflows.docs_link_reads import (
+    _not_found_reason as doc_link_not_found_reason,
     extract_read_count_from_records as extract_doc_link_read_count_from_records,
     extract_read_count_from_texts as extract_doc_link_read_count_from_texts,
 )
@@ -177,6 +178,11 @@ class ProfilePostReadParserTests(unittest.TestCase):
 
 
 class DocLinkReadParserTests(unittest.TestCase):
+    def test_not_found_page_is_terminal_for_doc_link_reads(self) -> None:
+        reason = doc_link_not_found_reason([{"text": "\u5185\u5bb9\u4e0d\u5b58\u5728"}])
+
+        self.assertEqual(reason, "\u5185\u5bb9\u4e0d\u5b58\u5728")
+
     def test_extract_read_count_from_inline_metadata(self) -> None:
         self.assertEqual(
             extract_doc_link_read_count_from_texts(["06-01 15:01 9\u9605\u8bfb \u56db\u5ddd"]),

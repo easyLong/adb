@@ -8,6 +8,8 @@ python -m unittest tests.test_mobile_parsing tests.test_report
 .\scripts\run.ps1 -Task config
 ```
 
+完整脚本索引和日常命令见 [SCRIPTS.md](SCRIPTS.md)。
+
 如果手机容易熄屏：
 
 ```powershell
