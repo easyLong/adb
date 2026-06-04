@@ -423,6 +423,17 @@ def normalize_report_product(value: str) -> str:
     text = re.sub(r"^(\d{2})(\d{2})", "", text)
     text = re.sub(r"[-_ ]*\d+\s*$", "", text)
     text = text.strip("-_ ")
+    compact = re.sub(r"\s+", "", text)
+    if any(
+        token in compact
+        for token in (
+            "\u7ea2\u571f\u8206\u60c5",
+            "\u8206\u60c5\u68c0\u76d1\u6d4b",
+            "\u8206\u60c5\u76d1\u6d4b",
+            "\u5185\u6295",
+        )
+    ):
+        return "\u8206\u60c5\u76d1\u6d4b\uff08\u5185\u6295\uff09"
     if text == "精选-制造":
         return "精选制造"
     return text

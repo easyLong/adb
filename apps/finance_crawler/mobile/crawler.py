@@ -114,6 +114,14 @@ def parse_numbers(texts: list[str]) -> tuple[int, int]:
     return read_count, comment_count
 
 
+def extract_article_title(texts: list[str], content: str | None = None) -> str:
+    return community_parsers.extract_article_title(texts, content)
+
+
+def parse_like_count(texts: list[str]) -> tuple[int, bool]:
+    return community_parsers.parse_like_count(texts)
+
+
 def _capture_ocr_snapshot(output_dir: Path, name: str) -> list[dict[str, Any]]:
     screenshot_path = output_dir / f"{name}.png"
     current_device = device()
@@ -251,6 +259,8 @@ def scrape_record_content(record_id: int, source_app: str | None = None) -> dict
     comment_count = summary["comment_count"]
     content = _adapter_extract_content(app_adapter, texts) or extract_post_content(texts)
     account_name = _adapter_extract_account_name(app_adapter, texts) or extract_account_name(texts)
+    article_title = extract_article_title(texts, content)
+    like_count, like_found = parse_like_count(texts)
     app_result_fields = _adapter_result_fields(
         app_adapter,
         account_name=account_name,
@@ -276,13 +286,16 @@ def scrape_record_content(record_id: int, source_app: str | None = None) -> dict
         {
             "status": "success",
             "account_name": account_name,
+            "article_title": article_title,
             "content": content,
             "read_count": read_count,
             "comment_count": comment_count,
+            "like_count": like_count,
             "screenshot_path": str(screenshot) if screenshot else None,
             "capture_pages": summary["pages_captured"],
             "read_found": summary["read_found"],
             "comment_found": summary["comment_found"],
+            "like_found": like_found,
             "ocr_attempted": summary["ocr_attempted"],
             "ocr_available": summary["ocr_available"],
             "ocr_records": summary["ocr_records"],

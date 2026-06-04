@@ -1,142 +1,133 @@
 # 运行时配置
 
-项目根目录 `.env` 只负责 MySQL 连接。任务源、腾讯文档 OpenAPI 身份等运行时配置统一放在 MySQL，避免再依赖 `D:\password\*.txt`、`G:\passwd\*.txt` 这类本地密码文件。
+项目配置分两类：
 
-## 配置分层
-
-| 位置 | 保存内容 | 说明 |
+| 类型 | 位置 | 用途 |
 | --- | --- | --- |
-| `.env` | `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE` | 只用于连接 MySQL，不提交 Git |
-| `data_source_links` | `TENCENT_DOC_URL`、`EXCEL_DETAIL_INPUT_PATH`、`SINGLE_TEST_LINK` | 数据从哪里来 |
-| `app_config` | `TENCENT_DOC_*`、`APP_OPEN_RECOVERY_RETRIES`、`APP_RESTART_WAIT`、`DETAIL_INTERVAL_MINUTES`、`TASK_RUNNING_TIMEOUT_MINUTES` | 应用级运行配置：腾讯文档 OpenAPI 身份、App 采集和调度保护参数 |
+| MySQL 连接 | 根目录 `.env` 或环境变量 | 连接数据库 |
+| 业务运行配置 | MySQL `data_source_links` / `app_config` | 文档 URL、调度频率、列范围、任务开关 |
 
-程序启动任务前会调用 `load_runtime_config()`，先从 `data_source_links` 读取任务入口，再从 `app_config` 读取腾讯文档 OpenAPI 和 App 采集保护配置，并覆盖到当前进程的 `Config`。
+启动任务时会调用 `load_runtime_config()`，把 MySQL 配置覆盖到 `Config`。
 
-## 根目录 .env
+## 修改配置
 
-参考 `.env.example`：
-
-```dotenv
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your-mysql-password
-MYSQL_DATABASE=finance_crawler
-```
-
-`.env` 已加入 `.gitignore`。不要把腾讯文档 key、token、OpenId 写进 `.env`。
-
-## 查看配置
+查看配置：
 
 ```powershell
 .\scripts\run.ps1 -Task config
 ```
 
-输出会分成三组：
+更新配置：
 
-| 分组 | 来源表 | 作用 |
-| --- | --- | --- |
-| 任务源配置 | `data_source_links` | 在线腾讯文档、本地 Excel、单条测试链接 |
-| 腾讯文档 OpenAPI | `app_config` | 读写腾讯文档所需身份 |
-| App 采集和调度保护 | `app_config` | 白屏、系统更新弹窗、App 卡死时的自动恢复参数，以及详情队列轮询间隔 |
+```powershell
+.\scripts\run.ps1 -Task config -ConfigSet KEY=VALUE
+```
 
-`app_config.is_secret=1` 的值会在命令行里打码显示。
-
-## 设置腾讯文档 OpenAPI
-
-更新 key 或 token 时直接写 MySQL 配置表，推荐通过命令：
+一次更新多个：
 
 ```powershell
 .\scripts\run.ps1 -Task config `
-  -ConfigSet "TENCENT_DOC_CLIENT_ID=你的client_id" `
-  -ConfigSet "TENCENT_DOC_OPEN_ID=你的open_id" `
-  -ConfigSet "TENCENT_DOC_ACCESS_TOKEN=你的access_token"
+  -ConfigSet PROFILE_METRICS_READ_RANGE=A1:H2000 `
+  -ConfigSet PROFILE_METRICS_TEMPLATE_RANGE=A2:H126 `
+  -ConfigSet PROFILE_METRICS_DAILY_PREPARE_TIME=00:10
 ```
 
-如果使用 `client_secret` 自动换 token：
+## 数据源配置
 
-```powershell
-.\scripts\run.ps1 -Task config `
-  -ConfigSet "TENCENT_DOC_CLIENT_ID=你的client_id" `
-  -ConfigSet "TENCENT_DOC_OPEN_ID=你的open_id" `
-  -ConfigSet "TENCENT_DOC_CLIENT_SECRET=你的client_secret"
-```
-
-也可以直接 SQL 更新：
-
-```sql
-INSERT INTO app_config (config_key, config_value, status, is_secret, description, updated_by)
-VALUES
-  ('TENCENT_DOC_ACCESS_TOKEN', '<new-token>', 'active', 1, 'Tencent Docs OpenAPI Access-Token', 'manual')
-ON DUPLICATE KEY UPDATE
-  config_value = VALUES(config_value),
-  status = 'active',
-  is_secret = VALUES(is_secret),
-  updated_by = VALUES(updated_by);
-```
-
-## 设置任务源
-
-在线腾讯文档：
-
-```powershell
-.\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
-.\scripts\run.ps1 -Task supervisor
-```
-
-本地 Excel：
-
-```powershell
-.\scripts\run.ps1 -Task config -ExcelInputPath "D:\demo\input.xlsx"
-.\scripts\run.ps1 -Task excel-detail
-```
-
-单条链接：
-
-```powershell
-.\scripts\run.ps1 -Task link-detail -SingleLink "https://ur.alipay.com/..."
-```
-
-本地 Excel 和单条链接执行完成后，程序会把对应数据源状态改成 `unavailable`，避免下次误跑。
-
-## App 采集保护配置
-
-当 App 因系统更新弹窗、白屏、页面卡死或短暂网络异常导致初检/详情采集失败时，系统会先按链接识别目标 App 包名，执行 `adb shell am force-stop <package>`，等待后重新打开同一链接再采集。真实删帖或内容不存在的 `not_found` 不会触发重启。
-
-```powershell
-.\scripts\run.ps1 -Task config `
-  -ConfigSet "APP_OPEN_RECOVERY_RETRIES=1" `
-  -ConfigSet "APP_RESTART_WAIT=2.0" `
-  -ConfigSet "DETAIL_INTERVAL_MINUTES=10" `
-  -ConfigSet "TASK_RUNNING_TIMEOUT_MINUTES=360"
-```
-
-| 配置 | 默认值 | 说明 |
-| --- | --- | --- |
-| `APP_OPEN_RECOVERY_RETRIES` | `1` | 技术性异常时重启 App 并重新打开链接的次数 |
-| `APP_RESTART_WAIT` | `2.0` | `force-stop` 后重新打开链接前等待秒数 |
-| `DETAIL_INTERVAL_MINUTES` | `10` | 到期详情任务轮询间隔；每轮消费 `scheduled_at <= now` 的任务 |
-| `TASK_RUNNING_TIMEOUT_MINUTES` | `360` | `running` 任务超过该时间无心跳时，视为异常中断并转回可重试或最终失败 |
-
-## 腾讯文档 URL 解析
-
-`TENCENT_DOC_URL` 只保存在 `data_source_links`。程序会自动从 URL 解析：
-
-| 字段 | 来源 |
+| Key | 说明 |
 | --- | --- |
-| `TENCENT_DOC_FILE_ID` | 从文档 URL 自动解析 |
-| `TENCENT_DOC_SHEET_ID` | 从文档 URL 的 `tab` 自动解析 |
+| `TENCENT_DOC_URL` | 通用帖子详情腾讯文档 |
+| `PROFILE_METRICS_DOC_URL` | 大 V 主页统计腾讯文档 |
+| `ARTICLE_DETAILS_DOC_URL` | 需求 1 文章详情腾讯文档 |
+| `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 详情采集输入文件 |
+| `SINGLE_TEST_LINK` | 单链接详情测试 |
 
-这两个派生值不需要手工写入配置表。
+## 腾讯文档 OpenAPI
 
-## 相关表
-
-| 表 | 作用 |
+| Key | 说明 |
 | --- | --- |
-| `data_source_links` | 保存数据源入口 |
-| `app_config` | 保存应用级配置和敏感 OpenAPI 身份 |
-| `crawl_sources` | 标准化后的来源 |
-| `crawl_task_submissions` | 任务提交、去重、排队、重试 |
-| `crawl_task_executions` | 每次执行记录 |
-| `crawl_results` | 标准化采集结果 |
-| `crawl_writebacks` | 写回目标和状态 |
+| `TENCENT_DOC_CLIENT_ID` | OpenAPI Client-Id |
+| `TENCENT_DOC_OPEN_ID` | OpenAPI Open-Id |
+| `TENCENT_DOC_ACCESS_TOKEN` | Access-Token |
+| `TENCENT_DOC_CLIENT_SECRET` | 可选，用于换 token |
+| `TENCENT_DOC_TOKEN_URL` | token 地址 |
+
+## 通用调度
+
+| Key | 默认 | 说明 |
+| --- | --- | --- |
+| `FETCH_INTERVAL_MINUTES` | `5` | 腾讯文档候选链接扫描间隔 |
+| `CHECK_INTERVAL_MINUTES` | `10` | 初检任务扫描间隔 |
+| `DETAIL_INTERVAL_MINUTES` | `10` | 到期详情任务扫描间隔 |
+| `REPORT_TIME` | `11:30` | 每日报告时间 |
+| `HEARTBEAT_INTERVAL_MINUTES` | `30` | scheduler 心跳 |
+
+## 大 V 粉丝数
+
+| Key | 当前建议 | 说明 |
+| --- | --- | --- |
+| `PROFILE_METRICS_DOC_URL` | 业务文档 URL | 大 V 统计文档 |
+| `PROFILE_METRICS_READ_RANGE` | `A1:H2000` | 同步和写回使用的读取范围 |
+| `PROFILE_METRICS_TEMPLATE_RANGE` | `A2:H126` | 每日生成行的模板范围 |
+| `PROFILE_METRICS_DAILY_PREPARE_TIME` | `00:10` | 每天生成当天行的时间；为空则关闭 |
+| `PROFILE_METRICS_INTERVAL_MINUTES` | `60` | 周期抓粉丝数间隔；0 关闭 |
+| `PROFILE_METRICS_CRAWL_LIMIT` | `0` | 单轮限制，0 表示不限制 |
+| `PROFILE_METRICS_TARGET_DATE` | 空 | 固定目标日期；日常调度应留空 |
+| `PROFILE_METRICS_WRITEBACK_ENABLED` | `True` | 是否写回腾讯文档 E/F 列 |
+
+日常建议：
+
+```text
+PROFILE_METRICS_TEMPLATE_RANGE=A2:H126
+PROFILE_METRICS_READ_RANGE=A1:H2000
+PROFILE_METRICS_DAILY_PREPARE_TIME=00:10
+PROFILE_METRICS_INTERVAL_MINUTES=60
+PROFILE_METRICS_TARGET_DATE=
+```
+
+## 大 V 主页帖子阅读数
+
+| Key | 说明 |
+| --- | --- |
+| `PROFILE_POST_READ_CRAWL_LIMIT` | 单轮抓取限制，0 不限制 |
+| `PROFILE_POST_READ_MAX_SCROLLS` | 主页最多滚动页数 |
+| `PROFILE_POST_READ_MAX_POSTS` | 同一日期最多取多少帖子 |
+
+## 需求 1 文章详情
+
+| Key | 说明 |
+| --- | --- |
+| `ARTICLE_DETAILS_DOC_URL` | 文章详情腾讯文档 |
+| `ARTICLE_DETAILS_READ_RANGE` | 读取范围，默认 `A1:O2000` |
+| `ARTICLE_DETAILS_CRAWL_LIMIT` | 单轮抓取限制 |
+| `ARTICLE_DETAILS_WRITEBACK_ENABLED` | 是否写回腾讯文档 |
+
+## K 列链接阅读数
+
+| Key | 默认 | 说明 |
+| --- | --- | --- |
+| `DOC_LINK_READS_READ_RANGE` | `A1:M2000` | 读取范围 |
+| `DOC_LINK_READS_SHEET_TITLE` | 空 | 固定 sheet 标题，通常用 `--report-date` |
+| `DOC_LINK_READS_CRAWL_LIMIT` | `0` | 单轮限制 |
+| `DOC_LINK_READS_ONLY_EMPTY` | `True` | 只处理阅读数空值 |
+| `DOC_LINK_READS_LINK_COL` | `10` | 链接列，K 列 |
+| `DOC_LINK_READS_READ_COL` | `12` | 阅读数列，M 列 |
+| `DOC_LINK_READS_ENABLE_OCR` | `True` | 是否启用 OCR |
+| `DOC_LINK_READS_OPEN_RETRIES` | `2` | 打开失败重试次数 |
+
+## 手机和恢复
+
+| Key | 说明 |
+| --- | --- |
+| `ADB_PATH` | ADB 路径，默认优先使用 `platform-tools/adb.exe` |
+| `DEVICE_SERIAL` | 指定设备序列号，空则自动选 |
+| `APP_OPEN_RECOVERY_RETRIES` | 页面白屏、卡死等恢复重试次数 |
+| `APP_RESTART_WAIT` | force-stop 后等待秒数 |
+| `TASK_RUNNING_TIMEOUT_MINUTES` | running 任务超时回收 |
+
+## 注意事项
+
+- 日常不要固定 `PROFILE_METRICS_TARGET_DATE`，否则 scheduler 会一直抓同一天。
+- `PROFILE_METRICS_DAILY_PREPARE_TIME` 只生成行，不直接抓取；抓取由 `PROFILE_METRICS_INTERVAL_MINUTES` 控制。
+- 每日行生成按主页链接去重，重复执行不会重复追加。
+- 如果手动改了模板范围，确认范围内只包含模板账号行，不要包含历史日期块。

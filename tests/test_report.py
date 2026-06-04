@@ -22,6 +22,12 @@ class ReportProductTests(unittest.TestCase):
     def test_normalize_industry_sheet_title(self) -> None:
         self.assertEqual(normalize_report_product("0529新兴产业-300"), "新兴产业")
 
+    def test_normalize_public_opinion_sheet_title(self) -> None:
+        self.assertEqual(
+            normalize_report_product("0529-\u7ea2\u571f\u8206\u60c5\u68c0\u76d1\u6d4b"),
+            "\u8206\u60c5\u76d1\u6d4b\uff08\u5185\u6295\uff09",
+        )
+
     def test_report_writeback_always_has_three_product_rows(self) -> None:
         row = ProductReportRow(
             report_date=date(2026, 5, 29),

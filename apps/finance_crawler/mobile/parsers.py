@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 
 def extract_account_name(texts: list[str]) -> str:
@@ -180,6 +181,49 @@ def parse_numbers(texts: list[str]) -> tuple[int, int]:
     return read_count, comment_count
 
 
+def extract_article_title(texts: list[str], content: str | None = None) -> str:
+    """Best-effort article title from visible text, falling back to content."""
+
+    for text in current_post_scope_texts(texts):
+        cleaned = (text or "").strip()
+        if not cleaned or is_post_content_noise(cleaned) or is_post_content_stop(cleaned):
+            continue
+        if _looks_like_metadata(cleaned):
+            continue
+        if 4 <= len(cleaned) <= 80:
+            return cleaned
+
+    for line in (content or "").splitlines():
+        cleaned = line.strip()
+        if 4 <= len(cleaned) <= 80:
+            return cleaned
+    return ""
+
+
+def parse_like_count(texts: list[str]) -> tuple[int, bool]:
+    like_count = 0
+    like_found = False
+    number = r"(?P<num>\d+(?:[,.]\d+)*(?:\.\d+)?\s*[\u4e07wWkK\u5343]?)"
+    for text in number_candidates(current_post_scope_texts(texts)):
+        compact = normalize_count_text(text)
+        for pattern in (
+            rf"{number}(?:\u4e2a)?(?:\u70b9\u8d5e|\u8d5e)",
+            rf"(?:\u70b9\u8d5e|\u8d5e)(?:\u6570|\u91cf)?{number}",
+        ):
+            match = re.search(pattern, compact)
+            if not match:
+                continue
+            prefix = compact[: match.start()]
+            suffix = compact[match.end() :]
+            if any(word in prefix for word in ("\u8bc4\u8bba", "\u56de\u590d", "\u9605\u8bfb", "\u6d4f\u89c8")):
+                continue
+            if any(word in suffix for word in ("\u8bc4\u8bba", "\u56de\u590d", "\u9605\u8bfb", "\u6d4f\u89c8")):
+                continue
+            like_found = True
+            like_count = max(like_count, parse_count_token(match.group("num")))
+    return like_count, like_found
+
+
 def parse_count_token(raw: str) -> int:
     text = re.sub(r"\s+", "", raw.replace(",", "")).lower()
     match = re.fullmatch(r"(?P<num>\d+(?:\.\d+)?)(?P<unit>[\u4e07wk\u5343]?)", text)
@@ -195,6 +239,81 @@ def parse_count_token(raw: str) -> int:
     elif unit == "\u5343":
         value *= 1000
     return int(value)
+
+
+def extract_profile_fans_count(records: list[dict[str, Any]]) -> int | None:
+    """Extract the number displayed above the profile "fans" label."""
+
+    numeric: list[tuple[int, dict[str, Any], dict[str, int]]] = []
+    labels: list[tuple[dict[str, Any], dict[str, int]]] = []
+    fans_label = "\u7c89\u4e1d"
+
+    for record in records:
+        text = str(record.get("text") or "").strip()
+        bounds = record.get("bounds") or {}
+        if not text or not isinstance(bounds, dict):
+            continue
+        inline_match = re.search(
+            r"(?P<num>\d+(?:\.\d+)?(?:[\u4e07wWkK])?)(?=\u7c89\u4e1d)",
+            re.sub(r"\s+", "", text),
+        )
+        if inline_match:
+            return _parse_profile_counter(inline_match.group("num"))
+        if fans_label in text:
+            labels.append((record, bounds))
+        parsed = _parse_profile_counter(text)
+        if parsed is not None:
+            numeric.append((parsed, record, bounds))
+
+    for _, label_bounds in labels:
+        label_x = (int(label_bounds.get("left", 0)) + int(label_bounds.get("right", 0))) / 2
+        label_top = int(label_bounds.get("top", 0))
+        candidates: list[tuple[float, int]] = []
+        for value, _, number_bounds in numeric:
+            number_x = (int(number_bounds.get("left", 0)) + int(number_bounds.get("right", 0))) / 2
+            number_bottom = int(number_bounds.get("bottom", 0))
+            number_top = int(number_bounds.get("top", 0))
+            if number_bottom <= label_top + 20 and abs(number_x - label_x) <= 170 and 350 <= number_top <= 1400:
+                distance = abs(number_x - label_x) + abs(label_top - number_bottom)
+                candidates.append((distance, value))
+        if candidates:
+            candidates.sort(key=lambda item: item[0])
+            return candidates[0][1]
+
+    ordered: list[tuple[int, int, str]] = []
+    for record in records:
+        text = str(record.get("text") or "").strip()
+        bounds = record.get("bounds") or {}
+        if text and isinstance(bounds, dict):
+            ordered.append((int(bounds.get("top", 0)), int(bounds.get("left", 0)), text))
+    ordered.sort()
+    for index, (_, _, text) in enumerate(ordered):
+        if fans_label not in text:
+            continue
+        for previous in range(index - 1, max(index - 5, -1), -1):
+            parsed = _parse_profile_counter(ordered[previous][2])
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _parse_profile_counter(text: str) -> int | None:
+    cleaned = re.sub(r"\s+", "", text.replace(",", "")).lower()
+    match = re.fullmatch(r"(?P<num>\d+(?:\.\d+)?)(?P<unit>[\u4e07wk]?)", cleaned)
+    if not match:
+        return None
+    num_text = match.group("num")
+    if "." in num_text and not match.group("unit"):
+        integer, decimal = num_text.split(".", 1)
+        if len(decimal) == 3:
+            num_text = integer + decimal
+    value = float(num_text)
+    unit = match.group("unit")
+    if unit in {"\u4e07", "w"}:
+        value *= 10000
+    elif unit == "k":
+        value *= 1000
+    return int(round(value))
 
 
 def number_candidates(texts: list[str]) -> list[str]:
@@ -311,6 +430,18 @@ def is_post_content_noise(text: str) -> bool:
         "\u6e56\u5357",
         "\u6e56\u5317",
     }:
+        return True
+    return False
+
+
+def _looks_like_metadata(text: str) -> bool:
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}\s*\d{1,2}:\d{2}(?::\d{2})?", text):
+        return True
+    if re.fullmatch(r"\d{1,2}[-/]\d{1,2}\s*\d{1,2}:\d{2}", text):
+        return True
+    if re.fullmatch(r"\d{1,2}:\d{2}", text):
+        return True
+    if re.search(r"(?:\u9605\u8bfb|\u8bc4\u8bba|\u70b9\u8d5e|\u56de\u590d)\s*\d", text):
         return True
     return False
 

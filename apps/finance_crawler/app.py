@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 import time
 import traceback
 from collections.abc import Callable
+from datetime import date
 from typing import Any
 
 import schedule
@@ -23,7 +25,23 @@ from apps.finance_crawler.services.runtime_config import (
 )
 from apps.finance_crawler.storage.db import init_db, log_task
 from apps.finance_crawler.utils.logger import get_logger
+from apps.finance_crawler.workflows.article_details import (
+    crawl_pending_article_details,
+    run_article_details,
+    sync_article_sources_from_tencent_docs,
+    writeback_article_details,
+)
+from apps.finance_crawler.workflows.docs_link_reads import run_docs_link_reads
 from apps.finance_crawler.workflows.local_excel_detail import run_local_excel_detail
+from apps.finance_crawler.workflows.profile_metrics import (
+    crawl_pending_profile_metrics,
+    create_daily_profile_metric_tasks,
+    ensure_daily_profile_metric_rows,
+    run_profile_metrics,
+    sync_profile_sources_from_tencent_docs,
+    writeback_profile_metrics,
+)
+from apps.finance_crawler.workflows.profile_post_reads import crawl_profile_post_reads
 from apps.finance_crawler.workflows.single_link_detail import run_single_link_detail
 from apps.finance_crawler.workflows.tencent_docs_fetch import fetch_and_save
 
@@ -91,6 +109,23 @@ def _register_jobs() -> None:
     )
     logger.info("registered report daily at %s", Config.REPORT_TIME)
 
+    if Config.PROFILE_METRICS_DOC_URL and Config.PROFILE_METRICS_INTERVAL_MINUTES > 0:
+        if Config.PROFILE_METRICS_DAILY_PREPARE_TIME:
+            schedule.every().day.at(Config.PROFILE_METRICS_DAILY_PREPARE_TIME).do(
+                safe_run, ensure_daily_profile_metric_rows, "profile_daily_rows"
+            )
+            logger.info(
+                "registered profile daily row prepare at %s",
+                Config.PROFILE_METRICS_DAILY_PREPARE_TIME,
+            )
+        schedule.every(Config.PROFILE_METRICS_INTERVAL_MINUTES).minutes.do(
+            safe_run, run_profile_metrics, "profile_metrics"
+        )
+        logger.info(
+            "registered profile metrics every %s minutes",
+            Config.PROFILE_METRICS_INTERVAL_MINUTES,
+        )
+
     if Config.HEARTBEAT_INTERVAL_MINUTES > 0:
         schedule.every(Config.HEARTBEAT_INTERVAL_MINUTES).minutes.do(
             safe_run, heartbeat, "heartbeat"
@@ -109,6 +144,12 @@ def run_forever() -> None:
     if Config.DETAIL_INTERVAL_MINUTES > 0:
         logger.info("scan due detail tasks once on startup")
         safe_run(run_detail, "detail_crawl_due_init")
+    if Config.PROFILE_METRICS_DOC_URL and Config.PROFILE_METRICS_INTERVAL_MINUTES > 0:
+        if Config.PROFILE_METRICS_DAILY_PREPARE_TIME:
+            logger.info("ensure profile daily rows once on startup")
+            safe_run(ensure_daily_profile_metric_rows, "profile_daily_rows_init")
+        logger.info("run profile metrics once on startup")
+        safe_run(run_profile_metrics, "profile_metrics_init")
 
     logger.info("scheduler running; press Ctrl+C to stop")
     while True:
@@ -158,7 +199,28 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Finance crawler scheduler")
     parser.add_argument(
         "--once",
-        choices=["db", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report"],
+        choices=[
+            "db",
+            "config",
+            "fetch",
+            "check",
+            "detail",
+            "excel-detail",
+            "link-detail",
+            "report",
+            "profile-sync",
+            "profile-daily-rows",
+            "profile-create-tasks",
+            "profile-crawl",
+            "profile-writeback",
+            "profile-metrics",
+            "profile-post-reads",
+            "article-sync",
+            "article-crawl",
+            "article-writeback",
+            "article-details",
+            "doc-link-reads",
+        ],
         help="run one task and exit",
     )
     parser.add_argument("--config-set", action="append", default=[], help="runtime config KEY=VALUE")
@@ -227,6 +289,112 @@ def main() -> int:
         load_runtime_config()
         print(generate_report(args.report_date or None))
         return 0
+    if args.once == "profile-sync":
+        init_db()
+        updates = _config_updates_from_args(args)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        count = safe_run(sync_profile_sources_from_tencent_docs, "profile_sync_once") or 0
+        print(f"profile sources synced: {count}")
+        return 0
+    if args.once == "profile-daily-rows":
+        init_db()
+        updates = _config_updates_from_args(args)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date) or None
+        summary = safe_run(
+            lambda: ensure_daily_profile_metric_rows(target_date, doc_url=args.tencent_doc_url or None),
+            "profile_daily_rows_once",
+        ) or {}
+        print(f"profile daily rows summary: {summary}")
+        return 0
+    if args.once == "profile-create-tasks":
+        init_db()
+        updates = _config_updates_from_args(args)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = date.fromisoformat(args.report_date) if args.report_date else None
+        count = safe_run(lambda: create_daily_profile_metric_tasks(target_date), "profile_create_tasks_once") or 0
+        print(f"profile daily tasks created: {count}")
+        return 0
+    if args.once == "profile-crawl":
+        init_db()
+        load_runtime_config()
+        rows = safe_run(crawl_pending_profile_metrics, "profile_crawl_once") or []
+        print(f"profile metrics crawled: {len(rows)}")
+        return 0
+    if args.once == "profile-writeback":
+        init_db()
+        load_runtime_config()
+        count = safe_run(writeback_profile_metrics, "profile_writeback_once") or 0
+        print(f"profile metrics written: {count}")
+        return 0
+    if args.once == "profile-metrics":
+        init_db()
+        updates = _config_updates_from_args(args)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        summary = safe_run(run_profile_metrics, "profile_metrics_once") or {}
+        print(f"profile metrics summary: {summary}")
+        return 0
+    if args.once == "profile-post-reads":
+        init_db()
+        updates = _config_updates_from_args(args)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = date.fromisoformat(args.report_date) if args.report_date else None
+        rows = safe_run(lambda: crawl_profile_post_reads(target_date=target_date), "profile_post_reads_once") or []
+        print(f"profile post reads crawled: {len(rows)}")
+        return 0
+    if args.once == "article-sync":
+        init_db()
+        updates = _config_updates_from_args(args)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        count = safe_run(sync_article_sources_from_tencent_docs, "article_sync_once") or 0
+        print(f"article sources synced: {count}")
+        return 0
+    if args.once == "article-crawl":
+        init_db()
+        load_runtime_config()
+        rows = safe_run(crawl_pending_article_details, "article_crawl_once") or []
+        print(f"article details crawled: {len(rows)}")
+        return 0
+    if args.once == "article-writeback":
+        init_db()
+        load_runtime_config()
+        count = safe_run(writeback_article_details, "article_writeback_once") or 0
+        print(f"article details written: {count}")
+        return 0
+    if args.once == "article-details":
+        init_db()
+        updates = _config_updates_from_args(args)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        summary = safe_run(run_article_details, "article_details_once") or {}
+        print(f"article details summary: {summary}")
+        return 0
+    if args.once == "doc-link-reads":
+        init_db()
+        updates = _config_updates_from_args(args)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        summary = safe_run(
+            lambda: run_docs_link_reads(doc_url=args.tencent_doc_url or None, target_date=target_date),
+            "doc_link_reads_once",
+        ) or {}
+        print(f"doc link reads summary: {summary}")
+        return 0
 
     try:
         run_forever()
@@ -249,6 +417,18 @@ def _config_updates_from_args(args: argparse.Namespace) -> dict[str, str]:
     if args.single_link:
         updates["SINGLE_TEST_LINK"] = args.single_link
     return updates
+
+
+def _parse_optional_date(value: str) -> date | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
+        return date.fromisoformat(cleaned)
+    if re.fullmatch(r"\d{4}", cleaned):
+        today = date.today()
+        return date(today.year, int(cleaned[:2]), int(cleaned[2:]))
+    raise ValueError(f"invalid date: {value}; expected YYYY-MM-DD or MMDD")
 
 
 if __name__ == "__main__":

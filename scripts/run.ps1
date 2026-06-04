@@ -1,7 +1,7 @@
 param(
     [string]$App = "finance_crawler",
 
-    [ValidateSet("scheduler", "supervisor", "db", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report")]
+    [ValidateSet("scheduler", "supervisor", "db", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report", "profile-sync", "profile-daily-rows", "profile-create-tasks", "profile-crawl", "profile-writeback", "profile-metrics", "profile-post-reads", "article-sync", "article-crawl", "article-writeback", "article-details", "doc-link-reads")]
     [string]$Task = "scheduler",
 
     [string]$Python = "python",
@@ -111,7 +111,17 @@ if ($Task -eq "scheduler") {
     }
     & $Python -m $Module @ReportArgs
 } else {
-    & $Python -m $Module --once $Task
+    $OnceArgs = @("--once", $Task)
+    if ($TencentDocUrl) {
+        $OnceArgs += @("--tencent-doc-url", $TencentDocUrl)
+    }
+    if ($ReportDate) {
+        $OnceArgs += @("--report-date", $ReportDate)
+    }
+    foreach ($Item in $ConfigSet) {
+        $OnceArgs += @("--config-set", $Item)
+    }
+    & $Python -m $Module @OnceArgs
 }
 
 exit $LASTEXITCODE

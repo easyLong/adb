@@ -1,157 +1,157 @@
-# 业务流程说明
+# 业务说明
 
-更完整的项目全景见 [PROJECT_FLOW.md](PROJECT_FLOW.md)。本文聚焦业务流程、采集字段、MySQL 表和关键配置。
+## 1. 项目目标
 
-## 采集目标
+本项目用于金融社区内容和大 V 指标采集，当前覆盖：
 
-| 字段 | 来源 |
+- 支付宝 / 蚂蚁财富帖子详情。
+- 财付通 / 腾讯理财通帖子详情。
+- 大 V 主页粉丝数、增粉数。
+- 大 V 主页指定日期帖子阅读数。
+- 需求 1 文章标题、截图、评论、点赞。
+- 腾讯文档指定链接列阅读数回填。
+
+## 2. 通用帖子详情
+
+主要字段：
+
+| 字段 | 说明 |
 | --- | --- |
-| 发帖账号 | App 页面 UI/XML/OCR |
-| 帖子正文 | App 页面 |
-| 阅读数 | App 页面 |
-| 评论数 | App 页面 |
-| 首屏截图 | ADB 截图 |
-| 财付通买入基金名称和金额 | 财付通调仓明细页 |
-| 业务备注 | `services/remarks.py` 根据状态和错误生成 |
-| 状态和错误 | workflow、任务执行、写回结果 |
+| 账号 | 从页面 UI/OCR 识别 |
+| 正文 | 当前帖子正文 |
+| 阅读数 | 页面提供时抓取 |
+| 评论数 | 页面提供时抓取 |
+| 截图 | 保存到本地，按配置写回或上传 |
+| App 专属数据 | 例如理财通调仓明细 |
 
-## 支持链路
-
-| app_type | 典型链接 | 打开方式 | 专属能力 |
-| --- | --- | --- | --- |
-| `alipay` | `ur.alipay.com`, `alipays://` | 短链解析或 deep link 打开支付宝 | 账号、正文、阅读、评论 |
-| `antfortune` | `think.klv5qu.com`, `afwealth://` | 分享链接改写为 `afwealth://platformapi/startapp?...` | 账号、正文、阅读、评论 |
-| `tenpay` | `www.tencentwm.com`, `tenpay://` | 指定 `TENPAY_PACKAGE` 打开 | 进入调仓明细，解析买入基金和金额 |
-
-## 标准在线流程
+流程：
 
 ```text
-config
-  -> 设置 TENCENT_DOC_URL 到 data_source_links
-
-fetch
-  -> 加载运行时配置
-  -> 扫描腾讯文档工作表
-  -> 读取候选链接
-  -> 提交 initial_check / detail_crawl
-
-check
-  -> 执行 initial_check
-  -> 判断帖子存在性
-  -> 提取账号
-  -> 写回账号或 N
-
-detail
-  -> 执行 detail_crawl
-  -> 打开 App
-  -> 截图、XML、OCR、滑动
-  -> 解析正文、阅读、评论、截图和 App 专属指标
-  -> 写回结果和业务备注
+fetch -> check -> detail -> writeback
 ```
 
-## 本地 Excel 流程
+## 3. 大 V 主页统计
+
+文档列约定：
+
+| 列 | 含义 |
+| --- | --- |
+| A | 日期 |
+| B | 大 V 名称 |
+| C | 平台 |
+| D | 主页链接 |
+| E | 粉丝数 |
+| F | 增粉数 |
+| G | 阅读数 |
+| H | 分组 |
+
+模板范围：
 
 ```text
-config -ExcelInputPath
-  -> 写入 data_source_links(EXCEL_DETAIL_INPUT_PATH)
-
-excel-detail
-  -> 读取本地 Excel 链接
-  -> 直接打开 App 详情页采集
-  -> 写回输出 Excel
-  -> 记录任务提交和执行结果
-  -> 停用 EXCEL_DETAIL_INPUT_PATH
+A2:H126
 ```
 
-## 单链接测试流程
+每日流程：
+
+1. `profile-daily-rows` 根据模板生成当天行。
+2. `profile-sync` 将新行同步到数据库。
+3. `profile-crawl` 打开主页抓粉丝数。
+4. `profile-writeback` 写回 E/F 列。
+
+增粉数规则：
 
 ```text
-link-detail -SingleLink
-  -> 写入或读取 data_source_links(SINGLE_TEST_LINK)
-  -> 创建 single_link 详情任务
-  -> 采集一次并输出 JSON
-  -> 停用 SINGLE_TEST_LINK
+如果前一日有成功粉丝数：今日粉丝数 - 前一日粉丝数
+否则：0
 ```
 
-## 腾讯文档扫描
+## 4. 大 V 主页帖子阅读数
 
-默认 fetch 会扫描同一个腾讯文档文件中标题日期等于当天的工作表；历史工作表不会自动提交新任务。
+用于按日期统计主页动态帖子阅读数。
 
-| 配置 | 说明 |
+规则：
+
+- 打开主页。
+- 识别目标日期的动态。
+- 同一天帖子数量由 `PROFILE_POST_READ_MAX_POSTS` 控制。
+- 点击详情页读取阅读数。
+- 汇总写入数据库的 `read_count`。
+
+入口：
+
+```powershell
+.\scripts\run.ps1 -Task profile-post-reads -ReportDate 2026-06-04
+```
+
+## 5. 需求 1 文章详情
+
+文档列约定由 `article_details.py` 中常量控制：
+
+```text
+DATE_COL = 0
+IP_COL = 1
+PRODUCT_COL = 2
+URL_COL = 8
+TITLE_COL = 9
+SCREENSHOT_COL = 10
+READ_COL = 11
+COMMENT_COL = 12
+LIKE_COL = 13
+```
+
+当前写回字段：
+
+- 文章标题
+- 截图
+- 评论数
+- 点赞数
+
+阅读数说明：
+
+页面本身不提供阅读数时，不采集阅读数。
+
+## 6. K 列链接阅读数
+
+适用于按链接逐条打开详情页，然后将阅读数写回 M 列。
+
+默认列：
+
+```text
+K 列：链接
+M 列：阅读数
+```
+
+入口：
+
+```powershell
+.\scripts\run.ps1 -Task doc-link-reads -TencentDocUrl "<url>" -ReportDate 0602
+```
+
+## 7. 数据库表职责
+
+| 表 | 职责 |
 | --- | --- |
-| `-TencentDocScanMode` | `run.ps1` 临时扫描模式，默认 `today`；可选 `single`、`today`、`date`、`filter`、`all` |
-| `-TencentDocScanDate` | `run.ps1` 临时补扫日期，例如 `2026-05-27` |
-| `-TencentDocSheetTitleFilter` | `filter` 模式下使用的临时标题过滤词 |
-
-## 任务调度
-
-| task_type | 生成规则 | 默认执行时间 |
-| --- | --- | --- |
-| `initial_check` | 导入时未晚于次日详情采集窗口 | `source_time + INITIAL_CHECK_DELAY_HOURS` |
-| `detail_crawl` | 每条有效链接都会生成 | `source_time` 次日 `DETAIL_TIME` 生成 `scheduled_at`，由详情轮询消费 |
-
-## MySQL 表
-
-| 表 | 作用 |
-| --- | --- |
-| `data_source_links` | 任务源入口配置：腾讯文档、本地 Excel、单条测试链接 |
-| `crawl_sources` | 数据源注册，例如腾讯文档、Excel |
-| `crawler_apps` | App 注册，例如 alipay、antfortune、tenpay |
-| `crawl_task_submissions` | 任务提交和总体状态 |
-| `crawl_task_executions` | 每次执行尝试、结果摘要、错误和写回状态 |
-| `crawl_results` | 标准化采集结果，App 专属数据放在 `metrics_json` |
-| `crawl_writebacks` | 写回目标、定位、状态和错误 |
-| `crawl_jobs` | 一次 job 运行记录 |
+| `data_source_links` | 数据源入口，例如腾讯文档 URL |
+| `app_config` | 运行时配置 |
+| `crawl_sources` | 通用来源记录 |
+| `crawl_task_submissions` | 通用任务提交 |
+| `crawl_task_executions` | 通用任务执行记录 |
+| `crawl_results` | 通用采集结果 |
+| `crawl_writebacks` | 通用写回状态 |
+| `profile_targets` | 大 V 主页目标 |
+| `profile_metric_sources` | 每日大 V 统计来源行 |
+| `profile_metric_runs` | 每日大 V 采集结果 |
+| `profile_metric_writebacks` | 大 V 写回记录 |
+| `article_targets` | 文章目标 |
+| `article_detail_sources` | 文章详情来源行 |
+| `article_detail_runs` | 文章详情采集结果 |
+| `article_detail_writebacks` | 文章详情写回记录 |
 | `task_log` | 调度日志 |
 
-## 腾讯文档列
+## 8. 当前限制
 
-列索引为 0-based，可通过环境变量覆盖。
-
-| 默认列 | 索引 | 配置 | 含义 |
-| --- | --- | --- | --- |
-| J | 9 | `TENCENT_DOC_COL_POST_TIME` | 发帖时间 |
-| M | 12 | `TENCENT_DOC_COL_SCREENSHOT` | 首屏截图 |
-| L | 11 | `TENCENT_DOC_COL_ACCOUNT_NAME` | 账号/初检结果 |
-| N | 13 | `TENCENT_DOC_COL_URL` | 帖子链接 |
-| O | 14 | `TENCENT_DOC_COL_READ_COUNT` | 阅读数 |
-| P | 15 | `TENCENT_DOC_COL_COMMENT_COUNT` | 评论数 |
-| Q | 16 | `TENCENT_DOC_COL_DETAIL_STATUS` | 详情备注/状态 |
-
-写回前会用 URL 校验目标行号。同一 URL 出现多行时会跳过写回，避免写错行。
-
-fetch 提交任务的基础条件：工作表标题必须带日期，发帖时间列必须填写时分，帖子链接列必须存在且可解析；系统会用标题日期和发帖时间列的时分拼成完整发帖时间。
-
-默认 fetch 会扫描同一个腾讯文档文件中标题日期等于当天的工作表；历史工作表不再提交新任务。需要补扫历史日期时，使用 `.\scripts\run.ps1 -Task fetch -TencentDocScanMode date -TencentDocScanDate YYYY-MM-DD`。
-
-历史日期一般只补详情：当 `source_time` 已经超过次日 `DETAIL_TIME` 时，fetch 会跳过 `initial_check`，只提交 `detail_crawl`。发帖时间写成 `盘后` / `盤後` 时，会使用工作表标题日期加 `TENCENT_DOC_POST_MARKET_TIME`，默认 `15:30`，同样只走次日详情任务。
-
-支付宝 H5 偶发只打开空白 Nebula 容器时，详情采集会把“没有正文、没有阅读数、没有评论数”的空白目标页识别出来，自动重开同一个 deep link 再采。重试后如果进入删除页，会按 `deleted/内容不见了` 写回；仍然空白才记为错误。
-
-## 常用配置
-
-| 配置 | 说明 |
-| --- | --- |
-| `FETCH_INTERVAL_MINUTES` | 拉取数据源间隔 |
-| `TENCENT_DOC_READ_RANGE` | 腾讯文档读取范围，默认 `A1:Q2000` |
-| `-TencentDocScanMode` | `run.ps1` 临时腾讯文档工作表扫描模式，默认 `today`；可选 `single`/`date`/`filter`/`all` |
-| `-TencentDocScanDate` | `run.ps1` 临时补扫指定日期工作表，例如 `2026-05-27` |
-| `-TencentDocSheetTitleFilter` | 按标题关键词临时筛选工作表 |
-| `TENCENT_DOC_POST_MARKET_TIME` | `盘后` 发帖时间兜底时分，默认 `15:30` |
-| `CHECK_INTERVAL_MINUTES` | 初检间隔 |
-| `INITIAL_CHECK_DELAY_HOURS` | 初检相对 `source_time` 的延迟小时数 |
-| `DETAIL_TIME` | 详情任务到期时间，用于生成 `scheduled_at`，默认 `08:00` |
-| `DETAIL_INTERVAL_MINUTES` | 详情任务轮询间隔，默认 10 分钟；每轮消费 `scheduled_at <= now` 的任务 |
-| `FETCH_LIMIT` | 单次 fetch 导入数量，默认 0 表示导入全部候选；测试时可设为正数 |
-| `DETAIL_MAX_RETRIES` | 详情任务最大执行次数 |
-| `DETAIL_MAX_CAPTURE_PAGES` | 详情采集最多主帖截图页数 |
-| `APP_OPEN_RECOVERY_RETRIES` | App 白屏、系统更新弹窗、页面卡死等临时异常时，force-stop 目标 App 后重新打开链接的次数，默认 1 |
-| `APP_RESTART_WAIT` | force-stop 目标 App 后重新打开链接前等待秒数，默认 2.0 |
-| `DETAIL_BLANK_REOPEN_RETRIES` | 详情页空白时重开同一链接的次数，默认 2 |
-| `DETAIL_BLANK_REOPEN_WAIT` | 空白页重开前等待秒数，默认 2.0 |
-| `DETAIL_ENABLE_OCR` | 是否启用 OCR |
-| `DETAIL_REQUIRES_CHECK_SUCCESS` | 详情采集是否等待初检成功 |
-| `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 输入文件 |
-| `EXCEL_DETAIL_OUTPUT_PATH` | 本地 Excel 输出文件 |
-| `WRITEBACK_SINK_TYPE` | 写回目标，支持 `tencent_docs`、`excel` |
-| `TENPAY_PACKAGE` | 财付通/腾讯理财通包名 |
+- 手机必须保持登录状态。
+- 某些主页会被身份认证页面拦截，状态会记录为 blocked。
+- 页面不存在或内容被删除时无法抓取阅读数。
+- OCR 可能误识别数字，需要通过测试不断补解析规则。
+- 腾讯文档 API 对 range 和 batchUpdate 有限制，长任务需要分批写回。

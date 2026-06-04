@@ -64,6 +64,29 @@ _CONFIG_ATTRS: dict[str, str] = {
     "DETAIL_INTERVAL_MINUTES": "DETAIL_INTERVAL_MINUTES",
     "REPORT_TIME": "REPORT_TIME",
     "TENCENT_DOC_REPORT_SHEET_TITLE": "TENCENT_DOC_REPORT_SHEET_TITLE",
+    "PROFILE_METRICS_DOC_URL": "PROFILE_METRICS_DOC_URL",
+    "PROFILE_METRICS_READ_RANGE": "PROFILE_METRICS_READ_RANGE",
+    "PROFILE_METRICS_TEMPLATE_RANGE": "PROFILE_METRICS_TEMPLATE_RANGE",
+    "PROFILE_METRICS_DAILY_PREPARE_TIME": "PROFILE_METRICS_DAILY_PREPARE_TIME",
+    "PROFILE_METRICS_INTERVAL_MINUTES": "PROFILE_METRICS_INTERVAL_MINUTES",
+    "PROFILE_METRICS_CRAWL_LIMIT": "PROFILE_METRICS_CRAWL_LIMIT",
+    "PROFILE_METRICS_TARGET_DATE": "PROFILE_METRICS_TARGET_DATE",
+    "PROFILE_METRICS_WRITEBACK_ENABLED": "PROFILE_METRICS_WRITEBACK_ENABLED",
+    "PROFILE_POST_READ_CRAWL_LIMIT": "PROFILE_POST_READ_CRAWL_LIMIT",
+    "PROFILE_POST_READ_MAX_SCROLLS": "PROFILE_POST_READ_MAX_SCROLLS",
+    "PROFILE_POST_READ_MAX_POSTS": "PROFILE_POST_READ_MAX_POSTS",
+    "ARTICLE_DETAILS_DOC_URL": "ARTICLE_DETAILS_DOC_URL",
+    "ARTICLE_DETAILS_READ_RANGE": "ARTICLE_DETAILS_READ_RANGE",
+    "ARTICLE_DETAILS_CRAWL_LIMIT": "ARTICLE_DETAILS_CRAWL_LIMIT",
+    "ARTICLE_DETAILS_WRITEBACK_ENABLED": "ARTICLE_DETAILS_WRITEBACK_ENABLED",
+    "DOC_LINK_READS_READ_RANGE": "DOC_LINK_READS_READ_RANGE",
+    "DOC_LINK_READS_SHEET_TITLE": "DOC_LINK_READS_SHEET_TITLE",
+    "DOC_LINK_READS_CRAWL_LIMIT": "DOC_LINK_READS_CRAWL_LIMIT",
+    "DOC_LINK_READS_ONLY_EMPTY": "DOC_LINK_READS_ONLY_EMPTY",
+    "DOC_LINK_READS_LINK_COL": "DOC_LINK_READS_LINK_COL",
+    "DOC_LINK_READS_READ_COL": "DOC_LINK_READS_READ_COL",
+    "DOC_LINK_READS_ENABLE_OCR": "DOC_LINK_READS_ENABLE_OCR",
+    "DOC_LINK_READS_OPEN_RETRIES": "DOC_LINK_READS_OPEN_RETRIES",
     "EXCEL_DETAIL_INPUT_PATH": "EXCEL_DETAIL_INPUT_PATH",
     "EXCEL_DETAIL_OUTPUT_PATH": "EXCEL_DETAIL_OUTPUT_PATH",
     "EXCEL_DETAIL_RESULT_JSONL_PATH": "EXCEL_DETAIL_RESULT_JSONL_PATH",
@@ -86,6 +109,8 @@ _DATA_SOURCE_KEYS: tuple[str, ...] = (
     "TENCENT_DOC_URL",
     "EXCEL_DETAIL_INPUT_PATH",
     "SINGLE_TEST_LINK",
+    "PROFILE_METRICS_DOC_URL",
+    "ARTICLE_DETAILS_DOC_URL",
 )
 
 _OPENAPI_CONFIG_KEYS: tuple[str, ...] = (
@@ -102,6 +127,27 @@ _APP_BEHAVIOR_CONFIG_KEYS: tuple[str, ...] = (
     "DETAIL_INTERVAL_MINUTES",
     "TASK_RUNNING_TIMEOUT_MINUTES",
     "TENCENT_DOC_REPORT_SHEET_TITLE",
+    "PROFILE_METRICS_READ_RANGE",
+    "PROFILE_METRICS_TEMPLATE_RANGE",
+    "PROFILE_METRICS_DAILY_PREPARE_TIME",
+    "PROFILE_METRICS_INTERVAL_MINUTES",
+    "PROFILE_METRICS_CRAWL_LIMIT",
+    "PROFILE_METRICS_TARGET_DATE",
+    "PROFILE_METRICS_WRITEBACK_ENABLED",
+    "PROFILE_POST_READ_CRAWL_LIMIT",
+    "PROFILE_POST_READ_MAX_SCROLLS",
+    "PROFILE_POST_READ_MAX_POSTS",
+    "ARTICLE_DETAILS_READ_RANGE",
+    "ARTICLE_DETAILS_CRAWL_LIMIT",
+    "ARTICLE_DETAILS_WRITEBACK_ENABLED",
+    "DOC_LINK_READS_READ_RANGE",
+    "DOC_LINK_READS_SHEET_TITLE",
+    "DOC_LINK_READS_CRAWL_LIMIT",
+    "DOC_LINK_READS_ONLY_EMPTY",
+    "DOC_LINK_READS_LINK_COL",
+    "DOC_LINK_READS_READ_COL",
+    "DOC_LINK_READS_ENABLE_OCR",
+    "DOC_LINK_READS_OPEN_RETRIES",
 )
 
 _APP_CONFIG_KEYS: tuple[str, ...] = _OPENAPI_CONFIG_KEYS + _APP_BEHAVIOR_CONFIG_KEYS
@@ -142,6 +188,8 @@ _DESCRIPTIONS.update(
         "DETAIL_INTERVAL_MINUTES": "Minutes between due detail-crawl queue scans. Each scan consumes tasks with scheduled_at <= now.",
         "TASK_RUNNING_TIMEOUT_MINUTES": "Minutes before a running task is considered abandoned and returned to retry/final state.",
         "TENCENT_DOC_REPORT_SHEET_TITLE": "Tencent Docs sheet title used for structured daily report writeback.",
+        "PROFILE_METRICS_TEMPLATE_RANGE": "Tencent Docs range used as the profile daily-row template.",
+        "PROFILE_METRICS_DAILY_PREPARE_TIME": "Daily HH:MM time to append missing profile metric rows for today's date. Empty disables the daily prepare job.",
     }
 )
 _DISPLAY_LABELS.update(
@@ -151,6 +199,8 @@ _DISPLAY_LABELS.update(
         "DETAIL_INTERVAL_MINUTES": "Detail queue interval",
         "TASK_RUNNING_TIMEOUT_MINUTES": "Running task timeout",
         "TENCENT_DOC_REPORT_SHEET_TITLE": "Report sheet title",
+        "PROFILE_METRICS_TEMPLATE_RANGE": "Profile template range",
+        "PROFILE_METRICS_DAILY_PREPARE_TIME": "Profile daily prepare time",
     }
 )
 
@@ -175,6 +225,18 @@ def _ensure_data_source_defaults(cursor) -> None:
             _DESCRIPTIONS["EXCEL_DETAIL_INPUT_PATH"],
         ),
         ("SINGLE_TEST_LINK", "", "unavailable", _DESCRIPTIONS["SINGLE_TEST_LINK"]),
+        (
+            "PROFILE_METRICS_DOC_URL",
+            Config.PROFILE_METRICS_DOC_URL,
+            "active" if Config.PROFILE_METRICS_DOC_URL else "unavailable",
+            "Tencent Docs sheet URL used by the profile metrics workflow.",
+        ),
+        (
+            "ARTICLE_DETAILS_DOC_URL",
+            Config.ARTICLE_DETAILS_DOC_URL,
+            "active" if Config.ARTICLE_DETAILS_DOC_URL else "unavailable",
+            "Tencent Docs sheet URL used by the demand-1 article detail workflow.",
+        ),
     ]
     cursor.executemany(
         """
@@ -189,7 +251,7 @@ def _ensure_data_source_defaults(cursor) -> None:
         """
         UPDATE data_source_links
         SET status = 'unavailable'
-        WHERE source_key IN ('EXCEL_DETAIL_INPUT_PATH', 'SINGLE_TEST_LINK')
+        WHERE source_key IN ('EXCEL_DETAIL_INPUT_PATH', 'SINGLE_TEST_LINK', 'PROFILE_METRICS_DOC_URL', 'ARTICLE_DETAILS_DOC_URL')
           AND (data_source_link IS NULL OR data_source_link = '')
         """
     )
@@ -235,15 +297,16 @@ def load_runtime_config() -> dict[str, str]:
 def _load_data_source_values() -> dict[str, str]:
     from apps.finance_crawler.storage.db import get_conn
 
+    placeholders = ", ".join(["%s"] * len(_DATA_SOURCE_KEYS))
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT source_key, data_source_link
                 FROM data_source_links
                 WHERE status = 'active'
-                  AND source_key IN (%s, %s, %s)
+                  AND source_key IN ({placeholders})
                 """,
                 _DATA_SOURCE_KEYS,
             )
@@ -298,14 +361,15 @@ def list_runtime_config() -> list[RuntimeConfigItem]:
 def _list_data_source_config() -> list[RuntimeConfigItem]:
     from apps.finance_crawler.storage.db import get_conn
 
+    placeholders = ", ".join(["%s"] * len(_DATA_SOURCE_KEYS))
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT source_key, data_source_link, status, description
                 FROM data_source_links
-                WHERE source_key IN (%s, %s, %s)
+                WHERE source_key IN ({placeholders})
                 ORDER BY source_key
                 """,
                 _DATA_SOURCE_KEYS,

@@ -498,7 +498,211 @@ def ensure_framework_tables(cursor) -> None:
     )
     _ensure_column(cursor, "crawl_results", "workflow", "workflow VARCHAR(64) NULL")
     _ensure_index(cursor, "crawl_results", "idx_result_workflow", "(workflow)")
+    _ensure_profile_metric_tables(cursor)
+    _ensure_article_detail_tables(cursor)
     seed_crawler_apps(cursor)
+
+
+def _ensure_profile_metric_tables(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_targets (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            profile_key VARCHAR(191) NOT NULL,
+            account_name VARCHAR(255) NULL,
+            platform VARCHAR(64) NULL,
+            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
+            homepage_url VARCHAR(1000) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            source_json LONGTEXT NULL,
+            first_seen_date DATE NULL,
+            latest_seen_date DATE NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_key (profile_key),
+            INDEX idx_profile_status (status),
+            INDEX idx_profile_app (app_type),
+            INDEX idx_profile_url (homepage_url(191))
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_metric_sources (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            target_id BIGINT UNSIGNED NOT NULL,
+            metric_date DATE NOT NULL,
+            source_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            source_name VARCHAR(191) NULL,
+            source_key VARCHAR(191) NOT NULL,
+            source_locator_json LONGTEXT NULL,
+            requested_fields_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            attempts INT NOT NULL DEFAULT 0,
+            max_attempts INT NOT NULL DEFAULT 3,
+            last_error TEXT NULL,
+            latest_metric_id BIGINT UNSIGNED NULL,
+            writeback_status VARCHAR(32) NULL,
+            writeback_error TEXT NULL,
+            written_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_metric_source (source_type, source_key),
+            INDEX idx_profile_metric_source_target (target_id),
+            INDEX idx_profile_metric_source_date (metric_date),
+            INDEX idx_profile_metric_source_status (status),
+            INDEX idx_profile_metric_writeback (writeback_status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _ensure_column(cursor, "profile_metric_sources", "attempts", "attempts INT NOT NULL DEFAULT 0")
+    _ensure_column(cursor, "profile_metric_sources", "max_attempts", "max_attempts INT NOT NULL DEFAULT 3")
+    _ensure_column(cursor, "profile_metric_sources", "last_error", "last_error TEXT NULL")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_metric_runs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            target_id BIGINT UNSIGNED NOT NULL,
+            metric_date DATE NOT NULL,
+            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
+            homepage_url VARCHAR(1000) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            fans_count INT NULL,
+            growth_count INT NULL,
+            read_count INT NULL,
+            metrics_json LONGTEXT NULL,
+            screenshot_path VARCHAR(700) NULL,
+            error TEXT NULL,
+            crawled_at DATETIME NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_metric_target_date (target_id, metric_date),
+            INDEX idx_profile_metric_target (target_id),
+            INDEX idx_profile_metric_date (metric_date),
+            INDEX idx_profile_metric_status (status),
+            INDEX idx_profile_metric_app (app_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_metric_writebacks (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            metric_source_id BIGINT UNSIGNED NOT NULL,
+            metric_id BIGINT UNSIGNED NULL,
+            sink_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            sink_locator_json LONGTEXT NULL,
+            field_name VARCHAR(64) NOT NULL DEFAULT 'fans_count',
+            status VARCHAR(32) NOT NULL,
+            error TEXT NULL,
+            written_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_metric_writeback_field (metric_source_id, field_name),
+            INDEX idx_profile_metric_writeback_source (metric_source_id),
+            INDEX idx_profile_metric_writeback_metric (metric_id),
+            INDEX idx_profile_metric_writeback_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+
+
+def _ensure_article_detail_tables(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS article_detail_targets (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            article_key VARCHAR(191) NOT NULL,
+            ip_name VARCHAR(255) NULL,
+            product_name VARCHAR(255) NULL,
+            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
+            article_url VARCHAR(1000) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            source_json LONGTEXT NULL,
+            first_seen_date DATE NULL,
+            latest_seen_date DATE NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_article_key (article_key),
+            INDEX idx_article_detail_status (status),
+            INDEX idx_article_detail_app (app_type),
+            INDEX idx_article_detail_url (article_url(191))
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS article_detail_sources (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            target_id BIGINT UNSIGNED NOT NULL,
+            source_date DATE NULL,
+            source_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            source_name VARCHAR(191) NULL,
+            source_key VARCHAR(191) NOT NULL,
+            source_locator_json LONGTEXT NULL,
+            requested_fields_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            attempts INT NOT NULL DEFAULT 0,
+            max_attempts INT NOT NULL DEFAULT 3,
+            last_error TEXT NULL,
+            latest_run_id BIGINT UNSIGNED NULL,
+            writeback_status VARCHAR(32) NULL,
+            writeback_error TEXT NULL,
+            written_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_article_detail_source (source_type, source_key),
+            INDEX idx_article_detail_source_target (target_id),
+            INDEX idx_article_detail_source_date (source_date),
+            INDEX idx_article_detail_source_status (status),
+            INDEX idx_article_detail_writeback (writeback_status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS article_detail_runs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            target_id BIGINT UNSIGNED NOT NULL,
+            source_id BIGINT UNSIGNED NULL,
+            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
+            article_url VARCHAR(1000) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            article_title TEXT NULL,
+            read_count INT NULL,
+            comment_count INT NULL,
+            like_count INT NULL,
+            metrics_json LONGTEXT NULL,
+            screenshot_path VARCHAR(700) NULL,
+            error TEXT NULL,
+            crawled_at DATETIME NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_article_detail_run_target (target_id),
+            INDEX idx_article_detail_run_source (source_id),
+            INDEX idx_article_detail_run_status (status),
+            INDEX idx_article_detail_run_app (app_type),
+            INDEX idx_article_detail_run_crawled (crawled_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS article_detail_writebacks (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            source_id BIGINT UNSIGNED NOT NULL,
+            run_id BIGINT UNSIGNED NULL,
+            sink_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            sink_locator_json LONGTEXT NULL,
+            field_name VARCHAR(64) NOT NULL DEFAULT 'article_detail',
+            status VARCHAR(32) NOT NULL,
+            error TEXT NULL,
+            written_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_article_detail_writeback_field (source_id, field_name),
+            INDEX idx_article_detail_writeback_source (source_id),
+            INDEX idx_article_detail_writeback_run (run_id),
+            INDEX idx_article_detail_writeback_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
 
 
 def seed_crawler_apps(cursor) -> None:
