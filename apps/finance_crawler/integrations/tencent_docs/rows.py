@@ -4,16 +4,25 @@ from __future__ import annotations
 
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.integrations.tencent_docs import client
+from apps.finance_crawler.integrations.tencent_docs import columns
 from apps.finance_crawler.utils import tabular_links
 
 
 def get_row_index_map(doc: client.DocInfo | None = None) -> dict[str, int]:
     rows, start_row = client.fetch_grid(doc=doc)
+    url_col = columns.resolve_column(
+        rows,
+        start_row,
+        columns.MAIN_COLUMN_ALIASES["url"],
+        Config.QQ_COL_URL,
+        field_name="url",
+        strict_fallback_title=True,
+    )
     mapping: dict[str, int] = {}
     for offset, row in enumerate(rows):
-        if len(row) <= Config.QQ_COL_URL:
+        if len(row) <= url_col:
             continue
-        url = row[Config.QQ_COL_URL].strip()
+        url = row[url_col].strip()
         if tabular_links.is_supported_crawl_url(url):
             # Tencent grid startRow is zero-based; sheet row number is one-based.
             mapping[url] = start_row + offset + 1
@@ -30,6 +39,14 @@ def resolve_row_index_for_url(
     """Resolve the current sheet row for a URL and guard against stale rows."""
     if rows is None or start_row is None:
         rows, start_row = client.fetch_grid(doc=doc)
+    url_col = columns.resolve_column(
+        rows,
+        start_row,
+        columns.MAIN_COLUMN_ALIASES["url"],
+        Config.QQ_COL_URL,
+        field_name="url",
+        strict_fallback_title=True,
+    )
 
     target = (url or "").strip()
     if not target:
@@ -39,14 +56,14 @@ def resolve_row_index_for_url(
         offset = preferred_row_index - start_row - 1
         if 0 <= offset < len(rows):
             row = rows[offset]
-            if len(row) > Config.QQ_COL_URL and row[Config.QQ_COL_URL].strip() == target:
+            if len(row) > url_col and row[url_col].strip() == target:
                 return preferred_row_index
 
     matches: list[int] = []
     for offset, row in enumerate(rows):
-        if len(row) <= Config.QQ_COL_URL:
+        if len(row) <= url_col:
             continue
-        if row[Config.QQ_COL_URL].strip() == target:
+        if row[url_col].strip() == target:
             matches.append(start_row + offset + 1)
 
     if len(matches) > 1:

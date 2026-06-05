@@ -51,6 +51,7 @@ adb devices -l
 | --- | --- | --- |
 | `db` | 初始化或升级 MySQL 表结构。 | 首次部署、表结构变更后。 |
 | `config` | 查看/更新运行时配置。 | 改文档 URL、token、范围、限速。 |
+| `doc-columns-check` | Preview Tencent Docs column title resolution. | Run before new tabs to catch unsafe fallback columns. |
 | `fetch` | 从腾讯文档同步候选链接到任务库。 | 新 tab、新日期、新表格导入。 |
 | `check` | 初检链接是否存在并写回账号或 `N`。 | 跑 check、补跑失败项。 |
 | `detail` | 抓取已通过初检的详情阅读数、评论数、截图等。 | 通用详情采集。 |
@@ -78,6 +79,7 @@ adb devices -l
 
 ```powershell
 .\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
+.\scripts\run.ps1 -Task doc-columns-check
 .\scripts\run.ps1 -Task fetch -TencentDocScanMode single
 $env:CRAWL_MAX_CONSECUTIVE_ERRORS='0'
 .\scripts\run.ps1 -Task check
@@ -98,20 +100,18 @@ K 列：发帖时间
 O 列：帖子链接
 ```
 
-这种要临时指定列号。列号从 0 开始，所以 K 是 `10`，O 是 `14`。
+默认按第 1 行表头识别列，数字列号只作为找不到表头时的兜底。
 
 ```powershell
 .\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
 
-$env:TENCENT_DOC_COL_POST_TIME='10'
-$env:TENCENT_DOC_COL_URL='14'
+# Column titles in row 1 are used first. TENCENT_DOC_COL_* values are fallbacks.
+.\scripts\run.ps1 -Task doc-columns-check
 .\scripts\run.ps1 -Task fetch -TencentDocScanMode single
 
-$env:TENCENT_DOC_COL_URL='14'
 $env:CRAWL_MAX_CONSECUTIVE_ERRORS='0'
 .\scripts\run.ps1 -Task check
 
-$env:TENCENT_DOC_COL_URL='14'
 $env:CRAWL_MAX_CONSECUTIVE_ERRORS='0'
 .\scripts\run.ps1 -Task check
 ```
@@ -273,4 +273,3 @@ Get-Content apps\finance_crawler\logs\<date>.log -Tail 120
 ```powershell
 git status --short
 ```
-

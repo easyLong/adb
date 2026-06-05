@@ -15,6 +15,8 @@ from typing import Any
 import schedule
 
 from apps.finance_crawler.config import Config
+from apps.finance_crawler.integrations.tencent_docs import client as tencent_docs_client
+from apps.finance_crawler.integrations.tencent_docs import columns as tencent_docs_columns
 from apps.finance_crawler.jobs.detail import run_detail
 from apps.finance_crawler.services.alerts import send_alert
 from apps.finance_crawler.services.report import generate_report
@@ -220,6 +222,7 @@ def main() -> int:
             "article-writeback",
             "article-details",
             "doc-link-reads",
+            "doc-columns-check",
         ],
         help="run one task and exit",
     )
@@ -395,6 +398,14 @@ def main() -> int:
         ) or {}
         print(f"doc link reads summary: {summary}")
         return 0
+    if args.once == "doc-columns-check":
+        init_db()
+        updates = _config_updates_from_args(args)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        print(_format_doc_columns_check(args.tencent_doc_url or None))
+        return 0
 
     try:
         run_forever()
@@ -429,6 +440,77 @@ def _parse_optional_date(value: str) -> date | None:
         today = date.today()
         return date(today.year, int(cleaned[:2]), int(cleaned[2:]))
     raise ValueError(f"invalid date: {value}; expected YYYY-MM-DD or MMDD")
+
+
+def _format_doc_columns_check(doc_url: str | None = None) -> str:
+    doc = tencent_docs_client.parse_doc_url(doc_url) if doc_url else tencent_docs_client.configured_doc()
+    sheet_title = tencent_docs_client.fetch_sheet_title(doc)
+    groups = [
+        (
+            "main",
+            tencent_docs_columns.MAIN_COLUMN_ALIASES,
+            tencent_docs_columns.default_main_fallbacks(),
+        ),
+        (
+            "doc-link-reads",
+            tencent_docs_columns.DOC_LINK_READS_ALIASES,
+            tencent_docs_columns.default_doc_link_read_fallbacks(),
+        ),
+        (
+            "article-details",
+            tencent_docs_columns.ARTICLE_DETAIL_ALIASES,
+            _article_detail_column_fallbacks(),
+        ),
+    ]
+    lines = [
+        f"Tencent Docs column check: file={doc.file_id} sheet={doc.sheet_id} title={sheet_title or ''}",
+    ]
+    rows, start_row = tencent_docs_columns.fetch_header_rows(doc, use_cache=False)
+    for group_name, aliases, fallbacks in groups:
+        lines.append("")
+        lines.append(f"[{group_name}]")
+        try:
+            resolutions = list(
+                tencent_docs_columns.resolve_columns_info(
+                    rows,
+                    start_row,
+                    aliases,
+                    fallbacks,
+                ).values()
+            )
+        except Exception as exc:
+            lines.append(f"  ERROR: {exc}")
+            continue
+        for item in resolutions:
+            title = item.title or "<empty>"
+            if item.source == "title":
+                marker = "OK"
+            elif item.match_type == "unrecognized_fallback":
+                marker = "UNSAFE_FALLBACK"
+            elif item.match_type == "ambiguous":
+                marker = "AMBIGUOUS_FALLBACK"
+            else:
+                marker = "FALLBACK"
+            matches = "" if not item.matches else f" matches={list(item.matches)}"
+            lines.append(
+                f"  {item.field}: {marker} col={item.index} title={title} "
+                f"fallback={item.fallback} match={item.match_type}{matches}"
+            )
+    return "\n".join(lines)
+
+
+def _article_detail_column_fallbacks() -> dict[str, int]:
+    return {
+        "date": 0,
+        "ip": 1,
+        "product": 2,
+        "url": 8,
+        "title": 9,
+        "screenshot": 10,
+        "read_count": 11,
+        "comment_count": 12,
+        "like_count": 13,
+    }
 
 
 if __name__ == "__main__":

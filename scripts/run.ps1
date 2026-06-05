@@ -1,7 +1,7 @@
 param(
     [string]$App = "finance_crawler",
 
-    [ValidateSet("scheduler", "supervisor", "db", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report", "profile-sync", "profile-daily-rows", "profile-create-tasks", "profile-crawl", "profile-writeback", "profile-metrics", "profile-post-reads", "article-sync", "article-crawl", "article-writeback", "article-details", "doc-link-reads")]
+    [ValidateSet("scheduler", "supervisor", "db", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report", "profile-sync", "profile-daily-rows", "profile-create-tasks", "profile-crawl", "profile-writeback", "profile-metrics", "profile-post-reads", "article-sync", "article-crawl", "article-writeback", "article-details", "doc-link-reads", "doc-columns-check")]
     [string]$Task = "scheduler",
 
     [string]$Python = "python",

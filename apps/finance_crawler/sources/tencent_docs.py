@@ -9,6 +9,7 @@ from typing import Any
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.domain.records import SourceRecord
 from apps.finance_crawler.integrations.tencent_docs import client as tencent_docs_client
+from apps.finance_crawler.integrations.tencent_docs import columns as tencent_docs_columns
 from apps.finance_crawler.integrations.tencent_docs import write_requests
 from apps.finance_crawler.utils import tabular_links
 from apps.finance_crawler.utils.logger import get_logger
@@ -39,13 +40,34 @@ class TencentDocsSource:
             logger.info("scan Tencent Docs sheet: %s (%s)", sheet.title, sheet.sheet_id)
             rows, start_row = tencent_docs_client.fetch_grid(doc=doc)
             _ensure_result_headers(rows, start_row, doc=doc)
-            sheet_candidates = tabular_links.eligible_candidates(rows, start_row, sheet.title)
+            columns = tencent_docs_columns.resolve_columns(
+                rows,
+                start_row,
+                {
+                    "post_time": tencent_docs_columns.MAIN_COLUMN_ALIASES["post_time"],
+                    "url": tencent_docs_columns.MAIN_COLUMN_ALIASES["url"],
+                },
+                {
+                    "post_time": Config.QQ_COL_POST_TIME,
+                    "url": Config.QQ_COL_URL,
+                },
+                strict_fallback_title=True,
+            )
+            sheet_candidates = tabular_links.eligible_candidates(
+                rows,
+                start_row,
+                sheet.title,
+                source_time_col=columns["post_time"],
+                url_col=columns["url"],
+            )
             for item in sheet_candidates:
                 item.update(
                     {
                         "file_id": sheet.file_id,
                         "sheet_id": sheet.sheet_id,
                         "sheet_title": sheet.title,
+                        "post_time_col_index": columns["post_time"],
+                        "url_col_index": columns["url"],
                     }
                 )
             candidates.extend(sheet_candidates)
@@ -85,6 +107,8 @@ class TencentDocsSource:
                         "row_index": row_index,
                         "source_time_text": item.get("source_time_text"),
                         "detail_only": item.get("detail_only"),
+                        "post_time_col_index": item.get("post_time_col_index"),
+                        "url_col_index": item.get("url_col_index"),
                     },
                     raw=_json_safe_item(item),
                 )
@@ -153,22 +177,46 @@ def _ensure_result_headers(
 
     header_cells = _header_cells(doc=doc)
     header_format = _reference_header_format(header_cells)
+    columns = tencent_docs_columns.resolve_columns(
+        rows,
+        start_row,
+        {
+            "comment_count": tencent_docs_columns.MAIN_COLUMN_ALIASES["comment_count"],
+            "detail_status": tencent_docs_columns.MAIN_COLUMN_ALIASES["detail_status"],
+        },
+        {
+            "comment_count": Config.QQ_COL_COMMENT_COUNT,
+            "detail_status": Config.QQ_COL_DETAIL_STATUS,
+        },
+    )
     requests_payload: list[dict[str, Any]] = []
-    if _header_needs_update(header_cells, Config.QQ_COL_COMMENT_COUNT, _HEADER_COMMENT_COUNT, header_format):
+    if _header_needs_update(
+        header_cells,
+        columns["comment_count"],
+        _HEADER_COMMENT_COUNT,
+        header_format,
+        tencent_docs_columns.MAIN_COLUMN_ALIASES["comment_count"],
+    ):
         requests_payload.append(
             write_requests.cell_request(
                 1,
-                Config.QQ_COL_COMMENT_COUNT,
+                columns["comment_count"],
                 _HEADER_COMMENT_COUNT,
                 cell_format=header_format,
                 doc=doc,
             )
         )
-    if _header_needs_update(header_cells, Config.QQ_COL_DETAIL_STATUS, _HEADER_REMARK, header_format):
+    if _header_needs_update(
+        header_cells,
+        columns["detail_status"],
+        _HEADER_REMARK,
+        header_format,
+        tencent_docs_columns.MAIN_COLUMN_ALIASES["detail_status"],
+    ):
         requests_payload.append(
             write_requests.cell_request(
                 1,
-                Config.QQ_COL_DETAIL_STATUS,
+                columns["detail_status"],
                 _HEADER_REMARK,
                 cell_format=header_format,
                 doc=doc,
@@ -195,14 +243,26 @@ def _header_needs_update(
     col_index: int,
     expected_text: str,
     expected_format: dict[str, Any] | None,
+    aliases: tuple[str, ...],
 ) -> bool:
     if col_index < 0:
         return False
     if len(cells) <= col_index:
         return True
     cell = cells[col_index]
-    if tencent_docs_client.cell_to_text(cell) != expected_text:
+    text = tencent_docs_client.cell_to_text(cell)
+    if not text:
         return True
+    normalized = tencent_docs_columns.normalize_title(text)
+    recognized = any(
+        alias_text and (alias_text == normalized or alias_text in normalized or normalized in alias_text)
+        for alias_text in (tencent_docs_columns.normalize_title(alias) for alias in aliases + (expected_text,))
+    )
+    if not recognized:
+        logger.warning("Tencent Docs header update skipped for non-empty unrecognized col=%s title=%s", col_index, text)
+        return False
+    if text != expected_text:
+        return False
     if expected_format and cell.get("cellFormat") != expected_format:
         return True
     return False
@@ -212,10 +272,25 @@ def _reference_header_format(cells: list[dict[str, Any]]) -> dict[str, Any] | No
     if not cells:
         return None
 
+    header_rows = [[tencent_docs_client.cell_to_text(cell) for cell in cells]]
+    columns = tencent_docs_columns.resolve_columns(
+        header_rows,
+        0,
+        {
+            "read_count": tencent_docs_columns.MAIN_COLUMN_ALIASES["read_count"],
+            "url": tencent_docs_columns.MAIN_COLUMN_ALIASES["url"],
+            "account_name": tencent_docs_columns.MAIN_COLUMN_ALIASES["account_name"],
+        },
+        {
+            "read_count": Config.QQ_COL_READ_COUNT,
+            "url": Config.QQ_COL_URL,
+            "account_name": Config.QQ_COL_ACCOUNT_NAME,
+        },
+    )
     for col_index in (
-        Config.QQ_COL_READ_COUNT,
-        Config.QQ_COL_URL,
-        Config.QQ_COL_ACCOUNT_NAME,
+        columns["read_count"],
+        columns["url"],
+        columns["account_name"],
     ):
         if len(cells) <= col_index:
             continue

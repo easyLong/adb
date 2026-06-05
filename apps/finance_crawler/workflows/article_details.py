@@ -16,7 +16,8 @@ from typing import Any
 
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.integrations.tencent_docs import client
-from apps.finance_crawler.integrations.tencent_docs.write_requests import row_cells_request, screenshot_cell_value
+from apps.finance_crawler.integrations.tencent_docs import columns as tencent_docs_columns
+from apps.finance_crawler.integrations.tencent_docs.write_requests import cell_request, screenshot_cell_value
 from apps.finance_crawler.mobile.crawler import open_url, resolve_short_url, scrape_record_content
 from apps.finance_crawler.mobile.device_session import reset_device_session
 from apps.finance_crawler.mobile.parsers import parse_count_token
@@ -70,12 +71,19 @@ def run_article_details() -> dict[str, Any]:
 def sync_article_sources_from_tencent_docs(doc_url: str | None = None) -> int:
     doc = _article_doc(doc_url)
     rows, start_row = client.fetch_grid(Config.ARTICLE_DETAILS_READ_RANGE, doc=doc)
+    columns = tencent_docs_columns.resolve_columns(
+        rows,
+        start_row,
+        tencent_docs_columns.ARTICLE_DETAIL_ALIASES,
+        _article_column_fallbacks(),
+        strict_fallback_title=True,
+    )
     imported = 0
     for offset, row in enumerate(rows):
         sheet_row_index = start_row + offset + 1
         if sheet_row_index == 1:
             continue
-        parsed = _parse_article_source_row(row, sheet_row_index=sheet_row_index, doc=doc)
+        parsed = _parse_article_source_row(row, sheet_row_index=sheet_row_index, doc=doc, columns=columns)
         if not parsed:
             continue
         upsert_article_source(parsed)
@@ -118,6 +126,7 @@ def writeback_article_details(limit: int | None = None) -> int:
         return 0
 
     requests_by_doc: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    columns_by_doc: dict[tuple[str, str], dict[str, int]] = {}
     successes: list[dict[str, Any]] = []
     failures: list[tuple[dict[str, Any], str]] = []
     for row in rows:
@@ -125,16 +134,28 @@ def writeback_article_details(limit: int | None = None) -> int:
         try:
             doc = client.DocInfo(file_id=str(locator["file_id"]), sheet_id=str(locator["sheet_id"]))
             row_index = int(locator["row_index"])
-            title_col = int(locator.get("title_col_index", TITLE_COL))
             key = (doc.file_id, doc.sheet_id)
-            values = [
-                row.get("article_title") or "",
-                screenshot_cell_value(row.get("screenshot_path")),
-                "",
-                "" if row.get("comment_count") is None else row["comment_count"],
-                "" if row.get("like_count") is None else row["like_count"],
-            ]
-            requests_by_doc.setdefault(key, []).append(row_cells_request(row_index, title_col, values, doc=doc))
+            if key not in columns_by_doc:
+                columns_by_doc[key] = _article_writeback_columns(doc, locator)
+            columns = columns_by_doc[key]
+            requests_by_doc.setdefault(key, []).extend(
+                [
+                    cell_request(row_index, columns["title"], row.get("article_title") or "", doc=doc),
+                    cell_request(row_index, columns["screenshot"], screenshot_cell_value(row.get("screenshot_path")), doc=doc),
+                    cell_request(
+                        row_index,
+                        columns["comment_count"],
+                        "" if row.get("comment_count") is None else row["comment_count"],
+                        doc=doc,
+                    ),
+                    cell_request(
+                        row_index,
+                        columns["like_count"],
+                        "" if row.get("like_count") is None else row["like_count"],
+                        doc=doc,
+                    ),
+                ]
+            )
             successes.append(row)
         except Exception as exc:
             failures.append((row, str(exc)))
@@ -312,27 +333,28 @@ def _parse_article_source_row(
     *,
     sheet_row_index: int,
     doc: client.DocInfo,
+    columns: dict[str, int],
 ) -> dict[str, Any] | None:
-    article_url = _cell(row, URL_COL)
+    article_url = _cell(row, columns["url"])
     if not article_url or article_url == "/":
         return None
-    source_date = _parse_date(_cell(row, DATE_COL))
+    source_date = _parse_date(_cell(row, columns["date"]))
     article_key = article_key_for_url(article_url)
     locator = {
         "file_id": doc.file_id,
         "sheet_id": doc.sheet_id,
         "row_index": sheet_row_index,
-        "url_col_index": URL_COL,
-        "title_col_index": TITLE_COL,
-        "screenshot_col_index": SCREENSHOT_COL,
-        "read_col_index": READ_COL,
-        "comment_col_index": COMMENT_COL,
-        "like_col_index": LIKE_COL,
+        "url_col_index": columns["url"],
+        "title_col_index": columns["title"],
+        "screenshot_col_index": columns["screenshot"],
+        "read_col_index": columns["read_count"],
+        "comment_col_index": columns["comment_count"],
+        "like_col_index": columns["like_count"],
     }
     return {
         "article_key": article_key,
-        "ip_name": _cell(row, IP_COL),
-        "product_name": _cell(row, PRODUCT_COL),
+        "ip_name": _cell(row, columns["ip"]),
+        "product_name": _cell(row, columns["product"]),
         "app_type": detect_link_source(article_url),
         "article_url": article_url,
         "source_date": source_date,
@@ -350,6 +372,48 @@ def _article_doc(doc_url: str | None = None) -> client.DocInfo:
     if not url:
         raise RuntimeError("ARTICLE_DETAILS_DOC_URL is not configured")
     return client.parse_doc_url(url)
+
+
+def _article_column_fallbacks() -> dict[str, int]:
+    return {
+        "date": DATE_COL,
+        "ip": IP_COL,
+        "product": PRODUCT_COL,
+        "url": URL_COL,
+        "title": TITLE_COL,
+        "screenshot": SCREENSHOT_COL,
+        "read_count": READ_COL,
+        "comment_count": COMMENT_COL,
+        "like_count": LIKE_COL,
+    }
+
+
+def _article_writeback_columns(doc: client.DocInfo, locator: dict[str, Any]) -> dict[str, int]:
+    fallbacks = _article_column_fallbacks()
+    fallbacks.update(
+        {
+            "title": _locator_col(locator, "title_col_index", TITLE_COL),
+            "screenshot": _locator_col(locator, "screenshot_col_index", SCREENSHOT_COL),
+            "comment_count": _locator_col(locator, "comment_col_index", COMMENT_COL),
+            "like_count": _locator_col(locator, "like_col_index", LIKE_COL),
+        }
+    )
+    return tencent_docs_columns.fetch_header_columns(
+        doc,
+        aliases_by_field={
+            "title": tencent_docs_columns.ARTICLE_DETAIL_ALIASES["title"],
+            "screenshot": tencent_docs_columns.ARTICLE_DETAIL_ALIASES["screenshot"],
+            "comment_count": tencent_docs_columns.ARTICLE_DETAIL_ALIASES["comment_count"],
+            "like_count": tencent_docs_columns.ARTICLE_DETAIL_ALIASES["like_count"],
+        },
+        fallbacks=fallbacks,
+        strict_fallback_title=True,
+    )
+
+
+def _locator_col(locator: dict[str, Any], key: str, fallback: int) -> int:
+    value = locator.get(key)
+    return int(value) if value is not None else fallback
 
 
 def _read_ocr_rows(path_text: str | None) -> list[dict[str, Any]]:

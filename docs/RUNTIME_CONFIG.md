@@ -131,3 +131,4 @@ PROFILE_METRICS_TARGET_DATE=
 - `PROFILE_METRICS_DAILY_PREPARE_TIME` 只生成行，不直接抓取；抓取由 `PROFILE_METRICS_INTERVAL_MINUTES` 控制。
 - 每日行生成按主页链接去重，重复执行不会重复追加。
 - 如果手动改了模板范围，确认范围内只包含模板账号行，不要包含历史日期块。
+- Tencent Docs column-number settings are fallbacks. Runtime prefers row-1 titles when reading and writing sheet columns.

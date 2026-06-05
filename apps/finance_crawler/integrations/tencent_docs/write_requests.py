@@ -94,9 +94,16 @@ def screenshot_cell_value(path_text: str | None) -> str:
     return str(path)
 
 
-def screenshot_cell_request(row_index: int, path_text: str | None, doc: client.DocInfo | None = None) -> dict[str, Any]:
+def screenshot_cell_request(
+    row_index: int,
+    path_text: str | None,
+    doc: client.DocInfo | None = None,
+    *,
+    col_index: int | None = None,
+) -> dict[str, Any]:
     resolved_doc = doc or client.configured_doc()
     value = screenshot_cell_value(path_text)
+    resolved_col_index = Config.QQ_COL_SCREENSHOT if col_index is None else col_index
     if value.startswith(("http://", "https://")):
         cell = {
             "cellValue": {
@@ -114,15 +121,16 @@ def screenshot_cell_request(row_index: int, path_text: str | None, doc: client.D
             "sheetId": resolved_doc.sheet_id,
             "gridData": {
                 "startRow": row_index - 1,
-                "startColumn": Config.QQ_COL_SCREENSHOT,
+                "startColumn": resolved_col_index,
                 "rows": [{"values": [cell]}],
             },
         }
     }
 
 
-def can_upload_screenshot(path_text: str | None) -> bool:
-    if not Config.QQ_UPLOAD_SCREENSHOTS or Config.QQ_COL_SCREENSHOT < 0 or not path_text:
+def can_upload_screenshot(path_text: str | None, *, col_index: int | None = None) -> bool:
+    resolved_col_index = Config.QQ_COL_SCREENSHOT if col_index is None else col_index
+    if not Config.QQ_UPLOAD_SCREENSHOTS or resolved_col_index < 0 or not path_text:
         return False
     path = Path(path_text)
     return path.exists() and path.is_file()
@@ -147,8 +155,15 @@ def image_display_size(path: Path) -> tuple[float, float]:
     return float(original_width), float(original_height)
 
 
-def screenshot_image_request(row_index: int, path_text: str, doc: client.DocInfo | None = None) -> dict[str, Any]:
+def screenshot_image_request(
+    row_index: int,
+    path_text: str,
+    doc: client.DocInfo | None = None,
+    *,
+    col_index: int | None = None,
+) -> dict[str, Any]:
     resolved_doc = doc or client.configured_doc()
+    resolved_col_index = Config.QQ_COL_SCREENSHOT if col_index is None else col_index
     path = Path(path_text)
     image_id = client.upload_image(path)
     width, height = image_display_size(path)
@@ -160,7 +175,7 @@ def screenshot_image_request(row_index: int, path_text: str, doc: client.DocInfo
                     "type": 1,
                     "imageId": image_id,
                     "row": row_index,
-                    "col": Config.QQ_COL_SCREENSHOT + 1,
+                    "col": resolved_col_index + 1,
                     "width": width,
                     "height": height,
                 }

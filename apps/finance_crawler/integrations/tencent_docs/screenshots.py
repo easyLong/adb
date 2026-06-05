@@ -13,7 +13,7 @@ logger = get_logger("tencent_docs_screenshots")
 
 
 def post_screenshot_images(
-    rows: list[tuple[int, str]],
+    rows: list[tuple[int, str] | tuple[int, str, int]],
     *,
     doc: client.DocInfo | None = None,
 ) -> list[dict[str, Any]]:
@@ -21,12 +21,15 @@ def post_screenshot_images(
     requests_with_fallback: list[tuple[dict[str, Any], dict[str, Any]]] = []
     fallback_requests: list[dict[str, Any]] = []
 
-    for row_index, path_text in rows:
+    for row in rows:
+        row_index = row[0]
+        path_text = row[1]
+        col_index = row[2] if len(row) > 2 else None
         try:
             requests_with_fallback.append(
                 (
-                    write_requests.screenshot_image_request(row_index, path_text, doc=doc),
-                    write_requests.screenshot_cell_request(row_index, path_text, doc=doc),
+                    write_requests.screenshot_image_request(row_index, path_text, doc=doc, col_index=col_index),
+                    write_requests.screenshot_cell_request(row_index, path_text, doc=doc, col_index=col_index),
                 )
             )
             logger.info("Tencent Docs uploaded screenshot row=%s path=%s", row_index, path_text)
@@ -34,7 +37,7 @@ def post_screenshot_images(
                 time.sleep(Config.QQ_IMAGE_UPLOAD_DELAY)
         except Exception as exc:
             logger.warning("Tencent Docs screenshot upload failed row=%s: %s", row_index, exc)
-            fallback_requests.append(write_requests.screenshot_cell_request(row_index, path_text, doc=doc))
+            fallback_requests.append(write_requests.screenshot_cell_request(row_index, path_text, doc=doc, col_index=col_index))
 
     if not requests_with_fallback:
         return fallback_requests

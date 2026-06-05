@@ -205,6 +205,8 @@ DOC_LINK_READS_READ_COL=12    # M 列，0-based
 DOC_LINK_READS_ONLY_EMPTY=True
 ```
 
+Tencent Docs column-number settings are fallbacks. Runtime prefers row-1 titles when reading and writing sheet columns.
+
 特性：
 
 - 只处理 M 列为空的链接。

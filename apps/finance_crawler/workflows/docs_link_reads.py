@@ -12,6 +12,7 @@ from typing import Any
 
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.integrations.tencent_docs import client
+from apps.finance_crawler.integrations.tencent_docs import columns as tencent_docs_columns
 from apps.finance_crawler.integrations.tencent_docs.write_requests import cell_request
 from apps.finance_crawler.mobile.capture_engine import capture_pages
 from apps.finance_crawler.mobile.capture_engine import run_adb
@@ -44,7 +45,7 @@ def run_docs_link_reads(
 ) -> dict[str, Any]:
     started = time.time()
     doc = _select_doc(doc_url=doc_url, target_date=target_date)
-    targets = _read_targets(doc, limit=limit)
+    targets, columns = _read_targets(doc, limit=limit)
     results: list[dict[str, Any]] = []
     requests_payload: list[dict[str, Any]] = []
     written_count = 0
@@ -74,7 +75,7 @@ def run_docs_link_reads(
         requests_payload.append(
             cell_request(
                 target.row_index,
-                Config.DOC_LINK_READS_READ_COL,
+                columns["read_count"],
                 read_value,
                 doc=doc,
             )
@@ -368,33 +369,40 @@ def _latest_screenshot(output_dir: Path) -> str | None:
     return str(screenshots[-1]) if screenshots else None
 
 
-def _read_targets(doc: client.DocInfo, *, limit: int | None = None) -> list[DocLinkReadTarget]:
+def _read_targets(doc: client.DocInfo, *, limit: int | None = None) -> tuple[list[DocLinkReadTarget], dict[str, int]]:
     rows, start_row = client.fetch_grid(Config.DOC_LINK_READS_READ_RANGE, doc=doc)
+    columns = tencent_docs_columns.resolve_columns(
+        rows,
+        start_row,
+        tencent_docs_columns.DOC_LINK_READS_ALIASES,
+        tencent_docs_columns.default_doc_link_read_fallbacks(),
+        strict_fallback_title=True,
+    )
     targets: list[DocLinkReadTarget] = []
     resolved_limit = Config.DOC_LINK_READS_CRAWL_LIMIT if limit is None else limit
     for offset, row in enumerate(rows):
         row_index = start_row + offset + 1
         if row_index == 1:
             continue
-        link = _cell(row, Config.DOC_LINK_READS_LINK_COL)
+        link = _cell(row, columns["link"])
         if not link or not _looks_like_link(link):
             continue
-        existing_read = _cell(row, Config.DOC_LINK_READS_READ_COL)
+        existing_read = _cell(row, columns["read_count"])
         if Config.DOC_LINK_READS_ONLY_EMPTY and existing_read:
             continue
         targets.append(
             DocLinkReadTarget(
                 row_index=row_index,
                 link=link,
-                title=_cell(row, 0),
-                account_name=_cell(row, 9),
+                title=_cell(row, columns["title"]),
+                account_name=_cell(row, columns["account_name"]),
                 existing_read=existing_read,
             )
         )
         if resolved_limit and resolved_limit > 0 and len(targets) >= resolved_limit:
             break
     logger.info("doc link read targets=%s sheet=%s", len(targets), doc.sheet_id)
-    return targets
+    return targets, columns
 
 
 def _select_doc(*, doc_url: str | None = None, target_date: date | None = None) -> client.DocInfo:
