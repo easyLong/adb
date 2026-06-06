@@ -1,8 +1,10 @@
 # 脚本和任务索引
 
-本项目日常优先使用 `scripts/run.ps1`。根目录的 `.cmd` 文件适合双击或放到计划任务里；`scripts/*.py` 多数是一次性排查、修复或本地文件处理工具。
+日常统一使用：
 
-## 1. 基本约定
+```powershell
+.\scripts\run.ps1 -Task <task>
+```
 
 所有命令默认在项目根目录执行：
 
@@ -10,265 +12,230 @@
 cd c:\Code\adb
 ```
 
-先确认环境：
+## 1. 基础命令
+
+| Task | 作用 |
+| --- | --- |
+| `db` | 初始化或升级主数据库表，包括 legacy、document v2、profile 表 |
+| `crawler-app-db` | 初始化或升级 `crawler_app` v2 表 |
+| `config` | 查看或更新运行配置 |
+| `scheduler` | 启动 scheduler |
+| `supervisor` | 启动 supervisor，scheduler 崩溃后自动重启 |
+
+查看配置：
 
 ```powershell
-pip install -r requirements.txt
-adb devices -l
-.\scripts\run.ps1 -Task db
 .\scripts\run.ps1 -Task config
 ```
 
-`.env` 只放 MySQL 连接信息。业务配置优先写入 MySQL 运行时配置，可用下面命令查看和更新：
+更新配置：
 
 ```powershell
-.\scripts\run.ps1 -Task config
 .\scripts\run.ps1 -Task config -ConfigSet KEY=VALUE
 ```
 
-## 2. 主入口 `scripts/run.ps1`
+启动常驻：
 
-`run.ps1` 是所有常用任务的统一入口。
+```powershell
+.\scripts\run.ps1 -Task supervisor
+```
 
-通用参数：
+## 2. document 链路命令
 
-| 参数 | 用途 |
+document 链路处理帖子/链接型任务，核心表是：
+
+```text
+document_trigger_configs
+document_trigger_bindings
+submit_runs
+task_submissions
+task_executions
+writeback_plans
+```
+
+### 2.1 触发器配置
+
+| Task | 作用 |
 | --- | --- |
-| `-Task` | 选择任务。 |
-| `-TencentDocUrl` | 设置或临时使用腾讯文档 URL。 |
-| `-ReportDate` | 业务日期，支持 `YYYY-MM-DD`，部分任务也支持 `MMDD`。 |
-| `-ConfigSet KEY=VALUE` | 临时写入运行时配置。 |
-| `-TencentDocScanMode` | 通用 fetch 扫描模式：`single`、`today`、`date`、`filter`、`all`。 |
-| `-TencentDocScanDate` | fetch 按日期扫描，格式 `YYYY-MM-DD`。 |
-| `-TencentDocSheetTitleFilter` | fetch 按 sheet 标题过滤。 |
-| `-DetailSourceDates` | detail 只处理指定来源日期，多个日期用逗号分隔。 |
-| `-SingleLink` | 单链接调试或配置。 |
-| `-ExcelInputPath` | 本地 Excel 详情采集输入文件。 |
+| `v2-trigger-set` | 创建或更新 document 触发器 |
+| `v2-trigger-bind` | 给触发器绑定任务类型和字段 |
+| `v2-trigger-list` | 查看触发器 |
+| `v2-trigger-submit` | 手动提交一个触发器 |
+| `v2-submit-worker-once` | 手动跑一次 submit worker |
 
-任务清单：
-
-| Task | 作用 | 常用场景 |
-| --- | --- | --- |
-| `db` | 初始化或升级 MySQL 表结构。 | 首次部署、表结构变更后。 |
-| `config` | 查看/更新运行时配置。 | 改文档 URL、token、范围、限速。 |
-| `doc-columns-check` | Preview Tencent Docs column title resolution. | Run before new tabs to catch unsafe fallback columns. |
-| `fetch` | 从腾讯文档同步候选链接到任务库。 | 新 tab、新日期、新表格导入。 |
-| `check` | 初检链接是否存在并写回账号或 `N`。 | 跑 check、补跑失败项。 |
-| `detail` | 抓取已通过初检的详情阅读数、评论数、截图等。 | 通用详情采集。 |
-| `excel-detail` | 从本地 Excel 读取任务并写回本地 Excel。 | 离线表格采集。 |
-| `link-detail` | 单链接详情调试。 | 排查一个链接的解析结果。 |
-| `report` | 生成日报。 | 每日汇总或手工补报告。 |
-| `profile-sync` | 同步大 V 主页统计源数据。 | 大 V 拆分流程第一步。 |
-| `profile-daily-rows` | 生成大 V 当日模板行。 | 每天建当天行、补历史日期。 |
-| `profile-create-tasks` | 从大 V 源数据创建抓取任务。 | 拆分排查。 |
-| `profile-crawl` | 抓取大 V 粉丝数等指标。 | 拆分排查。 |
-| `profile-writeback` | 写回大 V 指标。 | 写回失败后补写。 |
-| `profile-metrics` | 大 V 同步、建任务、抓取、写回一体流程。 | 日常大 V 主页统计。 |
-| `profile-post-reads` | 抓大 V 主页当日帖子阅读数。 | 主页帖子阅读数补采。 |
-| `article-sync` | 同步文章详情源数据。 | 文章详情拆分流程第一步。 |
-| `article-crawl` | 抓取文章详情。 | 拆分排查。 |
-| `article-writeback` | 写回文章详情。 | 写回失败后补写。 |
-| `article-details` | 文章详情同步、抓取、写回一体流程。 | 需求 1 文章详情。 |
-| `doc-link-reads` | 从文档链接列打开详情页，回填阅读数列。 | K->M 或类似阅读数回填。 |
-| `scheduler` | 启动周期调度。 | 常驻运行。 |
-| `supervisor` | 守护 scheduler，崩溃后自动重启。 | 生产/长时间运行。 |
-
-## 3. 常用跑法
-
-### 3.1 普通腾讯文档 tab 初检
+示例：
 
 ```powershell
-.\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
-.\scripts\run.ps1 -Task doc-columns-check
-.\scripts\run.ps1 -Task fetch -TencentDocScanMode single
-$env:CRAWL_MAX_CONSECUTIVE_ERRORS='0'
-.\scripts\run.ps1 -Task check
-```
-
-完成标志：
-
-```text
-checked records: 0
-```
-
-### 3.2 链接列右移的 tab
-
-有些表格列会右移，例如：
-
-```text
-K 列：发帖时间
-O 列：帖子链接
-```
-
-默认按第 1 行表头识别列，数字列号只作为找不到表头时的兜底。
-
-```powershell
-.\scripts\run.ps1 -Task config -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
-
-# Column titles in row 1 are used first. TENCENT_DOC_COL_* values are fallbacks.
-.\scripts\run.ps1 -Task doc-columns-check
-.\scripts\run.ps1 -Task fetch -TencentDocScanMode single
-
-$env:CRAWL_MAX_CONSECUTIVE_ERRORS='0'
-.\scripts\run.ps1 -Task check
-
-$env:CRAWL_MAX_CONSECUTIVE_ERRORS='0'
-.\scripts\run.ps1 -Task check
-```
-
-最后一次看到 `checked records: 0` 表示队列清空。
-
-### 3.3 按日期补导入并跑详情
-
-```powershell
-.\scripts\run.ps1 -Task fetch -TencentDocScanMode date -TencentDocScanDate 2026-05-26
-.\scripts\run.ps1 -Task detail -DetailSourceDates 2026-05-26
-```
-
-多个日期可以用根目录脚本：
-
-```powershell
-.\backfill_detail_by_date.cmd 2026-05-26 2026-05-27
-```
-
-### 3.4 K 列链接阅读数回填 M 列
-
-```powershell
-.\scripts\run.ps1 -Task doc-link-reads `
+.\scripts\run.ps1 -Task v2-trigger-set `
+  -DocumentConfigKey redsoil_detail `
   -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>" `
-  -ReportDate 0602
+  -DocumentSheetMode fixed_sheet `
+  -DocumentSheetId <sheetId> `
+  -SubmitScanIntervalSeconds 600
+
+.\scripts\run.ps1 -Task v2-trigger-bind `
+  -DocumentConfigKey redsoil_detail `
+  -DocumentTaskType detail `
+  -DocumentFields account_name,read_count,screenshot,remark
 ```
 
-如果明确找不到页面，当前逻辑写回 `N`；技术失败会保留错误状态，避免把临时网络问题误写成 `N`。
+### 2.2 一次性 document 工作流
 
-### 3.5 单链接排查
+| Task | 作用 |
+| --- | --- |
+| `v2-initial-check-submit` | 提交初检任务 |
+| `v2-initial-check-crawl` | 采集初检任务 |
+| `v2-initial-check-writeback` | 写回初检结果 |
+| `v2-initial-check` | 初检提交、采集、写回一体执行 |
+| `v2-detail-submit` | 提交详情任务 |
+| `v2-detail-crawl` | 采集详情任务 |
+| `v2-detail-writeback` | 写回详情结果 |
+| `v2-detail` | 详情提交、采集、写回一体执行 |
+| `v2-read-count-submit` | 提交阅读数任务 |
+| `v2-read-count-crawl` | 采集阅读数任务 |
+| `v2-read-count-writeback` | 写回阅读数结果 |
+| `v2-read-count` | 阅读数提交、采集、写回一体执行 |
 
-通过主流程：
+示例：
+
+```powershell
+.\scripts\run.ps1 -Task v2-detail `
+  -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>" `
+  -ReportDate 2026-06-04
+```
+
+### 2.3 worker
+
+| Task | 作用 |
+| --- | --- |
+| `v2-crawl-worker-once` | 手动跑一次 document 采集 worker |
+| `v2-writeback-worker-once` | 手动跑一次 document 写回 worker |
+
+## 3. profile 链路命令
+
+profile 链路处理主页型任务，核心表是：
+
+```text
+profile_trigger_configs
+profile_action_profiles
+profile_trigger_runs
+profile_metric_sources
+profile_metric_runs
+profile_metric_writebacks
+```
+
+| Task | 作用 |
+| --- | --- |
+| `profile-trigger-list` | 查看 profile 触发器 |
+| `profile-trigger-run` | 手动跑 profile 触发器，默认跑 `kol_daily_metrics_wpvy0d` |
+| `kol-daily-crawl` | 兼容命令，内部走默认 profile trigger |
+
+示例：
+
+```powershell
+.\scripts\run.ps1 -Task profile-trigger-list
+.\scripts\run.ps1 -Task profile-trigger-run
+.\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
+```
+
+## 4. KOL 每日表命令
+
+| Task | 作用 |
+| --- | --- |
+| `kol-daily-snapshot` | 同步 KOL 基础数据，生成指定日期快照，并写入目标表 |
+| `kol-daily-writeback` | 只把 `kol_daily_snapshots` 写回目标表 |
+| `kol-daily-crawl` | 跑当天或指定日期主页采集，兼容入口 |
+
+每天 22:00 默认跑 `kol-daily-snapshot`，生成明日行。
+
+每天 08:00 默认跑 `kol-daily-crawl`，实际走：
+
+```text
+profile_trigger_configs.kol_daily_metrics_wpvy0d
+```
+
+手动生成某天行：
+
+```powershell
+.\scripts\run.ps1 -Task kol-daily-snapshot -ReportDate 2026-06-07
+```
+
+手动采集某天主页指标：
+
+```powershell
+.\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
+```
+
+## 5. 旧 profile 拆分命令
+
+这些命令仍保留，用于旧版主页统计链路排查：
+
+| Task | 作用 |
+| --- | --- |
+| `profile-sync` | 从旧主页统计文档同步来源行 |
+| `profile-daily-rows` | 根据模板生成每日行 |
+| `profile-create-tasks` | 从 active profile targets 创建 DB-only 任务 |
+| `profile-crawl` | 抓主页粉丝数 |
+| `profile-writeback` | 写回粉丝数、增粉数 |
+| `profile-metrics` | 同步、采集、写回一体流程 |
+| `profile-post-reads` | 抓主页指定日期帖子阅读数 |
+
+新 KOL 主页自动化优先使用 `profile-trigger-*`。
+
+## 6. 其它业务命令
+
+| Task | 作用 |
+| --- | --- |
+| `doc-columns-check` | 检查在线文档表头字段识别结果 |
+| `doc-link-reads` | 从文档链接列读取链接，回填阅读数列 |
+| `article-sync` | 同步文章详情来源 |
+| `article-crawl` | 采集文章详情 |
+| `article-writeback` | 写回文章详情 |
+| `article-details` | 文章详情一体流程 |
+| `excel-detail` | 本地 Excel 详情采集 |
+| `link-detail` | 单链接详情调试 |
+| `report` | 生成报告 |
+
+单链接调试：
 
 ```powershell
 .\scripts\run.ps1 -Task link-detail -SingleLink "https://ur.alipay.com/..."
 ```
 
-通过脚本直接看 JSON：
+检查表头：
 
 ```powershell
-python .\scripts\crawl_one_link.py "https://ur.alipay.com/..."
-python .\scripts\crawl_one_link.py "https://ur.alipay.com/..." --skip-check
+.\scripts\run.ps1 -Task doc-columns-check `
+  -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
 ```
 
-### 3.6 大 V 主页统计
+## 7. 常用排查
+
+看设备：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-daily-rows -ReportDate 2026-06-04
-.\scripts\run.ps1 -Task profile-metrics
+adb devices -l
 ```
 
-拆分排查：
-
-```powershell
-.\scripts\run.ps1 -Task profile-sync
-.\scripts\run.ps1 -Task profile-create-tasks -ReportDate 2026-06-04
-.\scripts\run.ps1 -Task profile-crawl
-.\scripts\run.ps1 -Task profile-writeback
-```
-
-### 3.7 文章详情
-
-一体流程：
-
-```powershell
-.\scripts\run.ps1 -Task article-details
-```
-
-拆分排查：
-
-```powershell
-.\scripts\run.ps1 -Task article-sync
-.\scripts\run.ps1 -Task article-crawl
-.\scripts\run.ps1 -Task article-writeback
-```
-
-## 4. 根目录 `.cmd` 脚本
-
-| 脚本 | 作用 | 示例 |
-| --- | --- | --- |
-| `start_supervisor.cmd` | 双击启动 supervisor，适合常驻任务。 | `.\start_supervisor.cmd` |
-| `backfill_detail_by_date.cmd` | 按一个或多个日期导入并跑详情。 | `.\backfill_detail_by_date.cmd 2026-05-26 2026-05-27` |
-
-两个脚本都支持 `--dry-run`：
-
-```powershell
-.\start_supervisor.cmd --dry-run
-.\backfill_detail_by_date.cmd --dry-run 2026-05-26
-```
-
-## 5. 维护脚本
-
-### `scripts/crawl_one_link.py`
-
-直接打开一个链接并打印初检/详情 JSON。用于定位 App 打开、UI 节点、OCR 或解析问题。
-
-```powershell
-python .\scripts\crawl_one_link.py "https://ur.alipay.com/..."
-```
-
-### `scripts/fill_antfortune_xlsx.py`
-
-读取本地蚂蚁财富 Excel，通过手机采集并写出一个新 Excel。表头需要包含：
-
-```text
-发帖账号
-链接
-阅读数
-评论数
-```
-
-示例：
-
-```powershell
-python .\scripts\fill_antfortune_xlsx.py ".\input.xlsx" --limit 10
-python .\scripts\fill_antfortune_xlsx.py ".\input.xlsx" --sheet Sheet1 --save-as ".\output.xlsx" --force
-```
-
-### `scripts/repair_initial_check_link.py`
-
-重跑单条初检并可写回腾讯文档。用于修正某一行误判。
-
-```powershell
-python .\scripts\repair_initial_check_link.py "https://ur.alipay.com/..." --dry-run
-python .\scripts\repair_initial_check_link.py "https://ur.alipay.com/..."
-```
-
-### `scripts/replay_tencent_docs_writebacks.py`
-
-不重新打开手机，只把 MySQL 中失败的腾讯文档详情写回重放一次。适合 token 限流、batchUpdate 临时失败后的补写。
-
-```powershell
-python .\scripts\replay_tencent_docs_writebacks.py --dry-run
-python .\scripts\replay_tencent_docs_writebacks.py --error-like "Requests Use Up" --batch-size 5
-```
-
-## 6. 排查命令
-
-查看是否有任务进程：
+看进程：
 
 ```powershell
 Get-CimInstance Win32_Process |
-  Where-Object { $_.CommandLine -match 'apps\.finance_crawler\.app' -or $_.CommandLine -match 'run\.ps1' } |
-  Select-Object ProcessId, Name, CommandLine
+  Where-Object { $_.CommandLine -match 'finance_crawler|run\.ps1' } |
+  Select-Object ProcessId,Name,CommandLine
 ```
 
-查看最新日志：
+看最新日志：
 
 ```powershell
 Get-ChildItem apps\finance_crawler\logs |
   Sort-Object LastWriteTime -Descending |
-  Select-Object -First 5 Name, LastWriteTime, Length
+  Select-Object -First 5 Name,LastWriteTime,Length
 
 Get-Content apps\finance_crawler\logs\<date>.log -Tail 120
 ```
 
-查看最近 git 变更：
+看 git 状态：
 
 ```powershell
 git status --short

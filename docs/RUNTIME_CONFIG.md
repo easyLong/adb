@@ -2,14 +2,10 @@
 
 项目配置分两类：
 
-| 类型 | 位置 | 用途 |
+| 类型 | 位置 | 说明 |
 | --- | --- | --- |
-| MySQL 连接 | 根目录 `.env` 或环境变量 | 连接数据库 |
-| 业务运行配置 | MySQL `data_source_links` / `app_config` | 文档 URL、调度频率、列范围、任务开关 |
-
-启动任务时会调用 `load_runtime_config()`，把 MySQL 配置覆盖到 `Config`。
-
-## 修改配置
+| MySQL 连接 | 根目录 `.env` 或系统环境变量 | 只存数据库连接信息 |
+| 业务运行配置 | MySQL `app_config` / `data_source_links` | 文档 URL、OpenAPI token、调度时间、worker 间隔、采集策略 |
 
 查看配置：
 
@@ -17,30 +13,34 @@
 .\scripts\run.ps1 -Task config
 ```
 
-更新配置：
+更新单个配置：
 
 ```powershell
 .\scripts\run.ps1 -Task config -ConfigSet KEY=VALUE
 ```
 
-一次更新多个：
+一次更新多个配置：
 
 ```powershell
 .\scripts\run.ps1 -Task config `
-  -ConfigSet PROFILE_METRICS_READ_RANGE=A1:H2000 `
-  -ConfigSet PROFILE_METRICS_TEMPLATE_RANGE=A2:H126 `
-  -ConfigSet PROFILE_METRICS_DAILY_PREPARE_TIME=00:10
+  -ConfigSet KOL_DAILY_CRAWL_TIME=08:00 `
+  -ConfigSet KOL_DAILY_SNAPSHOT_TIME=22:00
 ```
 
-## 数据源配置
+## MySQL
 
-| Key | 说明 |
-| --- | --- |
-| `TENCENT_DOC_URL` | 通用帖子详情腾讯文档 |
-| `PROFILE_METRICS_DOC_URL` | 大 V 主页统计腾讯文档 |
-| `ARTICLE_DETAILS_DOC_URL` | 需求 1 文章详情腾讯文档 |
-| `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 详情采集输入文件 |
-| `SINGLE_TEST_LINK` | 单链接详情测试 |
+`.env` 示例：
+
+```powershell
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=...
+MYSQL_DATABASE=crawler_app
+MYSQL_APP_DATABASE=crawler_app
+```
+
+当前新版本默认库是 `crawler_app`。
 
 ## 腾讯文档 OpenAPI
 
@@ -52,83 +52,128 @@
 | `TENCENT_DOC_CLIENT_SECRET` | 可选，用于换 token |
 | `TENCENT_DOC_TOKEN_URL` | token 地址 |
 
-## 通用调度
+这些配置放在运行时配置表里，不放在 `.env`。
 
-| Key | 默认 | 说明 |
-| --- | --- | --- |
-| `FETCH_INTERVAL_MINUTES` | `5` | 腾讯文档候选链接扫描间隔 |
-| `CHECK_INTERVAL_MINUTES` | `10` | 初检任务扫描间隔 |
-| `DETAIL_INTERVAL_MINUTES` | `10` | 到期详情任务扫描间隔 |
-| `REPORT_TIME` | `11:30` | 每日报告时间 |
-| `HEARTBEAT_INTERVAL_MINUTES` | `30` | scheduler 心跳 |
+## 数据源
 
-## 大 V 粉丝数
+| Key | 说明 |
+| --- | --- |
+| `TENCENT_DOC_URL` | 通用文档 URL，旧链路和部分调试命令使用 |
+| `KOL_DAILY_SNAPSHOT_DOC_URL` | KOL 基础数据来源文档 |
+| `KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL` | KOL 每日结果表，目前是 `wpvy0d` |
+| `PROFILE_METRICS_DOC_URL` | 旧版主页统计文档 |
+| `ARTICLE_DETAILS_DOC_URL` | 文章详情文档 |
+| `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 输入路径 |
+| `SINGLE_TEST_LINK` | 单链接调试 |
+
+普通帖子/链接型在线文档不建议只依赖 `TENCENT_DOC_URL`，应通过 `document_trigger_configs` 配置基础 URL、sheet 选择规则和任务绑定。
+
+## Scheduler 和 Worker
 
 | Key | 当前建议 | 说明 |
 | --- | --- | --- |
-| `PROFILE_METRICS_DOC_URL` | 业务文档 URL | 大 V 统计文档 |
-| `PROFILE_METRICS_READ_RANGE` | `A1:H2000` | 同步和写回使用的读取范围 |
-| `PROFILE_METRICS_TEMPLATE_RANGE` | `A2:H126` | 每日生成行的模板范围 |
-| `PROFILE_METRICS_DAILY_PREPARE_TIME` | `00:10` | 每天生成当天行的时间；为空则关闭 |
-| `PROFILE_METRICS_INTERVAL_MINUTES` | `60` | 周期抓粉丝数间隔；0 关闭 |
-| `PROFILE_METRICS_CRAWL_LIMIT` | `0` | 单轮限制，0 表示不限制 |
-| `PROFILE_METRICS_TARGET_DATE` | 空 | 固定目标日期；日常调度应留空 |
-| `PROFILE_METRICS_WRITEBACK_ENABLED` | `True` | 是否写回腾讯文档 E/F 列 |
+| `ENABLE_LEGACY_SCHEDULER_JOBS` | `false` | 是否启用旧版 fetch/check/detail/report 周期任务 |
+| `SUBMIT_WORKER_INTERVAL_SECONDS` | `300` | document submit worker 唤醒间隔，建议 5 分钟 |
+| `V2_CRAWL_WORKER_INTERVAL_SECONDS` | `30` | document crawl worker 唤醒间隔 |
+| `V2_WRITEBACK_WORKER_INTERVAL_SECONDS` | `30` | document writeback worker 唤醒间隔 |
+| `HEARTBEAT_INTERVAL_MINUTES` | `30` | scheduler 心跳 |
+| `TASK_RUNNING_TIMEOUT_MINUTES` | `360` | running 任务超时回收 |
 
-日常建议：
+每个 document trigger 还有自己的 `scan_interval_seconds`，用于控制同一个在线文档多久真正扫描一次。当前建议 trigger 级别设置为 `600` 秒。
 
-```text
-PROFILE_METRICS_TEMPLATE_RANGE=A2:H126
-PROFILE_METRICS_READ_RANGE=A1:H2000
-PROFILE_METRICS_DAILY_PREPARE_TIME=00:10
-PROFILE_METRICS_INTERVAL_MINUTES=60
-PROFILE_METRICS_TARGET_DATE=
-```
+常驻进程每次任务开始前会重新加载运行时配置。
 
-## 大 V 主页帖子阅读数
-
-| Key | 说明 |
-| --- | --- |
-| `PROFILE_POST_READ_CRAWL_LIMIT` | 单轮抓取限制，0 不限制 |
-| `PROFILE_POST_READ_MAX_SCROLLS` | 主页最多滚动页数 |
-| `PROFILE_POST_READ_MAX_POSTS` | 同一日期最多取多少帖子 |
-
-## 需求 1 文章详情
-
-| Key | 说明 |
-| --- | --- |
-| `ARTICLE_DETAILS_DOC_URL` | 文章详情腾讯文档 |
-| `ARTICLE_DETAILS_READ_RANGE` | 读取范围，默认 `A1:O2000` |
-| `ARTICLE_DETAILS_CRAWL_LIMIT` | 单轮抓取限制 |
-| `ARTICLE_DETAILS_WRITEBACK_ENABLED` | 是否写回腾讯文档 |
-
-## K 列链接阅读数
+## KOL 每日生成和主页采集
 
 | Key | 默认 | 说明 |
 | --- | --- | --- |
-| `DOC_LINK_READS_READ_RANGE` | `A1:M2000` | 读取范围 |
-| `DOC_LINK_READS_SHEET_TITLE` | 空 | 固定 sheet 标题，通常用 `--report-date` |
-| `DOC_LINK_READS_CRAWL_LIMIT` | `0` | 单轮限制 |
-| `DOC_LINK_READS_ONLY_EMPTY` | `True` | 只处理阅读数空值 |
-| `DOC_LINK_READS_LINK_COL` | `10` | 链接列，K 列 |
-| `DOC_LINK_READS_READ_COL` | `12` | 阅读数列，M 列 |
-| `DOC_LINK_READS_ENABLE_OCR` | `True` | 是否启用 OCR |
-| `DOC_LINK_READS_OPEN_RETRIES` | `2` | 打开失败重试次数 |
+| `KOL_DAILY_SNAPSHOT_READ_RANGE` | `A1:H2000` | 读取 KOL 基础信息来源表范围 |
+| `KOL_DAILY_SNAPSHOT_TIME` | `22:00` | 每天生成明日 `wpvy0d` 行 |
+| `KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS` | `1` | 写回几天的快照行 |
+| `KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS` | `1` | 22:00 生成目标日期偏移；`1` 表示明天 |
+| `KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE` | `10` | 写入 `wpvy0d` 的字号 |
+| `KOL_DAILY_CRAWL_TIME` | `08:00` | 每天采集今日 `wpvy0d` 主页指标 |
+| `KOL_DAILY_CRAWL_LIMIT` | `0` | 单次 profile trigger 采集限制；`0` 表示不限制 |
 
-## 手机和恢复
+`KOL_DAILY_CRAWL_TIME` 触发的是 profile 链路：
+
+```text
+profile_trigger_configs.kol_daily_metrics_wpvy0d
+```
+
+不是 document trigger。
+
+## Profile 主页动作模板
+
+主页动作模板存在 `profile_action_profiles`。
+
+| action_profile_key | 说明 |
+| --- | --- |
+| `alipay_profile_daily_metrics_v1` | 支付宝主页粉丝数、最近 3 条帖子阅读数取最大 |
+| `antfortune_profile_daily_metrics_v1` | 蚂蚁财富主页粉丝数、最近 3 条帖子阅读数取最大 |
+| `tenpay_profile_daily_metrics_v1` | 理财通主页采集，带 OCR 兜底 |
+| `unknown_profile_daily_metrics_v1` | 兜底模板 |
+
+profile trigger 的 `action_profile_key` 可以为空。为空时，系统按每行主页链接识别 `app_type`，自动选择对应 action profile。
+
+## Document 采集动作模板
+
+帖子/链接型动作模板存在 `capture_action_profiles`。
+
+执行时按以下维度选择动作：
+
+```text
+app_type + task_type + requested_fields
+```
+
+例如：
+
+```text
+alipay + detail + account_name,read_count,screenshot
+```
+
+每个 App 单独配置，不要把 `alipay,antfortune` 写成一个组合。因为不同 App 的页面结构、等待、点击、OCR 策略可能不同。
+
+## 设备和 App 恢复
 
 | Key | 说明 |
 | --- | --- |
 | `ADB_PATH` | ADB 路径，默认优先使用 `platform-tools/adb.exe` |
-| `DEVICE_SERIAL` | 指定设备序列号，空则自动选 |
-| `APP_OPEN_RECOVERY_RETRIES` | 页面白屏、卡死等恢复重试次数 |
-| `APP_RESTART_WAIT` | force-stop 后等待秒数 |
-| `TASK_RUNNING_TIMEOUT_MINUTES` | running 任务超时回收 |
+| `DEVICE_SERIAL` | 指定设备序列号，空则自动选择可用设备 |
+| `DEVICE_CHECK_TIMEOUT` | 设备检测超时 |
+| `DEVICE_HEALTH_CACHE_SECONDS` | 设备健康检查缓存时间 |
+| `DEVICE_AUTO_RECONNECT` | 是否自动重连 |
+| `DEVICE_RECONNECT_RETRIES` | 自动重连次数 |
+| `APP_OPEN_RECOVERY_RETRIES` | 页面异常时 App 恢复重试次数 |
+| `APP_RESTART_WAIT` | force-stop 后等待时间 |
+| `PAGE_LOAD_WAIT` | 打开页面后的基础等待 |
+| `DETAIL_SCROLL_WAIT` | 滑动后的等待 |
+
+项目只抽象执行设备，不抽象桌面或浏览器。执行设备统一是 ADB 手机，只是连接方式可能是 USB、WiFi 或后续其他 ADB 适配方式。
+
+## 旧 Profile 配置
+
+这些配置仍保留，用于旧版 profile 拆分链路排查：
+
+| Key | 说明 |
+| --- | --- |
+| `PROFILE_METRICS_READ_RANGE` | 旧 profile 表读取范围 |
+| `PROFILE_METRICS_TEMPLATE_RANGE` | 旧 profile 每日行模板范围 |
+| `PROFILE_METRICS_DAILY_PREPARE_TIME` | 旧 profile 每日生成行时间，空则关闭 |
+| `PROFILE_METRICS_INTERVAL_MINUTES` | 旧 profile 周期采集间隔；`0` 关闭 |
+| `PROFILE_METRICS_CRAWL_LIMIT` | 旧 profile 单轮限制 |
+| `PROFILE_METRICS_TARGET_DATE` | 固定目标日期，日常不要设置 |
+| `PROFILE_METRICS_WRITEBACK_ENABLED` | 是否写回 |
+| `PROFILE_POST_READ_MAX_SCROLLS` | 主页帖子阅读数最多滚动页数 |
+| `PROFILE_POST_READ_MAX_POSTS` | 主页帖子阅读数最多取几条帖子 |
+| `PROFILE_POST_READ_CRAWL_LIMIT` | 主页帖子阅读数单轮限制 |
+
+新 KOL 主页自动化优先走 `profile_trigger_configs`。
 
 ## 注意事项
 
-- 日常不要固定 `PROFILE_METRICS_TARGET_DATE`，否则 scheduler 会一直抓同一天。
-- `PROFILE_METRICS_DAILY_PREPARE_TIME` 只生成行，不直接抓取；抓取由 `PROFILE_METRICS_INTERVAL_MINUTES` 控制。
-- 每日行生成按主页链接去重，重复执行不会重复追加。
-- 如果手动改了模板范围，确认范围内只包含模板账号行，不要包含历史日期块。
-- Tencent Docs column-number settings are fallbacks. Runtime prefers row-1 titles when reading and writing sheet columns.
+- 日常不要固定 `PROFILE_METRICS_TARGET_DATE`，否则旧 profile 链路会一直抓同一天。
+- `KOL_DAILY_SNAPSHOT_TIME=22:00` 只生成明日行，不采集。
+- `KOL_DAILY_CRAWL_TIME=08:00` 才采集今日主页数据。
+- 文档字段优先按表头 title 识别，列号配置只是兜底。
+- 写回图片时要走腾讯文档图片上传，不应把本地路径当最终截图结果。

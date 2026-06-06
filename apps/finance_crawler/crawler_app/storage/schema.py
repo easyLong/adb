@@ -1,0 +1,800 @@
+"""Schema for the document-driven crawler_app database."""
+
+from __future__ import annotations
+
+
+def ensure_crawler_app_tables(cursor) -> None:
+    _rename_table_if_needed(cursor, "crawl_tasks", "task_submissions")
+    _rename_table_if_needed(cursor, "crawl_task_runs", "task_executions")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS documents (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            source_type VARCHAR(64) NOT NULL,
+            doc_url TEXT NOT NULL,
+            file_id VARCHAR(128) NULL,
+            title VARCHAR(255) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_documents_file (source_type, file_id),
+            INDEX idx_documents_source (source_type),
+            INDEX idx_documents_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS document_sheets (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            document_id BIGINT UNSIGNED NOT NULL,
+            sheet_id VARCHAR(128) NOT NULL,
+            sheet_title VARCHAR(255) NOT NULL,
+            business_date DATE NULL,
+            header_row_index INT NOT NULL DEFAULT 0,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_document_sheet (document_id, sheet_id),
+            INDEX idx_document_sheets_date (business_date),
+            INDEX idx_document_sheets_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kol_base_profiles (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            kol_name VARCHAR(255) NOT NULL,
+            platform VARCHAR(64) NOT NULL,
+            homepage_url TEXT NULL,
+            group_name VARCHAR(64) NULL,
+            kol_type VARCHAR(64) NOT NULL DEFAULT 'other',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_kol_base_profile (kol_name, platform),
+            INDEX idx_kol_base_profile_name (kol_name),
+            INDEX idx_kol_base_profile_platform (platform),
+            INDEX idx_kol_base_profile_type (kol_type),
+            INDEX idx_kol_base_profile_group (group_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _drop_index_if_exists(cursor, "kol_base_profiles", "uk_kol_base_profile")
+    _drop_column_if_exists(cursor, "kol_base_profiles", "source_date")
+    _drop_column_if_exists(cursor, "kol_base_profiles", "source_file_id")
+    _drop_column_if_exists(cursor, "kol_base_profiles", "mapping_sheet_id")
+    _drop_column_if_exists(cursor, "kol_base_profiles", "info_sheet_id")
+    _drop_column_if_exists(cursor, "kol_base_profiles", "source_row_index")
+    _add_unique_index_if_missing(
+        cursor,
+        "kol_base_profiles",
+        "uk_kol_base_profile",
+        "kol_name, platform",
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kol_daily_snapshots (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            kol_profile_id BIGINT UNSIGNED NULL,
+            snapshot_date DATE NOT NULL,
+            kol_name VARCHAR(255) NOT NULL,
+            platform VARCHAR(64) NOT NULL,
+            homepage_url TEXT NULL,
+            group_name VARCHAR(64) NULL,
+            kol_type VARCHAR(64) NOT NULL DEFAULT 'other',
+            fans_count BIGINT NULL,
+            growth_count BIGINT NULL,
+            read_count BIGINT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_kol_daily_snapshot (snapshot_date, kol_name, platform),
+            INDEX idx_kol_daily_profile (kol_profile_id),
+            INDEX idx_kol_daily_date (snapshot_date),
+            INDEX idx_kol_daily_platform (platform),
+            INDEX idx_kol_daily_type (kol_type),
+            INDEX idx_kol_daily_group (group_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_action_profiles (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            action_profile_key VARCHAR(128) NOT NULL,
+            app_type VARCHAR(64) NOT NULL,
+            task_type VARCHAR(64) NOT NULL,
+            field_combo VARCHAR(512) NOT NULL,
+            action_combo VARCHAR(512) NOT NULL,
+            field_names_json LONGTEXT NOT NULL,
+            action_names_json LONGTEXT NOT NULL,
+            action_config_json LONGTEXT NULL,
+            aggregation_policy_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            priority INT NOT NULL DEFAULT 0,
+            description VARCHAR(255) NULL,
+            updated_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_action_key (action_profile_key),
+            UNIQUE KEY uk_profile_action_profile (app_type, task_type, field_combo(191)),
+            INDEX idx_profile_action_status (status),
+            INDEX idx_profile_action_app_task (app_type, task_type),
+            INDEX idx_profile_action_priority (priority)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_trigger_configs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            config_key VARCHAR(128) NOT NULL,
+            source_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            doc_url TEXT NOT NULL,
+            file_id VARCHAR(128) NULL,
+            sheet_id VARCHAR(128) NULL,
+            read_range VARCHAR(64) NOT NULL DEFAULT 'A1:I5000',
+            row_adapter VARCHAR(64) NOT NULL DEFAULT 'kol_daily_profile',
+            source_name VARCHAR(191) NOT NULL,
+            task_type VARCHAR(64) NOT NULL DEFAULT 'profile_daily_metrics',
+            requested_fields_json LONGTEXT NOT NULL,
+            action_profile_key VARCHAR(128) NULL,
+            aggregation_policy_json LONGTEXT NULL,
+            schedule_time VARCHAR(16) NULL,
+            target_date_offset_days INT NOT NULL DEFAULT 0,
+            scan_interval_seconds INT NOT NULL DEFAULT 300,
+            next_scan_at DATETIME NULL,
+            last_scan_at DATETIME NULL,
+            scan_status VARCHAR(32) NOT NULL DEFAULT 'idle',
+            locked_by VARCHAR(128) NULL,
+            locked_until DATETIME NULL,
+            last_error TEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            description VARCHAR(255) NULL,
+            updated_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_trigger_config (config_key),
+            INDEX idx_profile_trigger_due (status, next_scan_at),
+            INDEX idx_profile_trigger_file (source_type, file_id),
+            INDEX idx_profile_trigger_status (scan_status),
+            INDEX idx_profile_trigger_lock (locked_until)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_trigger_runs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            trigger_config_id BIGINT UNSIGNED NULL,
+            config_key VARCHAR(128) NULL,
+            trigger_type VARCHAR(64) NOT NULL DEFAULT 'scheduled',
+            target_date DATE NULL,
+            action_profile_key VARCHAR(128) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'running',
+            file_id VARCHAR(128) NULL,
+            sheet_id VARCHAR(128) NULL,
+            sheet_title VARCHAR(255) NULL,
+            source_rows INT NOT NULL DEFAULT 0,
+            submitted_sources INT NOT NULL DEFAULT 0,
+            skipped_rows INT NOT NULL DEFAULT 0,
+            fans_crawled INT NOT NULL DEFAULT 0,
+            read_crawled INT NOT NULL DEFAULT 0,
+            written_rows INT NOT NULL DEFAULT 0,
+            failed_rows INT NOT NULL DEFAULT 0,
+            summary_json LONGTEXT NULL,
+            error TEXT NULL,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME NULL,
+            INDEX idx_profile_trigger_runs_config (trigger_config_id),
+            INDEX idx_profile_trigger_runs_key (config_key),
+            INDEX idx_profile_trigger_runs_status (status),
+            INDEX idx_profile_trigger_runs_date (target_date),
+            INDEX idx_profile_trigger_runs_started (started_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _insert_default_profile_action_profiles(cursor)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS column_mappings (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            document_id BIGINT UNSIGNED NOT NULL,
+            sheet_id VARCHAR(128) NOT NULL,
+            header_row_index INT NOT NULL DEFAULT 0,
+            header_hash CHAR(64) NOT NULL,
+            mapping_json LONGTEXT NOT NULL,
+            resolution_json LONGTEXT NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_column_mapping_header (document_id, sheet_id, header_hash),
+            INDEX idx_column_mapping_sheet (document_id, sheet_id),
+            INDEX idx_column_mapping_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_rows (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            document_id BIGINT UNSIGNED NOT NULL,
+            sheet_id VARCHAR(128) NOT NULL,
+            column_mapping_id BIGINT UNSIGNED NOT NULL,
+            row_index INT NOT NULL,
+            business_date DATE NULL,
+            post_url VARCHAR(1000) NOT NULL,
+            account_name VARCHAR(255) NULL,
+            post_time VARCHAR(128) NULL,
+            row_hash CHAR(64) NOT NULL,
+            row_json LONGTEXT NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_source_row_position (document_id, sheet_id, row_index),
+            INDEX idx_source_rows_url (post_url(191)),
+            INDEX idx_source_rows_hash (row_hash),
+            INDEX idx_source_rows_date (business_date),
+            INDEX idx_source_rows_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS document_task_configs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            config_key VARCHAR(128) NOT NULL,
+            source_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            doc_url TEXT NOT NULL,
+            file_id VARCHAR(128) NULL,
+            sheet_id VARCHAR(128) NULL,
+            task_type VARCHAR(64) NOT NULL,
+            field_names_json LONGTEXT NOT NULL,
+            sheet_selector_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            priority INT NOT NULL DEFAULT 0,
+            max_attempts INT NOT NULL DEFAULT 3,
+            description VARCHAR(255) NULL,
+            updated_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_document_task_config (config_key),
+            INDEX idx_document_task_config_status (status),
+            INDEX idx_document_task_config_file (source_type, file_id),
+            INDEX idx_document_task_config_task (task_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS document_trigger_configs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            config_key VARCHAR(128) NOT NULL,
+            source_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            doc_url TEXT NOT NULL,
+            file_id VARCHAR(128) NULL,
+            sheet_selector_json LONGTEXT NULL,
+            submit_policy_json LONGTEXT NULL,
+            scan_interval_seconds INT NOT NULL DEFAULT 300,
+            next_scan_at DATETIME NULL,
+            last_scan_at DATETIME NULL,
+            scan_status VARCHAR(32) NOT NULL DEFAULT 'idle',
+            locked_by VARCHAR(128) NULL,
+            locked_until DATETIME NULL,
+            last_error TEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            description VARCHAR(255) NULL,
+            updated_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_document_trigger_config (config_key),
+            INDEX idx_document_trigger_due (status, next_scan_at),
+            INDEX idx_document_trigger_file (source_type, file_id),
+            INDEX idx_document_trigger_lock (locked_until)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS document_trigger_bindings (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            config_id BIGINT UNSIGNED NOT NULL,
+            task_type VARCHAR(64) NOT NULL,
+            field_names_json LONGTEXT NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            priority INT NOT NULL DEFAULT 0,
+            max_attempts INT NOT NULL DEFAULT 3,
+            description VARCHAR(255) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_document_trigger_binding (config_id, task_type),
+            INDEX idx_document_trigger_binding_config (config_id, status),
+            INDEX idx_document_trigger_binding_task (task_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS submit_runs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            config_id BIGINT UNSIGNED NULL,
+            trigger_type VARCHAR(64) NOT NULL DEFAULT 'scheduled',
+            sheet_id VARCHAR(128) NULL,
+            sheet_title VARCHAR(255) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'running',
+            source_rows INT NOT NULL DEFAULT 0,
+            submitted_tasks INT NOT NULL DEFAULT 0,
+            skipped_rows INT NOT NULL DEFAULT 0,
+            summary_json LONGTEXT NULL,
+            error TEXT NULL,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME NULL,
+            INDEX idx_submit_runs_config (config_id),
+            INDEX idx_submit_runs_status (status),
+            INDEX idx_submit_runs_started (started_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_submissions (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            task_type VARCHAR(64) NOT NULL,
+            source_row_id BIGINT UNSIGNED NULL,
+            document_id BIGINT UNSIGNED NOT NULL,
+            sheet_id VARCHAR(128) NOT NULL,
+            row_index INT NOT NULL,
+            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
+            post_url VARCHAR(1000) NOT NULL,
+            account_name VARCHAR(255) NULL,
+            post_time VARCHAR(128) NULL,
+            source_locator_json LONGTEXT NOT NULL,
+            dedupe_key CHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            priority INT NOT NULL DEFAULT 0,
+            attempts INT NOT NULL DEFAULT 0,
+            max_attempts INT NOT NULL DEFAULT 3,
+            latest_execution_id BIGINT UNSIGNED NULL,
+            last_error TEXT NULL,
+            created_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_task_submissions_dedupe (dedupe_key),
+            INDEX idx_task_submissions_status (status),
+            INDEX idx_task_submissions_app (app_type),
+            INDEX idx_task_submissions_sheet (document_id, sheet_id),
+            INDEX idx_task_submissions_url (post_url(191))
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS capture_action_profiles (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            app_type VARCHAR(64) NOT NULL,
+            task_type VARCHAR(64) NOT NULL,
+            field_combo VARCHAR(512) NOT NULL,
+            action_combo VARCHAR(512) NOT NULL,
+            field_combo_hash CHAR(64) NOT NULL,
+            action_combo_hash CHAR(64) NOT NULL,
+            field_names_json LONGTEXT NOT NULL,
+            action_names_json LONGTEXT NOT NULL,
+            capture_config_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            priority INT NOT NULL DEFAULT 0,
+            description VARCHAR(255) NULL,
+            updated_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_capture_action_profile (app_type, task_type, field_combo_hash),
+            INDEX idx_capture_action_status (status),
+            INDEX idx_capture_action_app_task (app_type, task_type),
+            INDEX idx_capture_action_field_hash (field_combo_hash),
+            INDEX idx_capture_action_priority (priority)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _insert_default_capture_action_profiles(cursor)
+    _rename_column_if_needed(
+        cursor,
+        "task_submissions",
+        "latest_run_id",
+        "latest_execution_id",
+        "BIGINT UNSIGNED NULL",
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_executions (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            submission_id BIGINT UNSIGNED NOT NULL,
+            attempt_no INT NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'running',
+            opened_url VARCHAR(1000) NULL,
+            metrics_json LONGTEXT NULL,
+            result_json LONGTEXT NULL,
+            screenshot_path VARCHAR(700) NULL,
+            error TEXT NULL,
+            started_at DATETIME NULL,
+            heartbeat_at DATETIME NULL,
+            finished_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_task_execution_attempt (submission_id, attempt_no),
+            INDEX idx_task_executions_submission (submission_id),
+            INDEX idx_task_executions_status (status),
+            INDEX idx_task_executions_finished (finished_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _rename_column_if_needed(
+        cursor,
+        "task_executions",
+        "task_id",
+        "submission_id",
+        "BIGINT UNSIGNED NOT NULL",
+    )
+    _add_column_if_missing(cursor, "task_executions", "opened_url", "VARCHAR(1000) NULL AFTER status")
+    _add_column_if_missing(cursor, "task_executions", "metrics_json", "LONGTEXT NULL AFTER opened_url")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS writeback_plans (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            submission_id BIGINT UNSIGNED NULL,
+            execution_id BIGINT UNSIGNED NULL,
+            document_id BIGINT UNSIGNED NOT NULL,
+            sheet_id VARCHAR(128) NOT NULL,
+            row_index INT NOT NULL,
+            column_mapping_id BIGINT UNSIGNED NOT NULL,
+            field_name VARCHAR(64) NOT NULL,
+            value_text TEXT NULL,
+            payload_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'planned',
+            error TEXT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            applied_at DATETIME NULL,
+            INDEX idx_writeback_plans_status (status),
+            INDEX idx_writeback_plans_submission (submission_id),
+            INDEX idx_writeback_plans_sheet (document_id, sheet_id),
+            INDEX idx_writeback_plans_field (field_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _rename_column_if_needed(cursor, "writeback_plans", "task_id", "submission_id", "BIGINT UNSIGNED NULL")
+    _rename_column_if_needed(cursor, "writeback_plans", "run_id", "execution_id", "BIGINT UNSIGNED NULL")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corrections (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            target_type VARCHAR(64) NOT NULL,
+            target_id BIGINT UNSIGNED NULL,
+            document_id BIGINT UNSIGNED NULL,
+            sheet_id VARCHAR(128) NULL,
+            row_index INT NULL,
+            field_name VARCHAR(64) NULL,
+            old_value TEXT NULL,
+            new_value TEXT NULL,
+            reason TEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'planned',
+            operator_name VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            applied_at DATETIME NULL,
+            INDEX idx_corrections_target (target_type, target_id),
+            INDEX idx_corrections_status (status),
+            INDEX idx_corrections_sheet (document_id, sheet_id, row_index)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+
+
+def _rename_table_if_needed(cursor, old_name: str, new_name: str) -> None:
+    if _table_exists(cursor, new_name) or not _table_exists(cursor, old_name):
+        return
+    cursor.execute(f"RENAME TABLE `{old_name}` TO `{new_name}`")
+
+
+def _table_exists(cursor, table_name: str) -> bool:
+    cursor.execute("SHOW TABLES LIKE %s", (table_name,))
+    return cursor.fetchone() is not None
+
+
+def _rename_column_if_needed(
+    cursor,
+    table_name: str,
+    old_name: str,
+    new_name: str,
+    column_definition: str,
+) -> None:
+    if not _column_exists(cursor, table_name, old_name) or _column_exists(cursor, table_name, new_name):
+        return
+    cursor.execute(
+        f"ALTER TABLE `{table_name}` CHANGE COLUMN `{old_name}` `{new_name}` {column_definition}"
+    )
+
+
+def _column_exists(cursor, table_name: str, column_name: str) -> bool:
+    cursor.execute(f"SHOW COLUMNS FROM `{table_name}` LIKE %s", (column_name,))
+    return cursor.fetchone() is not None
+
+
+def _add_column_if_missing(cursor, table_name: str, column_name: str, column_definition: str) -> None:
+    if _column_exists(cursor, table_name, column_name):
+        return
+    cursor.execute(f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {column_definition}")
+
+
+def _drop_column_if_exists(cursor, table_name: str, column_name: str) -> None:
+    if not _column_exists(cursor, table_name, column_name):
+        return
+    cursor.execute(f"ALTER TABLE `{table_name}` DROP COLUMN `{column_name}`")
+
+
+def _drop_index_if_exists(cursor, table_name: str, index_name: str) -> None:
+    if not _index_exists(cursor, table_name, index_name):
+        return
+    cursor.execute(f"ALTER TABLE `{table_name}` DROP INDEX `{index_name}`")
+
+
+def _add_unique_index_if_missing(cursor, table_name: str, index_name: str, columns: str) -> None:
+    if _index_exists(cursor, table_name, index_name):
+        return
+    cursor.execute(f"ALTER TABLE `{table_name}` ADD UNIQUE KEY `{index_name}` ({columns})")
+
+
+def _index_exists(cursor, table_name: str, index_name: str) -> bool:
+    cursor.execute(f"SHOW INDEX FROM `{table_name}` WHERE Key_name = %s", (index_name,))
+    return cursor.fetchone() is not None
+
+
+def _insert_default_capture_action_profiles(cursor) -> None:
+    rows = [
+        (
+            "unknown",
+            "read_count",
+            "read_count",
+            "open_link,ui_controls,screenshot,tap_retry",
+            '["read_count"]',
+            '["open_link","ui_controls","screenshot","tap_retry"]',
+            '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+            0,
+            "Default read-count profile for simple UI capture.",
+        ),
+        (
+            "alipay",
+            "read_count",
+            "read_count",
+            "open_link,ui_controls,screenshot,tap_retry",
+            '["read_count"]',
+            '["open_link","ui_controls","screenshot","tap_retry"]',
+            '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+            10,
+            "Alipay read-count profile using UI controls and screenshot.",
+        ),
+        (
+            "antfortune",
+            "read_count",
+            "read_count",
+            "open_link,ui_controls,screenshot,tap_retry",
+            '["read_count"]',
+            '["open_link","ui_controls","screenshot","tap_retry"]',
+            '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+            10,
+            "Ant Fortune read-count profile using UI controls and screenshot.",
+        ),
+        (
+            "tenpay",
+            "read_count",
+            "read_count",
+            "open_link,ui_controls,screenshot,ocr,tap_retry",
+            '["read_count"]',
+            '["open_link","ui_controls","screenshot","ocr","tap_retry"]',
+            '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+            20,
+            "Tenpay read-count profile with OCR enabled by app policy.",
+        ),
+        (
+            "unknown",
+            "article_detail",
+            "comment_count,screenshot",
+            "open_link,ui_controls,screenshot,scroll",
+            '["comment_count","screenshot"]',
+            '["open_link","ui_controls","screenshot","scroll"]',
+            '{"max_scrolls":1}',
+            0,
+            "Default article detail profile for comments and screenshot.",
+        ),
+        (
+            "tenpay",
+            "detail",
+            "trade_details",
+            "open_link,screenshot,ocr,scroll,click_detail",
+            '["trade_details"]',
+            '["open_link","screenshot","ocr","scroll","click_detail"]',
+            '{"max_scrolls":2}',
+            20,
+            "Tenpay detail profile requiring OCR and detail click actions.",
+        ),
+        (
+            "alipay",
+            "initial_check",
+            "account_name",
+            "open_link,ui_controls,screenshot",
+            '["account_name"]',
+            '["open_link","ui_controls","screenshot"]',
+            '{"max_scrolls":0}',
+            15,
+            "Online-doc check profile for account nickname in Alipay.",
+        ),
+        (
+            "antfortune",
+            "initial_check",
+            "account_name",
+            "open_link,ui_controls,screenshot",
+            '["account_name"]',
+            '["open_link","ui_controls","screenshot"]',
+            '{"max_scrolls":0}',
+            15,
+            "Online-doc check profile for account nickname in Ant Fortune.",
+        ),
+        (
+            "alipay",
+            "detail",
+            "account_name,read_count,screenshot",
+            "open_link,ui_controls,screenshot,tap_retry",
+            '["account_name","read_count","screenshot"]',
+            '["open_link","ui_controls","screenshot","tap_retry"]',
+            '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+            15,
+            "Online-doc detail profile for account nickname, read count, and screenshot in Alipay.",
+        ),
+        (
+            "antfortune",
+            "detail",
+            "account_name,read_count,screenshot",
+            "open_link,ui_controls,screenshot,tap_retry",
+            '["account_name","read_count","screenshot"]',
+            '["open_link","ui_controls","screenshot","tap_retry"]',
+            '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+            15,
+            "Online-doc detail profile for account nickname, read count, and screenshot in Ant Fortune.",
+        ),
+    ]
+    cursor.executemany(
+        """
+        INSERT INTO capture_action_profiles (
+            app_type, task_type, field_combo, action_combo,
+            field_combo_hash, action_combo_hash,
+            field_names_json, action_names_json, capture_config_json,
+            priority, description, updated_by
+        )
+        VALUES (
+            %s, %s, %s, %s,
+            SHA2(%s, 256), SHA2(%s, 256),
+            %s, %s, %s,
+            %s, %s, 'system'
+        )
+        ON DUPLICATE KEY UPDATE
+            action_combo = VALUES(action_combo),
+            action_combo_hash = VALUES(action_combo_hash),
+            action_names_json = VALUES(action_names_json),
+            capture_config_json = VALUES(capture_config_json),
+            priority = VALUES(priority),
+            description = VALUES(description),
+            status = 'active',
+            updated_by = 'system',
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        [
+            (
+                app_type,
+                task_type,
+                field_combo,
+                action_combo,
+                field_combo,
+                action_combo,
+                field_names_json,
+                action_names_json,
+                config_json,
+                priority,
+                description,
+            )
+            for (
+                app_type,
+                task_type,
+                field_combo,
+                action_combo,
+                field_names_json,
+                action_names_json,
+                config_json,
+                priority,
+                description,
+            ) in rows
+        ],
+    )
+    cursor.execute(
+        """
+        UPDATE capture_action_profiles
+        SET status = 'disabled',
+            description = CONCAT(COALESCE(description, ''), ' Disabled: split into per-app profiles.'),
+            updated_by = 'system',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE app_type = 'alipay,antfortune'
+          AND task_type IN ('initial_check', 'detail')
+          AND status = 'active'
+        """
+    )
+
+
+def _insert_default_profile_action_profiles(cursor) -> None:
+    rows = [
+        (
+            "alipay_profile_daily_metrics_v1",
+            "alipay",
+            "profile_daily_metrics",
+            "fans_count,growth_count,read_count",
+            "open_profile,capture_fans,open_exact_fans_if_abbreviated,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
+            '["fans_count","growth_count","read_count"]',
+            '["open_profile","capture_fans","open_exact_fans_if_abbreviated","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
+            '{"fans_count":{"exact_if_abbreviated":true},"read_count":{"recent_posts_limit":3,"ocr":false},"holding":{"enabled":false}}',
+            '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}',
+            20,
+            "Alipay profile metrics: exact fans when needed, max read count from recent 3 posts.",
+        ),
+        (
+            "antfortune_profile_daily_metrics_v1",
+            "antfortune",
+            "profile_daily_metrics",
+            "fans_count,growth_count,read_count",
+            "open_profile,capture_fans,open_exact_fans_if_abbreviated,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
+            '["fans_count","growth_count","read_count"]',
+            '["open_profile","capture_fans","open_exact_fans_if_abbreviated","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
+            '{"fans_count":{"exact_if_abbreviated":true},"read_count":{"recent_posts_limit":3,"ocr":false},"holding":{"enabled":false}}',
+            '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}',
+            20,
+            "Ant Fortune profile metrics: exact fans when needed, max read count from recent 3 posts.",
+        ),
+        (
+            "tenpay_profile_daily_metrics_v1",
+            "tenpay",
+            "profile_daily_metrics",
+            "fans_count,growth_count,read_count",
+            "open_profile,capture_fans,ocr_if_needed,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
+            '["fans_count","growth_count","read_count"]',
+            '["open_profile","capture_fans","ocr_if_needed","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
+            '{"fans_count":{"exact_if_abbreviated":true,"ocr":true},"read_count":{"recent_posts_limit":3,"ocr":true},"holding":{"enabled":false}}',
+            '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}',
+            10,
+            "Tenpay profile metrics with OCR fallback.",
+        ),
+        (
+            "unknown_profile_daily_metrics_v1",
+            "unknown",
+            "profile_daily_metrics",
+            "fans_count,growth_count,read_count",
+            "open_profile,capture_fans,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
+            '["fans_count","growth_count","read_count"]',
+            '["open_profile","capture_fans","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
+            '{"fans_count":{"exact_if_abbreviated":false},"read_count":{"recent_posts_limit":3,"ocr":false},"holding":{"enabled":false}}',
+            '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}',
+            0,
+            "Fallback profile metrics action profile.",
+        ),
+    ]
+    cursor.executemany(
+        """
+        INSERT INTO profile_action_profiles (
+            action_profile_key, app_type, task_type, field_combo, action_combo,
+            field_names_json, action_names_json, action_config_json,
+            aggregation_policy_json, priority, description, updated_by
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'system')
+        ON DUPLICATE KEY UPDATE
+            action_combo = VALUES(action_combo),
+            action_names_json = VALUES(action_names_json),
+            action_config_json = VALUES(action_config_json),
+            aggregation_policy_json = VALUES(aggregation_policy_json),
+            priority = VALUES(priority),
+            description = VALUES(description),
+            status = 'active',
+            updated_by = 'system',
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        rows,
+    )

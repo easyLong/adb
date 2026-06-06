@@ -24,9 +24,22 @@ class AdbDevice:
     serial: str
     state: str
     detail: str = ""
+    transport: str = "unknown"
+    model: str = ""
+    product: str = ""
+    device_name: str = ""
+
+    @property
+    def ready(self) -> bool:
+        return self.state == "device"
+
+    @property
+    def wireless(self) -> bool:
+        return self.transport == "wifi"
 
 
 _last_ready_serial: str | None = None
+_last_ready_device: AdbDevice | None = None
 _last_ready_checked_at = 0.0
 
 
@@ -74,8 +87,31 @@ def list_adb_devices() -> list[AdbDevice]:
         serial = parts[0]
         state = parts[1] if len(parts) > 1 else "unknown"
         detail = parts[2] if len(parts) > 2 else ""
-        devices.append(AdbDevice(serial=serial, state=state, detail=detail))
+        devices.append(
+            AdbDevice(
+                serial=serial,
+                state=state,
+                detail=detail,
+                transport=classify_adb_transport(serial, detail),
+                model=_detail_value(detail, "model"),
+                product=_detail_value(detail, "product"),
+                device_name=_detail_value(detail, "device"),
+            )
+        )
     return devices
+
+
+def classify_adb_transport(serial: str, detail: str = "") -> str:
+    if _is_connectable_wireless_serial(serial):
+        return "wifi"
+    if "transport_id:" in detail:
+        return "usb"
+    return "unknown"
+
+
+def _detail_value(detail: str, key: str) -> str:
+    match = re.search(rf"(?:^|\s){re.escape(key)}:([^\s]+)", detail or "")
+    return match.group(1) if match else ""
 
 
 def _is_connectable_wireless_serial(serial: str) -> bool:
@@ -175,16 +211,17 @@ def _select_device(devices: list[AdbDevice]) -> AdbDevice:
     return ready[0]
 
 
-def _check_device_ready_once(*, allow_cache: bool = True) -> str:
-    global _last_ready_checked_at, _last_ready_serial
+def _check_device_ready_once(*, allow_cache: bool = True) -> AdbDevice:
+    global _last_ready_checked_at, _last_ready_serial, _last_ready_device
     now = time.monotonic()
     if (
         allow_cache
         and _last_ready_serial
+        and _last_ready_device
         and Config.DEVICE_HEALTH_CACHE_SECONDS > 0
         and now - _last_ready_checked_at <= Config.DEVICE_HEALTH_CACHE_SECONDS
     ):
-        return _last_ready_serial
+        return _last_ready_device
 
     try:
         device = _select_device(list_adb_devices())
@@ -211,12 +248,13 @@ def _check_device_ready_once(*, allow_cache: bool = True) -> str:
     if boot_completed != "1":
         raise DeviceUnavailable(f"device is connected but Android has not completed boot: {device.serial}")
     _last_ready_serial = device.serial
+    _last_ready_device = device
     _last_ready_checked_at = now
-    return device.serial
+    return device
 
 
-def assert_device_ready() -> str:
-    global _last_ready_checked_at, _last_ready_serial
+def prepare_adb_device() -> AdbDevice:
+    global _last_ready_checked_at, _last_ready_serial, _last_ready_device
 
     attempts = max(1, Config.DEVICE_RECONNECT_RETRIES + 1)
     last_error: Exception | None = None
@@ -226,6 +264,7 @@ def assert_device_ready() -> str:
         except DeviceUnavailable as exc:
             last_error = exc
             _last_ready_checked_at = 0.0
+            _last_ready_device = None
             if attempt >= attempts - 1:
                 break
             logger.warning(
@@ -238,3 +277,7 @@ def assert_device_ready() -> str:
             time.sleep(max(Config.DEVICE_RECONNECT_DELAY_SECONDS, 0.0))
 
     raise last_error or DeviceUnavailable("adb device is unavailable")
+
+
+def assert_device_ready() -> str:
+    return prepare_adb_device().serial

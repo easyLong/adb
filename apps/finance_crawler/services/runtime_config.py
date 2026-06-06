@@ -58,10 +58,14 @@ _CONFIG_ATTRS: dict[str, str] = {
     "TENCENT_DOC_OPEN_ID": "QQ_OPEN_ID",
     "TENCENT_DOC_TOKEN_URL": "QQ_TOKEN_URL",
     "FETCH_INTERVAL_MINUTES": "FETCH_INTERVAL_MINUTES",
+    "ENABLE_LEGACY_SCHEDULER_JOBS": "ENABLE_LEGACY_SCHEDULER_JOBS",
     "FETCH_LIMIT": "FETCH_LIMIT",
     "CHECK_INTERVAL_MINUTES": "CHECK_INTERVAL_MINUTES",
     "DETAIL_TIME": "DETAIL_TIME",
     "DETAIL_INTERVAL_MINUTES": "DETAIL_INTERVAL_MINUTES",
+    "SUBMIT_WORKER_INTERVAL_SECONDS": "SUBMIT_WORKER_INTERVAL_SECONDS",
+    "V2_CRAWL_WORKER_INTERVAL_SECONDS": "V2_CRAWL_WORKER_INTERVAL_SECONDS",
+    "V2_WRITEBACK_WORKER_INTERVAL_SECONDS": "V2_WRITEBACK_WORKER_INTERVAL_SECONDS",
     "REPORT_TIME": "REPORT_TIME",
     "TENCENT_DOC_REPORT_SHEET_TITLE": "TENCENT_DOC_REPORT_SHEET_TITLE",
     "PROFILE_METRICS_DOC_URL": "PROFILE_METRICS_DOC_URL",
@@ -72,6 +76,15 @@ _CONFIG_ATTRS: dict[str, str] = {
     "PROFILE_METRICS_CRAWL_LIMIT": "PROFILE_METRICS_CRAWL_LIMIT",
     "PROFILE_METRICS_TARGET_DATE": "PROFILE_METRICS_TARGET_DATE",
     "PROFILE_METRICS_WRITEBACK_ENABLED": "PROFILE_METRICS_WRITEBACK_ENABLED",
+    "KOL_DAILY_SNAPSHOT_DOC_URL": "KOL_DAILY_SNAPSHOT_DOC_URL",
+    "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL": "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL",
+    "KOL_DAILY_SNAPSHOT_READ_RANGE": "KOL_DAILY_SNAPSHOT_READ_RANGE",
+    "KOL_DAILY_SNAPSHOT_TIME": "KOL_DAILY_SNAPSHOT_TIME",
+    "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS": "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS",
+    "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS": "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS",
+    "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE": "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE",
+    "KOL_DAILY_CRAWL_TIME": "KOL_DAILY_CRAWL_TIME",
+    "KOL_DAILY_CRAWL_LIMIT": "KOL_DAILY_CRAWL_LIMIT",
     "PROFILE_POST_READ_CRAWL_LIMIT": "PROFILE_POST_READ_CRAWL_LIMIT",
     "PROFILE_POST_READ_MAX_SCROLLS": "PROFILE_POST_READ_MAX_SCROLLS",
     "PROFILE_POST_READ_MAX_POSTS": "PROFILE_POST_READ_MAX_POSTS",
@@ -99,6 +112,14 @@ _CONFIG_ATTRS: dict[str, str] = {
     "DEVICE_SERIAL": "DEVICE_SERIAL",
     "APP_OPEN_RECOVERY_RETRIES": "APP_OPEN_RECOVERY_RETRIES",
     "APP_RESTART_WAIT": "APP_RESTART_WAIT",
+    "POST_DELAY_MIN": "POST_DELAY_MIN",
+    "POST_DELAY_MAX": "POST_DELAY_MAX",
+    "DETAIL_POST_DELAY_MIN": "DETAIL_POST_DELAY_MIN",
+    "DETAIL_POST_DELAY_MAX": "DETAIL_POST_DELAY_MAX",
+    "DETAIL_BLANK_REOPEN_WAIT": "DETAIL_BLANK_REOPEN_WAIT",
+    "DETAIL_BLANK_REOPEN_RETRIES": "DETAIL_BLANK_REOPEN_RETRIES",
+    "DETAIL_SCROLL_WAIT": "DETAIL_SCROLL_WAIT",
+    "PAGE_LOAD_WAIT": "PAGE_LOAD_WAIT",
     "CRAWL_ACTIVE_START": "CRAWL_ACTIVE_START",
     "CRAWL_ACTIVE_END": "CRAWL_ACTIVE_END",
     "CRAWL_MAX_TASK_SECONDS": "CRAWL_MAX_TASK_SECONDS",
@@ -110,6 +131,8 @@ _DATA_SOURCE_KEYS: tuple[str, ...] = (
     "EXCEL_DETAIL_INPUT_PATH",
     "SINGLE_TEST_LINK",
     "PROFILE_METRICS_DOC_URL",
+    "KOL_DAILY_SNAPSHOT_DOC_URL",
+    "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL",
     "ARTICLE_DETAILS_DOC_URL",
 )
 
@@ -124,7 +147,19 @@ _OPENAPI_CONFIG_KEYS: tuple[str, ...] = (
 _APP_BEHAVIOR_CONFIG_KEYS: tuple[str, ...] = (
     "APP_OPEN_RECOVERY_RETRIES",
     "APP_RESTART_WAIT",
+    "POST_DELAY_MIN",
+    "POST_DELAY_MAX",
+    "DETAIL_POST_DELAY_MIN",
+    "DETAIL_POST_DELAY_MAX",
+    "DETAIL_BLANK_REOPEN_WAIT",
+    "DETAIL_BLANK_REOPEN_RETRIES",
+    "DETAIL_SCROLL_WAIT",
+    "PAGE_LOAD_WAIT",
+    "ENABLE_LEGACY_SCHEDULER_JOBS",
     "DETAIL_INTERVAL_MINUTES",
+    "SUBMIT_WORKER_INTERVAL_SECONDS",
+    "V2_CRAWL_WORKER_INTERVAL_SECONDS",
+    "V2_WRITEBACK_WORKER_INTERVAL_SECONDS",
     "TASK_RUNNING_TIMEOUT_MINUTES",
     "TENCENT_DOC_REPORT_SHEET_TITLE",
     "PROFILE_METRICS_READ_RANGE",
@@ -134,6 +169,13 @@ _APP_BEHAVIOR_CONFIG_KEYS: tuple[str, ...] = (
     "PROFILE_METRICS_CRAWL_LIMIT",
     "PROFILE_METRICS_TARGET_DATE",
     "PROFILE_METRICS_WRITEBACK_ENABLED",
+    "KOL_DAILY_SNAPSHOT_READ_RANGE",
+    "KOL_DAILY_SNAPSHOT_TIME",
+    "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS",
+    "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS",
+    "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE",
+    "KOL_DAILY_CRAWL_TIME",
+    "KOL_DAILY_CRAWL_LIMIT",
     "PROFILE_POST_READ_CRAWL_LIMIT",
     "PROFILE_POST_READ_MAX_SCROLLS",
     "PROFILE_POST_READ_MAX_POSTS",
@@ -185,22 +227,64 @@ _DESCRIPTIONS.update(
     {
         "APP_OPEN_RECOVERY_RETRIES": "Retry count for transient blank/update/stuck app pages after force-stopping the target app.",
         "APP_RESTART_WAIT": "Seconds to wait after force-stopping the target app before reopening the link.",
+        "POST_DELAY_MIN": "Minimum human pacing delay between v2 non-detail crawl tasks.",
+        "POST_DELAY_MAX": "Maximum human pacing delay between v2 non-detail crawl tasks.",
+        "DETAIL_POST_DELAY_MIN": "Minimum human pacing delay between v2 detail crawl tasks.",
+        "DETAIL_POST_DELAY_MAX": "Maximum human pacing delay between v2 detail crawl tasks.",
+        "DETAIL_BLANK_REOPEN_WAIT": "Seconds to wait after recovering a blank detail page before reopening.",
+        "DETAIL_BLANK_REOPEN_RETRIES": "Retry count for blank detail pages after app restart and reopen.",
+        "DETAIL_SCROLL_WAIT": "Seconds to wait after scroll actions while capturing detail pages.",
+        "PAGE_LOAD_WAIT": "Seconds to wait after opening an App link before reading UI content.",
+        "ENABLE_LEGACY_SCHEDULER_JOBS": "Enable legacy fetch/check/detail scheduler jobs. Keep false for the v2 trigger-worker route.",
         "DETAIL_INTERVAL_MINUTES": "Minutes between due detail-crawl queue scans. Each scan consumes tasks with scheduled_at <= now.",
+        "SUBMIT_WORKER_INTERVAL_SECONDS": "Seconds between v2 document-trigger scans. Each trigger config still controls its own scan_interval_seconds.",
+        "V2_CRAWL_WORKER_INTERVAL_SECONDS": "Seconds between v2 pending crawl scans for initial_check, detail, and read_count task queues.",
+        "V2_WRITEBACK_WORKER_INTERVAL_SECONDS": "Seconds between v2 pending writeback scans.",
         "TASK_RUNNING_TIMEOUT_MINUTES": "Minutes before a running task is considered abandoned and returned to retry/final state.",
         "TENCENT_DOC_REPORT_SHEET_TITLE": "Tencent Docs sheet title used for structured daily report writeback.",
         "PROFILE_METRICS_TEMPLATE_RANGE": "Tencent Docs range used as the profile daily-row template.",
         "PROFILE_METRICS_DAILY_PREPARE_TIME": "Daily HH:MM time to append missing profile metric rows for today's date. Empty disables the daily prepare job.",
+        "KOL_DAILY_SNAPSHOT_DOC_URL": "Tencent Docs URL for daily KOL base and metric snapshots.",
+        "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL": "Tencent Docs URL that receives daily KOL snapshot rows.",
+        "KOL_DAILY_SNAPSHOT_READ_RANGE": "Tencent Docs range for daily KOL snapshot import.",
+        "KOL_DAILY_SNAPSHOT_TIME": "Daily HH:MM time to import KOL snapshots from Tencent Docs. Empty disables the job.",
+        "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS": "Number of recent snapshot dates to write back, including the target date.",
+        "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS": "Days offset used by the scheduled KOL snapshot job. 1 means tomorrow.",
+        "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE": "Font size used when writing KOL snapshot rows back to Tencent Docs.",
+        "KOL_DAILY_CRAWL_TIME": "Daily HH:MM time to scan today's KOL rows and crawl fans/read counts. Empty disables the job.",
+        "KOL_DAILY_CRAWL_LIMIT": "Max KOL daily crawl rows per run. 0 means no limit.",
     }
 )
 _DISPLAY_LABELS.update(
     {
         "APP_OPEN_RECOVERY_RETRIES": "App recovery retries",
         "APP_RESTART_WAIT": "App restart wait",
+        "POST_DELAY_MIN": "Post delay min",
+        "POST_DELAY_MAX": "Post delay max",
+        "DETAIL_POST_DELAY_MIN": "Detail delay min",
+        "DETAIL_POST_DELAY_MAX": "Detail delay max",
+        "DETAIL_BLANK_REOPEN_WAIT": "Blank reopen wait",
+        "DETAIL_BLANK_REOPEN_RETRIES": "Blank reopen retries",
+        "DETAIL_SCROLL_WAIT": "Detail scroll wait",
+        "PAGE_LOAD_WAIT": "Page load wait",
+        "ENABLE_LEGACY_SCHEDULER_JOBS": "Legacy scheduler jobs",
         "DETAIL_INTERVAL_MINUTES": "Detail queue interval",
+        "SUBMIT_WORKER_INTERVAL_SECONDS": "Submit worker interval",
+        "V2_CRAWL_WORKER_INTERVAL_SECONDS": "V2 crawl worker interval",
+        "V2_WRITEBACK_WORKER_INTERVAL_SECONDS": "V2 writeback interval",
         "TASK_RUNNING_TIMEOUT_MINUTES": "Running task timeout",
         "TENCENT_DOC_REPORT_SHEET_TITLE": "Report sheet title",
         "PROFILE_METRICS_TEMPLATE_RANGE": "Profile template range",
         "PROFILE_METRICS_DAILY_PREPARE_TIME": "Profile daily prepare time",
+        "KOL_DAILY_SNAPSHOT_DOC_URL": "KOL snapshot doc URL",
+        "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL": "KOL writeback doc URL",
+        "KOL_DAILY_SNAPSHOT_READ_RANGE": "KOL snapshot range",
+        "KOL_DAILY_SNAPSHOT_TIME": "KOL snapshot time",
+        "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS": "KOL writeback days",
+        "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS": "KOL schedule offset",
+        "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE": "KOL writeback font",
+        "KOL_DAILY_CRAWL_TIME": "KOL crawl time",
+        "KOL_DAILY_CRAWL_LIMIT": "KOL crawl limit",
     }
 )
 
@@ -232,6 +316,18 @@ def _ensure_data_source_defaults(cursor) -> None:
             "Tencent Docs sheet URL used by the profile metrics workflow.",
         ),
         (
+            "KOL_DAILY_SNAPSHOT_DOC_URL",
+            Config.KOL_DAILY_SNAPSHOT_DOC_URL,
+            "active" if Config.KOL_DAILY_SNAPSHOT_DOC_URL else "unavailable",
+            _DESCRIPTIONS["KOL_DAILY_SNAPSHOT_DOC_URL"],
+        ),
+        (
+            "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL",
+            Config.KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL,
+            "active" if Config.KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL else "unavailable",
+            _DESCRIPTIONS["KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL"],
+        ),
+        (
             "ARTICLE_DETAILS_DOC_URL",
             Config.ARTICLE_DETAILS_DOC_URL,
             "active" if Config.ARTICLE_DETAILS_DOC_URL else "unavailable",
@@ -251,7 +347,7 @@ def _ensure_data_source_defaults(cursor) -> None:
         """
         UPDATE data_source_links
         SET status = 'unavailable'
-        WHERE source_key IN ('EXCEL_DETAIL_INPUT_PATH', 'SINGLE_TEST_LINK', 'PROFILE_METRICS_DOC_URL', 'ARTICLE_DETAILS_DOC_URL')
+        WHERE source_key IN ('EXCEL_DETAIL_INPUT_PATH', 'SINGLE_TEST_LINK', 'PROFILE_METRICS_DOC_URL', 'KOL_DAILY_SNAPSHOT_DOC_URL', 'KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL', 'ARTICLE_DETAILS_DOC_URL')
           AND (data_source_link IS NULL OR data_source_link = '')
         """
     )
@@ -501,7 +597,7 @@ def _set_data_source_config(values: dict[str, str], *, updated_by: str) -> None:
 
     rows = []
     for key, value in values.items():
-        if key == "TENCENT_DOC_URL" and value:
+        if key in {"TENCENT_DOC_URL", "KOL_DAILY_SNAPSHOT_DOC_URL", "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL"} and value:
             parse_doc_url(value)
         rows.append((key, value, _DESCRIPTIONS.get(key, ""), updated_by))
 

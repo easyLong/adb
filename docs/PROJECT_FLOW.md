@@ -1,252 +1,286 @@
 # 项目流程
 
-本文说明当前项目如何运行、数据如何流转，以及日常应该如何触发任务。
+本文按日常使用视角说明数据如何流转，以及人工需要配置什么。
 
-## 1. 总体流程
+## 1. 总览
 
 ```text
-数据源
-  -> 运行时配置
-  -> workflow 解析
-  -> MySQL 保存任务和目标
-  -> ADB 驱动手机采集
-  -> MySQL 保存结果
-  -> 写回腾讯文档 / Excel
+业务在线文档
+  -> 触发器配置
+  -> worker 定时扫描
+  -> MySQL 任务/来源/运行记录
+  -> ADB 手机采集
+  -> MySQL 结果记录
+  -> 腾讯文档回填
 ```
 
-当前数据源：
+现在有两类触发器：
 
-| 数据源 | 用途 |
-| --- | --- |
-| 腾讯文档 | 主要在线数据源和写回目标 |
-| 本地 Excel | 临时批量详情采集 |
-| 单条链接 | 调试 App 打开和解析 |
-
-当前支持 App：
-
-| app_type | App | 主要字段 |
+| 触发器 | 处理对象 | 适用场景 |
 | --- | --- | --- |
-| `alipay` | 支付宝 | 帖子、主页粉丝数 |
-| `antfortune` | 蚂蚁财富 | 帖子、主页粉丝数 |
-| `tenpay` | 财付通/腾讯理财通 | 帖子、文章、主页粉丝数、调仓明细 |
+| `document_trigger` | 帖子链接 `post_url` | 初检、详情、阅读数、截图、评论数 |
+| `profile_trigger` | 主页链接 `homepage_url` | 大 V 主页粉丝数、主页帖子阅读数、持仓等复杂主页动作 |
 
-## 2. Scheduler
+## 2. 人工需要配置什么
 
-启动：
+### 通用配置
+
+首次或配置变化后：
 
 ```powershell
-.\scripts\run.ps1 -Task scheduler
+.\scripts\run.ps1 -Task db
+.\scripts\run.ps1 -Task crawler-app-db
+.\scripts\run.ps1 -Task config
 ```
 
-带守护：
+腾讯文档 OpenAPI 凭证在 MySQL `app_config`：
+
+```text
+TENCENT_DOC_CLIENT_ID
+TENCENT_DOC_OPEN_ID
+TENCENT_DOC_ACCESS_TOKEN
+TENCENT_DOC_CLIENT_SECRET
+TENCENT_DOC_TOKEN_URL
+```
+
+### 帖子/链接型任务
+
+配置 `document_trigger_configs` 和 `document_trigger_bindings`。
+
+常用命令：
+
+```powershell
+.\scripts\run.ps1 -Task v2-trigger-set `
+  -DocumentConfigKey redsoil_detail `
+  -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>" `
+  -DocumentSheetMode fixed_sheet `
+  -DocumentSheetId <sheetId> `
+  -SubmitScanIntervalSeconds 600
+
+.\scripts\run.ps1 -Task v2-trigger-bind `
+  -DocumentConfigKey redsoil_detail `
+  -DocumentTaskType detail `
+  -DocumentFields account_name,read_count,screenshot,remark
+```
+
+### 主页型任务
+
+配置 `profile_trigger_configs` 和 `profile_action_profiles`。
+
+当前默认 KOL 主页触发器会自动生成：
+
+```text
+config_key: kol_daily_metrics_wpvy0d
+doc: DYnhxS2VHZHBqR0V5 / wpvy0d
+row_adapter: kol_daily_profile
+source_name: kol_daily_crawl
+task_type: profile_daily_metrics
+fields: fans_count,growth_count,read_count
+schedule_time: 08:00
+```
+
+查看：
+
+```powershell
+.\scripts\run.ps1 -Task profile-trigger-list
+```
+
+手动跑：
+
+```powershell
+.\scripts\run.ps1 -Task profile-trigger-run
+.\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
+```
+
+## 3. document 链路
+
+适合普通在线文档：一行一个帖子链接。
+
+```text
+submit_worker
+  -> 扫描到期 document_trigger_configs
+  -> 根据 sheet_selector 选择 sheet
+  -> 读取表头并按字段名解析列
+  -> 提取 post_url 等 source_rows
+  -> 按 URL 去重
+  -> 写入 task_submissions
+  -> 记录 submit_runs
+
+v2_crawl_worker
+  -> 扫 task_submissions
+  -> 根据 task_type 选择 handler
+  -> 根据 app_type + fields 选择 capture_action_profiles
+  -> ADB 打开 App 页面并采集
+  -> 写入 task_executions
+  -> 生成 writeback_plans
+
+v2_writeback_worker
+  -> 扫 writeback_plans
+  -> 腾讯文档 batchUpdate
+  -> 更新 writeback 状态
+```
+
+常用任务类型：
+
+| task_type | 说明 |
+| --- | --- |
+| `initial_check` | 初检，回填账号昵称；明确找不到页面写 `N` |
+| `detail` | 详情，回填账号昵称、阅读数、截图、评论数、备注 |
+| `read_count` | 只回填阅读数 |
+
+字段靠表头识别，列偏移不是问题；但表头必须能匹配业务字段。
+
+## 4. profile 链路
+
+适合主页型业务：一行一个主页链接。
+
+```text
+profile_trigger
+  -> 读取 profile_trigger_configs
+  -> 选择 row_adapter
+  -> 读取在线文档当天行
+  -> 写入 profile_metric_sources
+  -> 记录 profile_trigger_runs
+
+profile crawl
+  -> 根据 profile_metric_sources 打开主页
+  -> 采集粉丝数
+  -> 如果需要，进入精确粉丝页
+  -> 查找最近帖子
+  -> 点击帖子详情采集阅读数
+  -> 按 aggregation_policy 聚合
+  -> 写入 profile_metric_runs
+
+profile writeback
+  -> 重新读取目标 sheet
+  -> 按 日期 + 主页链接 定位唯一行
+  -> 回填粉丝数、增粉数、阅读数
+  -> 更新 profile_metric_writebacks
+```
+
+默认动作模板：
+
+| action_profile_key | App | 说明 |
+| --- | --- | --- |
+| `alipay_profile_daily_metrics_v1` | 支付宝 | 粉丝数精确化，最近 3 条帖子阅读数取最大 |
+| `antfortune_profile_daily_metrics_v1` | 蚂蚁财富 | 粉丝数精确化，最近 3 条帖子阅读数取最大 |
+| `tenpay_profile_daily_metrics_v1` | 理财通 | 带 OCR 兜底 |
+| `unknown_profile_daily_metrics_v1` | 兜底 | 基础主页采集 |
+
+## 5. KOL 每日流程
+
+业务表：
+
+```text
+https://docs.qq.com/sheet/DYnhxS2VHZHBqR0V5?tab=wpvy0d
+```
+
+列结构：
+
+| 列 | 字段 |
+| --- | --- |
+| A | 日期 |
+| B | 大V名称 |
+| C | 平台 |
+| D | 主页链接 |
+| E | 第几群 |
+| F | 类型 |
+| G | 粉丝数 |
+| H | 增粉数 |
+| I | 阅读数 |
+
+每天 22:00：
+
+```text
+KOL_DAILY_SNAPSHOT_DOC_URL
+  -> 同步基础大 V 信息
+  -> 生成明日 kol_daily_snapshots
+  -> 写入 wpvy0d
+```
+
+每天 08:00：
+
+```text
+profile_trigger_configs.kol_daily_metrics_wpvy0d
+  -> 筛选 wpvy0d 日期 = 今天
+  -> 跑主页粉丝数和阅读数
+  -> 回填 G/H/I
+```
+
+手动跑今日：
+
+```powershell
+.\scripts\run.ps1 -Task profile-trigger-run
+```
+
+手动跑历史日期：
+
+```powershell
+.\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
+```
+
+## 6. 常驻运行
+
+启动：
 
 ```powershell
 .\scripts\run.ps1 -Task supervisor
 ```
 
-当前 scheduler 会注册：
+当前常驻任务：
 
 | 任务 | 频率 |
 | --- | --- |
-| `fetch_docs` | `FETCH_INTERVAL_MINUTES` |
-| `check` | `CHECK_INTERVAL_MINUTES`，如果开启 |
-| `detail_crawl_due` | `DETAIL_INTERVAL_MINUTES` |
-| `report` | 每天 `REPORT_TIME` |
-| `profile_daily_rows` | 每天 `PROFILE_METRICS_DAILY_PREPARE_TIME`，为空则关闭 |
-| `profile_metrics` | `PROFILE_METRICS_INTERVAL_MINUTES`，大于 0 且配置了文档才开启 |
-| `heartbeat` | `HEARTBEAT_INTERVAL_MINUTES` |
+| `v2_submit_worker` | 300 秒 |
+| `v2_crawl_worker` | 30 秒 |
+| `v2_writeback_worker` | 30 秒 |
+| `kol_daily_snapshot` | 22:00 |
+| `kol_daily_crawl` | 08:00 |
+| `heartbeat` | 30 分钟 |
 
-scheduler 启动时也会执行一次幂等检查：
+## 7. 排查顺序
 
-- 同步腾讯文档候选链接。
-- 扫描到期详情任务。
-- 如果开启大 V 调度，先确保当天行存在，再跑一次 `profile_metrics`。
-
-## 3. 大 V 每日粉丝数
-
-### 当前策略
-
-模板范围：
-
-```text
-PROFILE_METRICS_TEMPLATE_RANGE=A2:H126
-```
-
-读取范围：
-
-```text
-PROFILE_METRICS_READ_RANGE=A1:H2000
-```
-
-每日准备时间：
-
-```text
-PROFILE_METRICS_DAILY_PREPARE_TIME=00:10
-```
-
-流程：
-
-```text
-profile-daily-rows
-  -> 读取模板 A2:H126
-  -> 检查当天已有主页链接
-  -> 只追加缺失链接
-  -> 新行日期写当天，E/F/G 清空
-  -> profile-sync 入库
-  -> profile-crawl 抓粉丝数
-  -> profile-writeback 写回 E/F
-```
-
-幂等规则：
-
-- 同一天同一个主页链接只会生成一次。
-- 重复执行 `profile-daily-rows` 不会重复追加。
-- 如果当天只存在理财通，模板里蚂蚁还不存在，会只补蚂蚁。
-
-手动生成某天：
+1. 看设备：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-daily-rows -ReportDate 2026-06-04
+adb devices -l
 ```
 
-完整跑一次大 V 粉丝数：
+2. 看常驻进程：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-metrics
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -match 'finance_crawler|run\.ps1' } |
+  Select-Object ProcessId,Name,CommandLine
 ```
 
-拆分执行：
+3. 看日志：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-sync
-.\scripts\run.ps1 -Task profile-crawl
-.\scripts\run.ps1 -Task profile-writeback
+Get-ChildItem apps\finance_crawler\logs |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 5 Name,LastWriteTime,Length
 ```
 
-### 增粉数
+4. 看触发配置：
 
-`profile_metric_runs.growth_count` 由数据库计算：
+```powershell
+.\scripts\run.ps1 -Task v2-trigger-list
+.\scripts\run.ps1 -Task profile-trigger-list
+```
+
+5. 看数据库状态：
 
 ```text
-今日粉丝数 - 前一日同一 target 的粉丝数
-```
+document 链路：
+  submit_runs
+  task_submissions
+  task_executions
+  writeback_plans
 
-如果前一日没有成功数据，增粉数写 `0`。
-
-## 4. 大 V 主页帖子阅读数
-
-入口：
-
-```powershell
-.\scripts\run.ps1 -Task profile-post-reads -ReportDate 2026-06-04
-```
-
-流程：
-
-```text
-读取指定日期的大 V 主页目标
-  -> 打开主页
-  -> 根据时间文本识别对应日期帖子
-  -> 点击详情页
-  -> 提取阅读数
-  -> 写入 profile_metric_runs.read_count
-```
-
-相关配置：
-
-```text
-PROFILE_POST_READ_MAX_SCROLLS
-PROFILE_POST_READ_MAX_POSTS
-PROFILE_POST_READ_CRAWL_LIMIT
-```
-
-## 5. 需求 1 文章详情
-
-入口：
-
-```powershell
-.\scripts\run.ps1 -Task article-details
-```
-
-拆分：
-
-```powershell
-.\scripts\run.ps1 -Task article-sync
-.\scripts\run.ps1 -Task article-crawl
-.\scripts\run.ps1 -Task article-writeback
-```
-
-字段：
-
-```text
-文章标题
-截图
-评论数
-点赞数
-```
-
-说明：页面本身不提供阅读数时，不抓阅读数。
-
-## 6. K 列链接阅读数写回 M 列
-
-入口：
-
-```powershell
-.\scripts\run.ps1 -Task doc-link-reads `
-  -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>" `
-  -ReportDate 0602
-```
-
-默认列：
-
-```text
-DOC_LINK_READS_LINK_COL=10    # K 列，0-based
-DOC_LINK_READS_READ_COL=12    # M 列，0-based
-DOC_LINK_READS_ONLY_EMPTY=True
-```
-
-Tencent Docs column-number settings are fallbacks. Runtime prefers row-1 titles when reading and writing sheet columns.
-
-特性：
-
-- 只处理 M 列为空的链接。
-- 支持按 `0602` 或 `2026-06-02` 选择 sheet。
-- 支持详情页空白、网络错误、重试按钮、force-stop 后重开。
-- 写回采用批量分段，避免长任务最后一次失败导致全部丢失。
-
-## 7. 通用详情采集
-
-```powershell
-.\scripts\run.ps1 -Task fetch
-.\scripts\run.ps1 -Task check
-.\scripts\run.ps1 -Task detail
-```
-
-`fetch` 从腾讯文档导入候选链接，生成初检和详情任务。`check` 判断帖子是否存在并提取账号。`detail` 到期后采集详情并写回。
-
-## 8. 单链接调试
-
-```powershell
-.\scripts\run.ps1 -Task link-detail -SingleLink "https://ur.alipay.com/..."
-```
-
-用于验证手机、App、短链、页面解析是否正常。
-
-## 9. 捕获文件
-
-采集材料保存在：
-
-```text
-apps/finance_crawler/captures/
-apps/finance_crawler/screenshots/
-apps/finance_crawler/logs/
-```
-
-常见文件：
-
-```text
-page_000.png
-page_000.xml
-ui_records.jsonl
-ocr_records.jsonl
+profile 链路：
+  profile_trigger_runs
+  profile_metric_sources
+  profile_metric_runs
+  profile_metric_writebacks
 ```

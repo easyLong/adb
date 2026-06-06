@@ -19,7 +19,7 @@ from apps.finance_crawler.mobile.capture_engine import (
 )
 from apps.finance_crawler.mobile.device_session import device as session_device
 from apps.finance_crawler.mobile.device_session import reset_device_session
-from apps.finance_crawler.mobile.parsers import parse_count_token
+from apps.finance_crawler.mobile.read_count_parser import extract_read_count_from_texts
 from apps.finance_crawler.storage.profile_metrics import (
     get_profile_targets_for_post_reads,
     update_profile_post_read_metric,
@@ -31,10 +31,19 @@ from apps.finance_crawler.workflows.profile_metrics import _open_profile_url
 logger = get_logger("profile_post_reads")
 
 
-def crawl_profile_post_reads(limit: int | None = None, target_date: date | None = None) -> list[dict[str, Any]]:
+def crawl_profile_post_reads(
+    limit: int | None = None,
+    target_date: date | None = None,
+    *,
+    source_name: str | None = None,
+) -> list[dict[str, Any]]:
     metric_date = target_date or _configured_metric_date() or date.today()
     resolved_limit = limit if limit is not None else Config.PROFILE_POST_READ_CRAWL_LIMIT
-    records = get_profile_targets_for_post_reads(limit=resolved_limit or None, metric_date=metric_date)
+    records = get_profile_targets_for_post_reads(
+        limit=resolved_limit or None,
+        metric_date=metric_date,
+        source_name=source_name,
+    )
     if not records:
         logger.info("profile post read crawl skipped: no profile targets date=%s", metric_date)
         return []
@@ -90,24 +99,6 @@ def _safe_date(year: int, month: int, day: int) -> date | None:
         return date(year, month, day)
     except ValueError:
         return None
-
-
-def extract_read_count_from_texts(texts: list[str]) -> int | None:
-    best = 0
-    found = False
-    number = r"(?P<num>\d+(?:[,.]\d+)*(?:\.\d+)?\s*[\u4e07wWkK\u5343]?)"
-    for text in texts:
-        compact = re.sub(r"\s+", "", text or "")
-        for pattern in (
-            rf"{number}(?:\u6b21)?\u9605\u8bfb",
-            rf"\u9605\u8bfb(?:\u91cf|\u6570)?{number}",
-        ):
-            match = re.search(pattern, compact)
-            if not match:
-                continue
-            found = True
-            best = max(best, parse_count_token(match.group("num")))
-    return best if found else None
 
 
 def _crawl_one_profile(record: dict[str, Any], *, metric_date: date, serial: str) -> dict[str, Any]:

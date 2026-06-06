@@ -506,6 +506,104 @@ def ensure_framework_tables(cursor) -> None:
 def _ensure_profile_metric_tables(cursor) -> None:
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS profile_action_profiles (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            action_profile_key VARCHAR(128) NOT NULL,
+            app_type VARCHAR(64) NOT NULL,
+            task_type VARCHAR(64) NOT NULL,
+            field_combo VARCHAR(512) NOT NULL,
+            action_combo VARCHAR(512) NOT NULL,
+            field_names_json LONGTEXT NOT NULL,
+            action_names_json LONGTEXT NOT NULL,
+            action_config_json LONGTEXT NULL,
+            aggregation_policy_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            priority INT NOT NULL DEFAULT 0,
+            description VARCHAR(255) NULL,
+            updated_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_action_key (action_profile_key),
+            UNIQUE KEY uk_profile_action_profile (app_type, task_type, field_combo(191)),
+            INDEX idx_profile_action_status (status),
+            INDEX idx_profile_action_app_task (app_type, task_type),
+            INDEX idx_profile_action_priority (priority)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_trigger_configs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            config_key VARCHAR(128) NOT NULL,
+            source_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            doc_url TEXT NOT NULL,
+            file_id VARCHAR(128) NULL,
+            sheet_id VARCHAR(128) NULL,
+            read_range VARCHAR(64) NOT NULL DEFAULT 'A1:I5000',
+            row_adapter VARCHAR(64) NOT NULL DEFAULT 'kol_daily_profile',
+            source_name VARCHAR(191) NOT NULL,
+            task_type VARCHAR(64) NOT NULL DEFAULT 'profile_daily_metrics',
+            requested_fields_json LONGTEXT NOT NULL,
+            action_profile_key VARCHAR(128) NULL,
+            aggregation_policy_json LONGTEXT NULL,
+            schedule_time VARCHAR(16) NULL,
+            target_date_offset_days INT NOT NULL DEFAULT 0,
+            scan_interval_seconds INT NOT NULL DEFAULT 300,
+            next_scan_at DATETIME NULL,
+            last_scan_at DATETIME NULL,
+            scan_status VARCHAR(32) NOT NULL DEFAULT 'idle',
+            locked_by VARCHAR(128) NULL,
+            locked_until DATETIME NULL,
+            last_error TEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            description VARCHAR(255) NULL,
+            updated_by VARCHAR(64) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_trigger_config (config_key),
+            INDEX idx_profile_trigger_due (status, next_scan_at),
+            INDEX idx_profile_trigger_file (source_type, file_id),
+            INDEX idx_profile_trigger_status (scan_status),
+            INDEX idx_profile_trigger_lock (locked_until)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_trigger_runs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            trigger_config_id BIGINT UNSIGNED NULL,
+            config_key VARCHAR(128) NULL,
+            trigger_type VARCHAR(64) NOT NULL DEFAULT 'scheduled',
+            target_date DATE NULL,
+            action_profile_key VARCHAR(128) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'running',
+            file_id VARCHAR(128) NULL,
+            sheet_id VARCHAR(128) NULL,
+            sheet_title VARCHAR(255) NULL,
+            source_rows INT NOT NULL DEFAULT 0,
+            submitted_sources INT NOT NULL DEFAULT 0,
+            skipped_rows INT NOT NULL DEFAULT 0,
+            fans_crawled INT NOT NULL DEFAULT 0,
+            read_crawled INT NOT NULL DEFAULT 0,
+            written_rows INT NOT NULL DEFAULT 0,
+            failed_rows INT NOT NULL DEFAULT 0,
+            summary_json LONGTEXT NULL,
+            error TEXT NULL,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME NULL,
+            INDEX idx_profile_trigger_runs_config (trigger_config_id),
+            INDEX idx_profile_trigger_runs_key (config_key),
+            INDEX idx_profile_trigger_runs_status (status),
+            INDEX idx_profile_trigger_runs_date (target_date),
+            INDEX idx_profile_trigger_runs_started (started_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _insert_default_profile_action_profiles(cursor)
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS profile_targets (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             profile_key VARCHAR(191) NOT NULL,
@@ -525,6 +623,84 @@ def _ensure_profile_metric_tables(cursor) -> None:
             INDEX idx_profile_url (homepage_url(191))
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
+    )
+
+
+def _insert_default_profile_action_profiles(cursor) -> None:
+    rows = [
+        (
+            "alipay_profile_daily_metrics_v1",
+            "alipay",
+            "profile_daily_metrics",
+            "fans_count,growth_count,read_count",
+            "open_profile,capture_fans,open_exact_fans_if_abbreviated,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
+            '["fans_count","growth_count","read_count"]',
+            '["open_profile","capture_fans","open_exact_fans_if_abbreviated","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
+            '{"fans_count":{"exact_if_abbreviated":true},"read_count":{"recent_posts_limit":3,"ocr":false},"holding":{"enabled":false}}',
+            '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}',
+            20,
+            "Alipay profile metrics: exact fans when needed, max read count from recent 3 posts.",
+        ),
+        (
+            "antfortune_profile_daily_metrics_v1",
+            "antfortune",
+            "profile_daily_metrics",
+            "fans_count,growth_count,read_count",
+            "open_profile,capture_fans,open_exact_fans_if_abbreviated,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
+            '["fans_count","growth_count","read_count"]',
+            '["open_profile","capture_fans","open_exact_fans_if_abbreviated","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
+            '{"fans_count":{"exact_if_abbreviated":true},"read_count":{"recent_posts_limit":3,"ocr":false},"holding":{"enabled":false}}',
+            '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}',
+            20,
+            "Ant Fortune profile metrics: exact fans when needed, max read count from recent 3 posts.",
+        ),
+        (
+            "tenpay_profile_daily_metrics_v1",
+            "tenpay",
+            "profile_daily_metrics",
+            "fans_count,growth_count,read_count",
+            "open_profile,capture_fans,ocr_if_needed,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
+            '["fans_count","growth_count","read_count"]',
+            '["open_profile","capture_fans","ocr_if_needed","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
+            '{"fans_count":{"exact_if_abbreviated":true,"ocr":true},"read_count":{"recent_posts_limit":3,"ocr":true},"holding":{"enabled":false}}',
+            '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}',
+            10,
+            "Tenpay profile metrics with OCR fallback.",
+        ),
+        (
+            "unknown_profile_daily_metrics_v1",
+            "unknown",
+            "profile_daily_metrics",
+            "fans_count,growth_count,read_count",
+            "open_profile,capture_fans,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
+            '["fans_count","growth_count","read_count"]',
+            '["open_profile","capture_fans","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
+            '{"fans_count":{"exact_if_abbreviated":false},"read_count":{"recent_posts_limit":3,"ocr":false},"holding":{"enabled":false}}',
+            '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}',
+            0,
+            "Fallback profile metrics action profile.",
+        ),
+    ]
+    cursor.executemany(
+        """
+        INSERT INTO profile_action_profiles (
+            action_profile_key, app_type, task_type, field_combo, action_combo,
+            field_names_json, action_names_json, action_config_json,
+            aggregation_policy_json, priority, description, updated_by
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'system')
+        ON DUPLICATE KEY UPDATE
+            action_combo = VALUES(action_combo),
+            action_names_json = VALUES(action_names_json),
+            action_config_json = VALUES(action_config_json),
+            aggregation_policy_json = VALUES(aggregation_policy_json),
+            priority = VALUES(priority),
+            description = VALUES(description),
+            status = 'active',
+            updated_by = 'system',
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        rows,
     )
     cursor.execute(
         """

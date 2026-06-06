@@ -1,7 +1,7 @@
 param(
     [string]$App = "finance_crawler",
 
-    [ValidateSet("scheduler", "supervisor", "db", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report", "profile-sync", "profile-daily-rows", "profile-create-tasks", "profile-crawl", "profile-writeback", "profile-metrics", "profile-post-reads", "article-sync", "article-crawl", "article-writeback", "article-details", "doc-link-reads", "doc-columns-check")]
+    [ValidateSet("scheduler", "supervisor", "db", "crawler-app-db", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report", "profile-sync", "profile-daily-rows", "profile-create-tasks", "profile-crawl", "profile-writeback", "profile-metrics", "profile-post-reads", "kol-daily-snapshot", "kol-daily-writeback", "kol-daily-crawl", "profile-trigger-list", "profile-trigger-run", "article-sync", "article-crawl", "article-writeback", "article-details", "doc-link-reads", "doc-columns-check", "v2-read-count-submit", "v2-read-count-crawl", "v2-read-count-writeback", "v2-read-count", "v2-initial-check-submit", "v2-initial-check-crawl", "v2-initial-check-writeback", "v2-initial-check", "v2-detail-submit", "v2-detail-crawl", "v2-detail-writeback", "v2-detail", "v2-doc-config-set", "v2-doc-config-check", "v2-doc-config-list", "v2-doc-config-submit", "v2-doc-config-run", "v2-trigger-set", "v2-trigger-bind", "v2-trigger-list", "v2-trigger-submit", "v2-submit-worker-once", "v2-crawl-worker-once", "v2-writeback-worker-once", "v2-correction-plan", "v2-correction-writeback", "v2-correction-apply")]
     [string]$Task = "scheduler",
 
     [string]$Python = "python",
@@ -10,6 +10,25 @@ param(
     [string]$ExcelInputPath = "",
     [string]$SingleLink = "",
     [string]$ReportDate = "",
+    [string]$DocumentConfigKey = "",
+    [string]$DocumentTaskType = "",
+    [string]$DocumentFields = "",
+    [string]$DocumentDescription = "",
+    [string]$DocumentSheetMode = "",
+    [string]$DocumentSheetId = "",
+    [string]$DocumentSheetTitle = "",
+    [string]$DocumentSheetKeyword = "",
+    [string]$DocumentSheetIds = "",
+    [int]$SubmitScanIntervalSeconds = 300,
+    [int]$SubmitTargetDateOffsetDays = 0,
+    [int]$CorrectionDocumentId = 0,
+    [string]$CorrectionSheetId = "",
+    [int]$CorrectionRowIndex = 0,
+    [string]$CorrectionPostUrl = "",
+    [string]$CorrectionField = "",
+    [string]$CorrectionValue = "",
+    [string]$CorrectionReason = "",
+    [string]$CorrectionOperator = "cli",
     [string]$TencentDocScanMode = "",
     [string]$TencentDocScanDate = "",
     [string]$TencentDocSheetTitleFilter = "",
@@ -117,6 +136,63 @@ if ($Task -eq "scheduler") {
     }
     if ($ReportDate) {
         $OnceArgs += @("--report-date", $ReportDate)
+    }
+    if ($DocumentConfigKey) {
+        $OnceArgs += @("--document-config-key", $DocumentConfigKey)
+    }
+    if ($DocumentTaskType) {
+        $OnceArgs += @("--document-task-type", $DocumentTaskType)
+    }
+    if ($DocumentFields) {
+        $OnceArgs += @("--document-fields", $DocumentFields)
+    }
+    if ($DocumentDescription) {
+        $OnceArgs += @("--document-description", $DocumentDescription)
+    }
+    if ($DocumentSheetMode) {
+        $OnceArgs += @("--document-sheet-mode", $DocumentSheetMode)
+    }
+    if ($DocumentSheetId) {
+        $OnceArgs += @("--document-sheet-id", $DocumentSheetId)
+    }
+    if ($DocumentSheetTitle) {
+        $OnceArgs += @("--document-sheet-title", $DocumentSheetTitle)
+    }
+    if ($DocumentSheetKeyword) {
+        $OnceArgs += @("--document-sheet-keyword", $DocumentSheetKeyword)
+    }
+    if ($DocumentSheetIds) {
+        $OnceArgs += @("--document-sheet-ids", $DocumentSheetIds)
+    }
+    if ($SubmitScanIntervalSeconds) {
+        $OnceArgs += @("--submit-scan-interval-seconds", $SubmitScanIntervalSeconds)
+    }
+    if ($SubmitTargetDateOffsetDays) {
+        $OnceArgs += @("--submit-target-date-offset-days", $SubmitTargetDateOffsetDays)
+    }
+    if ($CorrectionDocumentId) {
+        $OnceArgs += @("--correction-document-id", $CorrectionDocumentId)
+    }
+    if ($CorrectionSheetId) {
+        $OnceArgs += @("--correction-sheet-id", $CorrectionSheetId)
+    }
+    if ($CorrectionRowIndex) {
+        $OnceArgs += @("--correction-row-index", $CorrectionRowIndex)
+    }
+    if ($CorrectionPostUrl) {
+        $OnceArgs += @("--correction-post-url", $CorrectionPostUrl)
+    }
+    if ($CorrectionField) {
+        $OnceArgs += @("--correction-field", $CorrectionField)
+    }
+    if ($CorrectionValue) {
+        $OnceArgs += @("--correction-value", $CorrectionValue)
+    }
+    if ($CorrectionReason) {
+        $OnceArgs += @("--correction-reason", $CorrectionReason)
+    }
+    if ($CorrectionOperator) {
+        $OnceArgs += @("--correction-operator", $CorrectionOperator)
     }
     foreach ($Item in $ConfigSet) {
         $OnceArgs += @("--config-set", $Item)

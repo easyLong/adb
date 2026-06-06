@@ -9,6 +9,9 @@ from typing import Any
 
 from apps.finance_crawler.storage.db import get_conn
 
+PROFILE_DAILY_METRICS_TASK_TYPE = "profile_daily_metrics"
+PROFILE_DAILY_METRICS_FIELDS = ("fans_count", "growth_count", "read_count")
+
 
 def profile_key_for_url(url: str) -> str:
     return hashlib.sha1(url.strip().encode("utf-8")).hexdigest()
@@ -25,6 +28,270 @@ def _json_loads(value: str | None) -> Any:
         return json.loads(value)
     except Exception:
         return None
+
+
+def upsert_profile_trigger_config(
+    *,
+    config_key: str,
+    doc_url: str,
+    file_id: str | None = None,
+    sheet_id: str | None = None,
+    read_range: str = "A1:I5000",
+    row_adapter: str = "kol_daily_profile",
+    source_name: str,
+    task_type: str = PROFILE_DAILY_METRICS_TASK_TYPE,
+    requested_fields: tuple[str, ...] | list[str] | None = None,
+    action_profile_key: str | None = None,
+    aggregation_policy: dict[str, Any] | None = None,
+    schedule_time: str | None = None,
+    target_date_offset_days: int = 0,
+    scan_interval_seconds: int = 300,
+    status: str = "active",
+    description: str | None = None,
+    updated_by: str = "system",
+) -> int:
+    fields = tuple(requested_fields or PROFILE_DAILY_METRICS_FIELDS)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO profile_trigger_configs (
+                    config_key, source_type, doc_url, file_id, sheet_id, read_range,
+                    row_adapter, source_name, task_type, requested_fields_json,
+                    action_profile_key, aggregation_policy_json, schedule_time,
+                    target_date_offset_days, scan_interval_seconds, status,
+                    description, updated_by
+                )
+                VALUES (%s, 'tencent_docs', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    doc_url = VALUES(doc_url),
+                    file_id = VALUES(file_id),
+                    sheet_id = VALUES(sheet_id),
+                    read_range = VALUES(read_range),
+                    row_adapter = VALUES(row_adapter),
+                    source_name = VALUES(source_name),
+                    task_type = VALUES(task_type),
+                    requested_fields_json = VALUES(requested_fields_json),
+                    action_profile_key = VALUES(action_profile_key),
+                    aggregation_policy_json = VALUES(aggregation_policy_json),
+                    schedule_time = VALUES(schedule_time),
+                    target_date_offset_days = VALUES(target_date_offset_days),
+                    scan_interval_seconds = VALUES(scan_interval_seconds),
+                    status = VALUES(status),
+                    description = VALUES(description),
+                    updated_by = VALUES(updated_by)
+                """,
+                (
+                    config_key,
+                    doc_url,
+                    file_id,
+                    sheet_id,
+                    read_range,
+                    row_adapter,
+                    source_name,
+                    task_type,
+                    _json_dumps(list(fields)),
+                    action_profile_key,
+                    _json_dumps(aggregation_policy or {}),
+                    schedule_time,
+                    int(target_date_offset_days),
+                    int(scan_interval_seconds),
+                    status,
+                    description,
+                    updated_by,
+                ),
+            )
+            cursor.execute("SELECT id FROM profile_trigger_configs WHERE config_key = %s", (config_key,))
+            config_id = int(cursor.fetchone()["id"])
+        conn.commit()
+        return config_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_profile_trigger_config(config_key: str) -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT *
+                FROM profile_trigger_configs
+                WHERE config_key = %s
+                LIMIT 1
+                """,
+                (config_key,),
+            )
+            row = cursor.fetchone()
+            return _decode_profile_trigger_config(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_profile_trigger_configs(*, include_disabled: bool = False) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM profile_trigger_configs"
+    params: list[Any] = []
+    if not include_disabled:
+        sql += " WHERE status = %s"
+        params.append("active")
+    sql += " ORDER BY config_key ASC"
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            return [_decode_profile_trigger_config(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_profile_action_profile(
+    *,
+    app_type: str | None = None,
+    task_type: str = PROFILE_DAILY_METRICS_TASK_TYPE,
+    field_names: tuple[str, ...] | list[str] | None = None,
+    action_profile_key: str | None = None,
+) -> dict[str, Any] | None:
+    fields = ",".join(field_names or PROFILE_DAILY_METRICS_FIELDS)
+    params: list[Any]
+    if action_profile_key:
+        sql = """
+            SELECT *
+            FROM profile_action_profiles
+            WHERE action_profile_key = %s
+              AND status = 'active'
+            LIMIT 1
+        """
+        params = [action_profile_key]
+    else:
+        sql = """
+            SELECT *
+            FROM profile_action_profiles
+            WHERE task_type = %s
+              AND field_combo = %s
+              AND app_type IN (%s, 'unknown')
+              AND status = 'active'
+            ORDER BY CASE WHEN app_type = %s THEN 0 ELSE 1 END, priority DESC, id ASC
+            LIMIT 1
+        """
+        resolved_app = app_type or "unknown"
+        params = [task_type, fields, resolved_app, resolved_app]
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            row = cursor.fetchone()
+            return _decode_profile_action_profile(row) if row else None
+    finally:
+        conn.close()
+
+
+def start_profile_trigger_run(
+    *,
+    trigger_config_id: int | None,
+    config_key: str,
+    trigger_type: str,
+    target_date: date | None,
+    action_profile_key: str | None,
+) -> int:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO profile_trigger_runs (
+                    trigger_config_id, config_key, trigger_type, target_date,
+                    action_profile_key, status, started_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'running', %s)
+                """,
+                (trigger_config_id, config_key, trigger_type, target_date, action_profile_key, datetime.now()),
+            )
+            run_id = int(cursor.lastrowid)
+        conn.commit()
+        return run_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def finish_profile_trigger_run(
+    run_id: int,
+    *,
+    status: str,
+    summary: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    summary = summary or {}
+    sync = summary.get("sync") if isinstance(summary.get("sync"), dict) else {}
+    writeback = summary.get("writeback") if isinstance(summary.get("writeback"), dict) else {}
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE profile_trigger_runs
+                SET status = %s,
+                    file_id = %s,
+                    sheet_id = %s,
+                    sheet_title = %s,
+                    source_rows = %s,
+                    submitted_sources = %s,
+                    skipped_rows = %s,
+                    fans_crawled = %s,
+                    read_crawled = %s,
+                    written_rows = %s,
+                    failed_rows = %s,
+                    summary_json = %s,
+                    error = %s,
+                    finished_at = %s
+                WHERE id = %s
+                """,
+                (
+                    status,
+                    sync.get("file_id") or writeback.get("file_id"),
+                    sync.get("sheet_id") or writeback.get("sheet_id"),
+                    sync.get("sheet_title") or writeback.get("sheet_title"),
+                    int(sync.get("source_rows") or 0),
+                    int(sync.get("imported") or 0),
+                    int(sync.get("skipped") or 0),
+                    int(summary.get("fans_crawled") or 0),
+                    int(summary.get("read_crawled") or 0),
+                    int(writeback.get("written") or 0),
+                    int(writeback.get("failed") or 0),
+                    _json_dumps(summary),
+                    error,
+                    datetime.now(),
+                    run_id,
+                ),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _decode_profile_trigger_config(row: dict[str, Any]) -> dict[str, Any]:
+    decoded = dict(row)
+    decoded["requested_fields"] = _json_loads(decoded.pop("requested_fields_json", None)) or []
+    decoded["aggregation_policy"] = _json_loads(decoded.pop("aggregation_policy_json", None)) or {}
+    return decoded
+
+
+def _decode_profile_action_profile(row: dict[str, Any]) -> dict[str, Any]:
+    decoded = dict(row)
+    decoded["field_names"] = _json_loads(decoded.pop("field_names_json", None)) or []
+    decoded["action_names"] = _json_loads(decoded.pop("action_names_json", None)) or []
+    decoded["action_config"] = _json_loads(decoded.pop("action_config_json", None)) or {}
+    decoded["aggregation_policy"] = _json_loads(decoded.pop("aggregation_policy_json", None)) or {}
+    return decoded
 
 
 def upsert_profile_source(row: dict[str, Any]) -> tuple[int, int]:
@@ -282,12 +549,20 @@ def create_daily_profile_metric_sources(metric_date: date, *, source_name: str =
         conn.close()
 
 
-def get_pending_profile_metric_sources(limit: int | None = None, metric_date: date | None = None) -> list[dict[str, Any]]:
+def get_pending_profile_metric_sources(
+    limit: int | None = None,
+    metric_date: date | None = None,
+    source_name: str | None = None,
+) -> list[dict[str, Any]]:
     params: list[Any] = []
     date_clause = ""
     if metric_date:
         date_clause = "AND s.metric_date = %s"
         params.append(metric_date)
+    source_clause = ""
+    if source_name:
+        source_clause = "AND s.source_name = %s"
+        params.append(source_name)
     sql = f"""
         SELECT
             s.id AS metric_source_id,
@@ -308,6 +583,7 @@ def get_pending_profile_metric_sources(limit: int | None = None, metric_date: da
           AND s.attempts < s.max_attempts
           AND (m.id IS NULL OR m.status NOT IN ('success', 'blocked'))
           {date_clause}
+          {source_clause}
         ORDER BY s.metric_date ASC, s.id ASC
     """
     conn = get_conn()
@@ -325,12 +601,20 @@ def get_pending_profile_metric_sources(limit: int | None = None, metric_date: da
         conn.close()
 
 
-def get_profile_targets_for_post_reads(limit: int | None = None, metric_date: date | None = None) -> list[dict[str, Any]]:
+def get_profile_targets_for_post_reads(
+    limit: int | None = None,
+    metric_date: date | None = None,
+    source_name: str | None = None,
+) -> list[dict[str, Any]]:
     params: list[Any] = []
     date_clause = ""
     if metric_date:
         date_clause = "AND s.metric_date = %s"
         params.append(metric_date)
+    source_clause = ""
+    if source_name:
+        source_clause = "AND s.source_name = %s"
+        params.append(source_name)
     sql = f"""
         SELECT
             s.id AS metric_source_id,
@@ -354,6 +638,7 @@ def get_profile_targets_for_post_reads(limit: int | None = None, metric_date: da
         WHERE s.status = 'active'
           AND t.status = 'active'
           {date_clause}
+          {source_clause}
         ORDER BY s.metric_date ASC, s.id ASC
     """
     conn = get_conn()

@@ -11,7 +11,6 @@ import json
 import shlex
 import time
 from datetime import date, datetime
-from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -21,6 +20,7 @@ from apps.finance_crawler.config import Config
 from apps.finance_crawler.integrations.tencent_docs import client
 from apps.finance_crawler.integrations.tencent_docs.write_requests import cell_request, row_cells_request
 from apps.finance_crawler.mobile.capture_engine import capture_pages, open_app_link, run_adb
+from apps.finance_crawler.mobile.capture_records import read_capture_records as _read_capture_records
 from apps.finance_crawler.mobile.device_session import device as session_device
 from apps.finance_crawler.mobile.device_session import reset_device_session
 from apps.finance_crawler.mobile.parsers import extract_profile_fans_count
@@ -166,10 +166,19 @@ def sync_profile_sources_from_tencent_docs(doc_url: str | None = None) -> int:
     return imported
 
 
-def crawl_pending_profile_metrics(limit: int | None = None) -> list[dict[str, Any]]:
+def crawl_pending_profile_metrics(
+    limit: int | None = None,
+    *,
+    target_date: date | None = None,
+    source_name: str | None = None,
+) -> list[dict[str, Any]]:
     resolved_limit = limit if limit is not None else Config.PROFILE_METRICS_CRAWL_LIMIT
-    metric_date = _configured_metric_date()
-    records = get_pending_profile_metric_sources(limit=resolved_limit or None, metric_date=metric_date)
+    metric_date = target_date or _configured_metric_date()
+    records = get_pending_profile_metric_sources(
+        limit=resolved_limit or None,
+        metric_date=metric_date,
+        source_name=source_name,
+    )
     if not records:
         logger.info("profile metric crawl skipped: no pending records")
         return []
@@ -519,29 +528,3 @@ def _parse_int(value: str) -> int | None:
         return None
 
 
-def _read_capture_records(summary: dict[str, Any]) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for key in ("ui_jsonl", "ocr_jsonl"):
-        path_text = summary.get(key)
-        if not path_text:
-            continue
-        path = Path(str(path_text))
-        if not path.exists():
-            continue
-        records.extend(
-            _normalize_bounds(json.loads(line))
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        )
-    return records
-
-
-def _normalize_bounds(record: dict[str, Any]) -> dict[str, Any]:
-    item = dict(record)
-    bounds = dict(item.get("bounds") or {})
-    if "right" not in bounds:
-        bounds["right"] = int(bounds.get("left") or 0) + int(bounds.get("width") or 0)
-    if "bottom" not in bounds:
-        bounds["bottom"] = int(bounds.get("top") or 0) + int(bounds.get("height") or 0)
-    item["bounds"] = bounds
-    return item

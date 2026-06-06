@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse, urlunparse
 
 import requests
 
@@ -26,6 +26,13 @@ IMAGE_UPLOAD_URL = "https://docs.qq.com/openapi/resources/v2/images"
 class DocInfo:
     file_id: str
     sheet_id: str
+
+
+@dataclass(frozen=True)
+class DocUrlInfo:
+    file_id: str
+    sheet_id: str
+    base_url: str
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,21 @@ def parse_doc_url(url: str) -> DocInfo:
         raise ValueError("腾讯文档链接缺少 tab 参数，无法确定工作表 sheetId")
 
     return DocInfo(file_id=file_id, sheet_id=sheet_id)
+
+
+def parse_doc_url_info(url: str) -> DocUrlInfo:
+    parsed = urlparse(url)
+    if "docs.qq.com" not in parsed.netloc:
+        raise ValueError(f"not a Tencent Docs URL: {url}")
+
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        raise ValueError(f"cannot parse Tencent Docs file_id from URL: {url}")
+
+    file_id = parts[-1]
+    sheet_id = parse_qs(parsed.query).get("tab", [""])[0]
+    base_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    return DocUrlInfo(file_id=file_id, sheet_id=sheet_id, base_url=base_url)
 
 
 def configured_doc() -> DocInfo:

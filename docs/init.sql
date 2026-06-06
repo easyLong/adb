@@ -1,8 +1,8 @@
-CREATE DATABASE IF NOT EXISTS finance_crawler
+CREATE DATABASE IF NOT EXISTS crawler_app
     DEFAULT CHARACTER SET utf8mb4
     DEFAULT COLLATE utf8mb4_unicode_ci;
 
-USE finance_crawler;
+USE crawler_app;
 
 CREATE TABLE IF NOT EXISTS data_source_links (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -21,7 +21,9 @@ INSERT INTO data_source_links (source_key, data_source_link, status, description
 VALUES
     ('TENCENT_DOC_URL', '', 'active', 'Tencent Docs source URL', 'system'),
     ('EXCEL_DETAIL_INPUT_PATH', '', 'unavailable', 'Local Excel detail input path', 'system'),
-    ('SINGLE_TEST_LINK', '', 'unavailable', 'One-shot single detail test link', 'system')
+    ('SINGLE_TEST_LINK', '', 'unavailable', 'One-shot single detail test link', 'system'),
+    ('KOL_DAILY_SNAPSHOT_DOC_URL', '', 'unavailable', 'Tencent Docs URL for daily KOL snapshots', 'system'),
+    ('KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL', '', 'unavailable', 'Tencent Docs URL that receives daily KOL snapshots', 'system')
 ON DUPLICATE KEY UPDATE
     description = VALUES(description);
 
@@ -45,10 +47,55 @@ VALUES
     ('TENCENT_DOC_OPEN_ID', '', 'unavailable', 1, 'Tencent Docs OpenAPI Open-Id', 'system'),
     ('TENCENT_DOC_ACCESS_TOKEN', '', 'unavailable', 1, 'Tencent Docs OpenAPI Access-Token', 'system'),
     ('TENCENT_DOC_CLIENT_SECRET', '', 'unavailable', 1, 'Tencent Docs OpenAPI Client-Secret', 'system'),
-    ('TENCENT_DOC_TOKEN_URL', 'https://docs.qq.com/oauth/v2/token', 'active', 0, 'Tencent Docs OpenAPI token URL', 'system')
+    ('TENCENT_DOC_TOKEN_URL', 'https://docs.qq.com/oauth/v2/token', 'active', 0, 'Tencent Docs OpenAPI token URL', 'system'),
+    ('KOL_DAILY_SNAPSHOT_READ_RANGE', 'A1:H2000', 'active', 0, 'Tencent Docs range for daily KOL snapshots', 'system'),
+    ('KOL_DAILY_SNAPSHOT_TIME', '22:00', 'active', 0, 'Daily HH:MM time for KOL snapshot import', 'system'),
+    ('KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS', '1', 'active', 0, 'Recent KOL snapshot days to write back', 'system'),
+    ('KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS', '1', 'active', 0, 'Scheduled KOL snapshot date offset; 1 means tomorrow', 'system'),
+    ('KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE', '10', 'active', 0, 'KOL snapshot writeback font size', 'system'),
+    ('KOL_DAILY_CRAWL_TIME', '08:00', 'active', 0, 'Daily HH:MM time for KOL crawl from generated rows', 'system'),
+    ('KOL_DAILY_CRAWL_LIMIT', '0', 'active', 0, 'Max KOL daily crawl rows per run; 0 means unlimited', 'system')
 ON DUPLICATE KEY UPDATE
     is_secret = VALUES(is_secret),
     description = VALUES(description);
+
+CREATE TABLE IF NOT EXISTS kol_base_profiles (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    kol_name VARCHAR(255) NOT NULL,
+    platform VARCHAR(64) NOT NULL,
+    homepage_url TEXT NULL,
+    group_name VARCHAR(64) NULL,
+    kol_type VARCHAR(64) NOT NULL DEFAULT 'other',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_kol_base_profile (kol_name, platform),
+    INDEX idx_kol_base_profile_name (kol_name),
+    INDEX idx_kol_base_profile_platform (platform),
+    INDEX idx_kol_base_profile_type (kol_type),
+    INDEX idx_kol_base_profile_group (group_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS kol_daily_snapshots (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    kol_profile_id BIGINT UNSIGNED NULL,
+    snapshot_date DATE NOT NULL,
+    kol_name VARCHAR(255) NOT NULL,
+    platform VARCHAR(64) NOT NULL,
+    homepage_url TEXT NULL,
+    group_name VARCHAR(64) NULL,
+    kol_type VARCHAR(64) NOT NULL DEFAULT 'other',
+    fans_count BIGINT NULL,
+    growth_count BIGINT NULL,
+    read_count BIGINT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_kol_daily_snapshot (snapshot_date, kol_name, platform),
+    INDEX idx_kol_daily_profile (kol_profile_id),
+    INDEX idx_kol_daily_date (snapshot_date),
+    INDEX idx_kol_daily_platform (platform),
+    INDEX idx_kol_daily_type (kol_type),
+    INDEX idx_kol_daily_group (group_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS crawl_sources (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -86,6 +133,196 @@ ON DUPLICATE KEY UPDATE
     display_name = VALUES(display_name),
     package_name = VALUES(package_name),
     enabled = 1;
+
+CREATE TABLE IF NOT EXISTS capture_action_profiles (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    app_type VARCHAR(64) NOT NULL,
+    task_type VARCHAR(64) NOT NULL,
+    field_combo VARCHAR(512) NOT NULL,
+    action_combo VARCHAR(512) NOT NULL,
+    field_combo_hash CHAR(64) NOT NULL,
+    action_combo_hash CHAR(64) NOT NULL,
+    field_names_json LONGTEXT NOT NULL,
+    action_names_json LONGTEXT NOT NULL,
+    capture_config_json LONGTEXT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    priority INT NOT NULL DEFAULT 0,
+    description VARCHAR(255) NULL,
+    updated_by VARCHAR(64) NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_capture_action_profile (app_type, task_type, field_combo_hash),
+    INDEX idx_capture_action_status (status),
+    INDEX idx_capture_action_app_task (app_type, task_type),
+    INDEX idx_capture_action_field_hash (field_combo_hash),
+    INDEX idx_capture_action_priority (priority)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO capture_action_profiles (
+    app_type, task_type, field_combo, action_combo,
+    field_combo_hash, action_combo_hash,
+    field_names_json, action_names_json, capture_config_json,
+    priority, description, updated_by
+)
+VALUES
+    (
+        'unknown',
+        'read_count',
+        'read_count',
+        'open_link,ui_controls,screenshot,tap_retry',
+        SHA2('read_count', 256),
+        SHA2('open_link,ui_controls,screenshot,tap_retry', 256),
+        '["read_count"]',
+        '["open_link","ui_controls","screenshot","tap_retry"]',
+        '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+        0,
+        'Default read-count profile for simple UI capture.',
+        'system'
+    ),
+    (
+        'alipay',
+        'read_count',
+        'read_count',
+        'open_link,ui_controls,screenshot,tap_retry',
+        SHA2('read_count', 256),
+        SHA2('open_link,ui_controls,screenshot,tap_retry', 256),
+        '["read_count"]',
+        '["open_link","ui_controls","screenshot","tap_retry"]',
+        '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+        10,
+        'Alipay read-count profile using UI controls and screenshot.',
+        'system'
+    ),
+    (
+        'antfortune',
+        'read_count',
+        'read_count',
+        'open_link,ui_controls,screenshot,tap_retry',
+        SHA2('read_count', 256),
+        SHA2('open_link,ui_controls,screenshot,tap_retry', 256),
+        '["read_count"]',
+        '["open_link","ui_controls","screenshot","tap_retry"]',
+        '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+        10,
+        'Ant Fortune read-count profile using UI controls and screenshot.',
+        'system'
+    ),
+    (
+        'tenpay',
+        'read_count',
+        'read_count',
+        'open_link,ui_controls,screenshot,ocr,tap_retry',
+        SHA2('read_count', 256),
+        SHA2('open_link,ui_controls,screenshot,ocr,tap_retry', 256),
+        '["read_count"]',
+        '["open_link","ui_controls","screenshot","ocr","tap_retry"]',
+        '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+        20,
+        'Tenpay read-count profile with OCR enabled by app policy.',
+        'system'
+    ),
+    (
+        'unknown',
+        'article_detail',
+        'comment_count,screenshot',
+        'open_link,ui_controls,screenshot,scroll',
+        SHA2('comment_count,screenshot', 256),
+        SHA2('open_link,ui_controls,screenshot,scroll', 256),
+        '["comment_count","screenshot"]',
+        '["open_link","ui_controls","screenshot","scroll"]',
+        '{"max_scrolls":1}',
+        0,
+        'Default article detail profile for comments and screenshot.',
+        'system'
+    ),
+    (
+        'tenpay',
+        'detail',
+        'trade_details',
+        'open_link,screenshot,ocr,scroll,click_detail',
+        SHA2('trade_details', 256),
+        SHA2('open_link,screenshot,ocr,scroll,click_detail', 256),
+        '["trade_details"]',
+        '["open_link","screenshot","ocr","scroll","click_detail"]',
+        '{"max_scrolls":2}',
+        20,
+        'Tenpay detail profile requiring OCR and detail click actions.',
+        'system'
+    ),
+    (
+        'alipay',
+        'initial_check',
+        'account_name',
+        'open_link,ui_controls,screenshot',
+        SHA2('account_name', 256),
+        SHA2('open_link,ui_controls,screenshot', 256),
+        '["account_name"]',
+        '["open_link","ui_controls","screenshot"]',
+        '{"max_scrolls":0}',
+        15,
+        'Online-doc check profile for account nickname in Alipay.',
+        'system'
+    ),
+    (
+        'antfortune',
+        'initial_check',
+        'account_name',
+        'open_link,ui_controls,screenshot',
+        SHA2('account_name', 256),
+        SHA2('open_link,ui_controls,screenshot', 256),
+        '["account_name"]',
+        '["open_link","ui_controls","screenshot"]',
+        '{"max_scrolls":0}',
+        15,
+        'Online-doc check profile for account nickname in Ant Fortune.',
+        'system'
+    ),
+    (
+        'alipay',
+        'detail',
+        'account_name,read_count,screenshot',
+        'open_link,ui_controls,screenshot,tap_retry',
+        SHA2('account_name,read_count,screenshot', 256),
+        SHA2('open_link,ui_controls,screenshot,tap_retry', 256),
+        '["account_name","read_count","screenshot"]',
+        '["open_link","ui_controls","screenshot","tap_retry"]',
+        '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+        15,
+        'Online-doc detail profile for account nickname, read count, and screenshot in Alipay.',
+        'system'
+    ),
+    (
+        'antfortune',
+        'detail',
+        'account_name,read_count,screenshot',
+        'open_link,ui_controls,screenshot,tap_retry',
+        SHA2('account_name,read_count,screenshot', 256),
+        SHA2('open_link,ui_controls,screenshot,tap_retry', 256),
+        '["account_name","read_count","screenshot"]',
+        '["open_link","ui_controls","screenshot","tap_retry"]',
+        '{"max_scrolls":0,"open_retries":"DOC_LINK_READS_OPEN_RETRIES"}',
+        15,
+        'Online-doc detail profile for account nickname, read count, and screenshot in Ant Fortune.',
+        'system'
+    )
+ON DUPLICATE KEY UPDATE
+    action_combo = VALUES(action_combo),
+    action_combo_hash = VALUES(action_combo_hash),
+    action_names_json = VALUES(action_names_json),
+    capture_config_json = VALUES(capture_config_json),
+    priority = VALUES(priority),
+    description = VALUES(description),
+    status = 'active',
+    updated_by = 'system';
+
+UPDATE capture_action_profiles
+SET status = 'disabled',
+    description = CONCAT(COALESCE(description, ''), ' Disabled: split into per-app profiles.'),
+    updated_by = 'system',
+    updated_at = CURRENT_TIMESTAMP
+WHERE app_type = 'alipay,antfortune'
+  AND task_type IN ('initial_check', 'detail')
+  AND status = 'active';
 
 CREATE TABLE IF NOT EXISTS crawl_jobs (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -217,6 +454,114 @@ CREATE TABLE IF NOT EXISTS task_log (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_task_name (task_name),
     INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS profile_action_profiles (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    action_profile_key VARCHAR(128) NOT NULL,
+    app_type VARCHAR(64) NOT NULL,
+    task_type VARCHAR(64) NOT NULL,
+    field_combo VARCHAR(512) NOT NULL,
+    action_combo VARCHAR(512) NOT NULL,
+    field_names_json LONGTEXT NOT NULL,
+    action_names_json LONGTEXT NOT NULL,
+    action_config_json LONGTEXT NULL,
+    aggregation_policy_json LONGTEXT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    priority INT NOT NULL DEFAULT 0,
+    description VARCHAR(255) NULL,
+    updated_by VARCHAR(64) NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_profile_action_key (action_profile_key),
+    UNIQUE KEY uk_profile_action_profile (app_type, task_type, field_combo(191)),
+    INDEX idx_profile_action_status (status),
+    INDEX idx_profile_action_app_task (app_type, task_type),
+    INDEX idx_profile_action_priority (priority)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO profile_action_profiles (
+    action_profile_key, app_type, task_type, field_combo, action_combo,
+    field_names_json, action_names_json, action_config_json,
+    aggregation_policy_json, priority, description, updated_by
+)
+VALUES
+    ('alipay_profile_daily_metrics_v1', 'alipay', 'profile_daily_metrics', 'fans_count,growth_count,read_count', 'open_profile,capture_fans,open_exact_fans_if_abbreviated,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback', '["fans_count","growth_count","read_count"]', '["open_profile","capture_fans","open_exact_fans_if_abbreviated","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]', '{"fans_count":{"exact_if_abbreviated":true},"read_count":{"recent_posts_limit":3,"ocr":false},"holding":{"enabled":false}}', '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}', 20, 'Alipay profile metrics: exact fans when needed, max read count from recent 3 posts.', 'system'),
+    ('antfortune_profile_daily_metrics_v1', 'antfortune', 'profile_daily_metrics', 'fans_count,growth_count,read_count', 'open_profile,capture_fans,open_exact_fans_if_abbreviated,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback', '["fans_count","growth_count","read_count"]', '["open_profile","capture_fans","open_exact_fans_if_abbreviated","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]', '{"fans_count":{"exact_if_abbreviated":true},"read_count":{"recent_posts_limit":3,"ocr":false},"holding":{"enabled":false}}', '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}', 20, 'Ant Fortune profile metrics: exact fans when needed, max read count from recent 3 posts.', 'system'),
+    ('tenpay_profile_daily_metrics_v1', 'tenpay', 'profile_daily_metrics', 'fans_count,growth_count,read_count', 'open_profile,capture_fans,ocr_if_needed,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback', '["fans_count","growth_count","read_count"]', '["open_profile","capture_fans","ocr_if_needed","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]', '{"fans_count":{"exact_if_abbreviated":true,"ocr":true},"read_count":{"recent_posts_limit":3,"ocr":true},"holding":{"enabled":false}}', '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}', 10, 'Tenpay profile metrics with OCR fallback.', 'system'),
+    ('unknown_profile_daily_metrics_v1', 'unknown', 'profile_daily_metrics', 'fans_count,growth_count,read_count', 'open_profile,capture_fans,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback', '["fans_count","growth_count","read_count"]', '["open_profile","capture_fans","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]', '{"fans_count":{"exact_if_abbreviated":false},"read_count":{"recent_posts_limit":3,"ocr":false},"holding":{"enabled":false}}', '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}', 0, 'Fallback profile metrics action profile.', 'system')
+ON DUPLICATE KEY UPDATE
+    action_combo = VALUES(action_combo),
+    action_names_json = VALUES(action_names_json),
+    action_config_json = VALUES(action_config_json),
+    aggregation_policy_json = VALUES(aggregation_policy_json),
+    priority = VALUES(priority),
+    description = VALUES(description),
+    status = 'active',
+    updated_by = 'system';
+
+CREATE TABLE IF NOT EXISTS profile_trigger_configs (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    config_key VARCHAR(128) NOT NULL,
+    source_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+    doc_url TEXT NOT NULL,
+    file_id VARCHAR(128) NULL,
+    sheet_id VARCHAR(128) NULL,
+    read_range VARCHAR(64) NOT NULL DEFAULT 'A1:I5000',
+    row_adapter VARCHAR(64) NOT NULL DEFAULT 'kol_daily_profile',
+    source_name VARCHAR(191) NOT NULL,
+    task_type VARCHAR(64) NOT NULL DEFAULT 'profile_daily_metrics',
+    requested_fields_json LONGTEXT NOT NULL,
+    action_profile_key VARCHAR(128) NULL,
+    aggregation_policy_json LONGTEXT NULL,
+    schedule_time VARCHAR(16) NULL,
+    target_date_offset_days INT NOT NULL DEFAULT 0,
+    scan_interval_seconds INT NOT NULL DEFAULT 300,
+    next_scan_at DATETIME NULL,
+    last_scan_at DATETIME NULL,
+    scan_status VARCHAR(32) NOT NULL DEFAULT 'idle',
+    locked_by VARCHAR(128) NULL,
+    locked_until DATETIME NULL,
+    last_error TEXT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    description VARCHAR(255) NULL,
+    updated_by VARCHAR(64) NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_profile_trigger_config (config_key),
+    INDEX idx_profile_trigger_due (status, next_scan_at),
+    INDEX idx_profile_trigger_file (source_type, file_id),
+    INDEX idx_profile_trigger_status (scan_status),
+    INDEX idx_profile_trigger_lock (locked_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS profile_trigger_runs (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    trigger_config_id BIGINT UNSIGNED NULL,
+    config_key VARCHAR(128) NULL,
+    trigger_type VARCHAR(64) NOT NULL DEFAULT 'scheduled',
+    target_date DATE NULL,
+    action_profile_key VARCHAR(128) NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'running',
+    file_id VARCHAR(128) NULL,
+    sheet_id VARCHAR(128) NULL,
+    sheet_title VARCHAR(255) NULL,
+    source_rows INT NOT NULL DEFAULT 0,
+    submitted_sources INT NOT NULL DEFAULT 0,
+    skipped_rows INT NOT NULL DEFAULT 0,
+    fans_crawled INT NOT NULL DEFAULT 0,
+    read_crawled INT NOT NULL DEFAULT 0,
+    written_rows INT NOT NULL DEFAULT 0,
+    failed_rows INT NOT NULL DEFAULT 0,
+    summary_json LONGTEXT NULL,
+    error TEXT NULL,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME NULL,
+    INDEX idx_profile_trigger_runs_config (trigger_config_id),
+    INDEX idx_profile_trigger_runs_key (config_key),
+    INDEX idx_profile_trigger_runs_status (status),
+    INDEX idx_profile_trigger_runs_date (target_date),
+    INDEX idx_profile_trigger_runs_started (started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS profile_targets (

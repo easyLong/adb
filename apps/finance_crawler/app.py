@@ -9,7 +9,7 @@ import sys
 import time
 import traceback
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import schedule
@@ -77,6 +77,41 @@ def heartbeat() -> None:
     logger.info("scheduler heartbeat")
 
 
+def run_v2_crawl_workers() -> dict[str, Any]:
+    from apps.finance_crawler.crawler_app.tasks.types import DETAIL, INITIAL_CHECK, READ_COUNT
+    from apps.finance_crawler.crawler_app.workflows.document_tasks import crawl_pending_document_tasks
+
+    return {
+        INITIAL_CHECK: crawl_pending_document_tasks(INITIAL_CHECK),
+        DETAIL: crawl_pending_document_tasks(DETAIL),
+        READ_COUNT: crawl_pending_document_tasks(READ_COUNT),
+    }
+
+
+def run_v2_writeback_worker() -> dict[str, Any]:
+    from apps.finance_crawler.crawler_app.workflows.document_tasks import writeback_document_task_results
+
+    return writeback_document_task_results("all")
+
+
+def run_kol_daily_snapshot_job(target_date: date | None = None) -> dict[str, Any]:
+    from apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots import (
+        run_kol_daily_snapshot_pipeline,
+    )
+
+    if target_date is None:
+        target_date = date.today() + timedelta(days=Config.KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS)
+    return run_kol_daily_snapshot_pipeline(snapshot_date=target_date)
+
+
+def run_kol_daily_crawl_job(target_date: date | None = None) -> dict[str, Any]:
+    from apps.finance_crawler.workflows.profile_triggers import (
+        run_default_kol_daily_profile_trigger,
+    )
+
+    return run_default_kol_daily_profile_trigger(target_date=target_date or date.today(), trigger_type="scheduled")
+
+
 def _reload_runtime_config_for_task(task_name: str) -> None:
     if task_name == "heartbeat":
         return
@@ -84,12 +119,42 @@ def _reload_runtime_config_for_task(task_name: str) -> None:
 
 
 def _register_jobs() -> None:
-    schedule.every(Config.FETCH_INTERVAL_MINUTES).minutes.do(
-        safe_run, fetch_and_save, "fetch_docs"
-    )
-    logger.info("registered fetch every %s minutes", Config.FETCH_INTERVAL_MINUTES)
+    if Config.ENABLE_LEGACY_SCHEDULER_JOBS:
+        schedule.every(Config.FETCH_INTERVAL_MINUTES).minutes.do(
+            safe_run, fetch_and_save, "fetch_docs"
+        )
+        logger.info("registered fetch every %s minutes", Config.FETCH_INTERVAL_MINUTES)
 
-    if Config.ENABLE_CHECKER:
+    if Config.SUBMIT_WORKER_INTERVAL_SECONDS > 0:
+        from apps.finance_crawler.crawler_app.workflows.submit_triggers import submit_due_document_triggers
+
+        schedule.every(Config.SUBMIT_WORKER_INTERVAL_SECONDS).seconds.do(
+            safe_run, submit_due_document_triggers, "v2_submit_worker"
+        )
+        logger.info(
+            "registered v2 submit worker every %s seconds",
+            Config.SUBMIT_WORKER_INTERVAL_SECONDS,
+        )
+
+    if Config.V2_CRAWL_WORKER_INTERVAL_SECONDS > 0:
+        schedule.every(Config.V2_CRAWL_WORKER_INTERVAL_SECONDS).seconds.do(
+            safe_run, run_v2_crawl_workers, "v2_crawl_worker"
+        )
+        logger.info(
+            "registered v2 crawl worker every %s seconds",
+            Config.V2_CRAWL_WORKER_INTERVAL_SECONDS,
+        )
+
+    if Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS > 0:
+        schedule.every(Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS).seconds.do(
+            safe_run, run_v2_writeback_worker, "v2_writeback_worker"
+        )
+        logger.info(
+            "registered v2 writeback worker every %s seconds",
+            Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS,
+        )
+
+    if Config.ENABLE_LEGACY_SCHEDULER_JOBS and Config.ENABLE_CHECKER:
         from apps.finance_crawler.jobs.checker import run_check
 
         schedule.every(Config.CHECK_INTERVAL_MINUTES).minutes.do(
@@ -97,7 +162,7 @@ def _register_jobs() -> None:
         )
         logger.info("registered check every %s minutes", Config.CHECK_INTERVAL_MINUTES)
 
-    if Config.DETAIL_INTERVAL_MINUTES > 0:
+    if Config.ENABLE_LEGACY_SCHEDULER_JOBS and Config.DETAIL_INTERVAL_MINUTES > 0:
         schedule.every(Config.DETAIL_INTERVAL_MINUTES).minutes.do(
             safe_run, run_detail, "detail_crawl_due"
         )
@@ -106,10 +171,11 @@ def _register_jobs() -> None:
             Config.DETAIL_INTERVAL_MINUTES,
         )
 
-    schedule.every().day.at(Config.REPORT_TIME).do(
-        safe_run, generate_report, "report"
-    )
-    logger.info("registered report daily at %s", Config.REPORT_TIME)
+    if Config.ENABLE_LEGACY_SCHEDULER_JOBS:
+        schedule.every().day.at(Config.REPORT_TIME).do(
+            safe_run, generate_report, "report"
+        )
+        logger.info("registered report daily at %s", Config.REPORT_TIME)
 
     if Config.PROFILE_METRICS_DOC_URL and Config.PROFILE_METRICS_INTERVAL_MINUTES > 0:
         if Config.PROFILE_METRICS_DAILY_PREPARE_TIME:
@@ -128,6 +194,27 @@ def _register_jobs() -> None:
             Config.PROFILE_METRICS_INTERVAL_MINUTES,
         )
 
+    if Config.KOL_DAILY_SNAPSHOT_DOC_URL and Config.KOL_DAILY_SNAPSHOT_TIME:
+        schedule.every().day.at(Config.KOL_DAILY_SNAPSHOT_TIME).do(
+            safe_run, run_kol_daily_snapshot_job, "kol_daily_snapshot"
+        )
+        logger.info(
+            "registered KOL daily snapshot at %s",
+            Config.KOL_DAILY_SNAPSHOT_TIME,
+        )
+
+    if Config.KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL and Config.KOL_DAILY_CRAWL_TIME:
+        from apps.finance_crawler.workflows.profile_triggers import ensure_default_profile_trigger_configs
+
+        ensure_default_profile_trigger_configs()
+        schedule.every().day.at(Config.KOL_DAILY_CRAWL_TIME).do(
+            safe_run, run_kol_daily_crawl_job, "kol_daily_crawl"
+        )
+        logger.info(
+            "registered KOL daily crawl at %s",
+            Config.KOL_DAILY_CRAWL_TIME,
+        )
+
     if Config.HEARTBEAT_INTERVAL_MINUTES > 0:
         schedule.every(Config.HEARTBEAT_INTERVAL_MINUTES).minutes.do(
             safe_run, heartbeat, "heartbeat"
@@ -141,9 +228,21 @@ def run_forever() -> None:
     load_runtime_config()
     _register_jobs()
 
-    logger.info("sync Tencent Docs once on startup")
-    safe_run(fetch_and_save, "fetch_docs_init")
-    if Config.DETAIL_INTERVAL_MINUTES > 0:
+    if Config.ENABLE_LEGACY_SCHEDULER_JOBS:
+        logger.info("sync Tencent Docs once on startup")
+        safe_run(fetch_and_save, "fetch_docs_init")
+    if Config.SUBMIT_WORKER_INTERVAL_SECONDS > 0:
+        from apps.finance_crawler.crawler_app.workflows.submit_triggers import submit_due_document_triggers
+
+        logger.info("scan v2 document trigger configs once on startup")
+        safe_run(submit_due_document_triggers, "v2_submit_worker_init")
+    if Config.V2_CRAWL_WORKER_INTERVAL_SECONDS > 0:
+        logger.info("scan v2 crawl queues once on startup")
+        safe_run(run_v2_crawl_workers, "v2_crawl_worker_init")
+    if Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS > 0:
+        logger.info("scan v2 writeback queue once on startup")
+        safe_run(run_v2_writeback_worker, "v2_writeback_worker_init")
+    if Config.ENABLE_LEGACY_SCHEDULER_JOBS and Config.DETAIL_INTERVAL_MINUTES > 0:
         logger.info("scan due detail tasks once on startup")
         safe_run(run_detail, "detail_crawl_due_init")
     if Config.PROFILE_METRICS_DOC_URL and Config.PROFILE_METRICS_INTERVAL_MINUTES > 0:
@@ -203,6 +302,7 @@ def main() -> int:
         "--once",
         choices=[
             "db",
+            "crawler-app-db",
             "config",
             "fetch",
             "check",
@@ -217,12 +317,44 @@ def main() -> int:
             "profile-writeback",
             "profile-metrics",
             "profile-post-reads",
+            "kol-daily-snapshot",
+            "kol-daily-writeback",
+            "kol-daily-crawl",
+            "profile-trigger-list",
+            "profile-trigger-run",
             "article-sync",
             "article-crawl",
             "article-writeback",
             "article-details",
             "doc-link-reads",
             "doc-columns-check",
+            "v2-read-count-submit",
+            "v2-read-count-crawl",
+            "v2-read-count-writeback",
+            "v2-read-count",
+            "v2-initial-check-submit",
+            "v2-initial-check-crawl",
+            "v2-initial-check-writeback",
+            "v2-initial-check",
+            "v2-detail-submit",
+            "v2-detail-crawl",
+            "v2-detail-writeback",
+            "v2-detail",
+            "v2-doc-config-set",
+            "v2-doc-config-check",
+            "v2-doc-config-list",
+            "v2-doc-config-submit",
+            "v2-doc-config-run",
+            "v2-trigger-set",
+            "v2-trigger-bind",
+            "v2-trigger-list",
+            "v2-trigger-submit",
+            "v2-submit-worker-once",
+            "v2-crawl-worker-once",
+            "v2-writeback-worker-once",
+            "v2-correction-plan",
+            "v2-correction-writeback",
+            "v2-correction-apply",
         ],
         help="run one task and exit",
     )
@@ -231,6 +363,30 @@ def main() -> int:
     parser.add_argument("--excel-input-path", default="", help="set runtime Excel detail input path")
     parser.add_argument("--single-link", default="", help="set one-shot detail test link")
     parser.add_argument("--report-date", default="", help="report date in YYYY-MM-DD format; defaults to yesterday")
+    parser.add_argument("--document-config-key", default="", help="v2 document task config key")
+    parser.add_argument("--document-task-type", default="", help="v2 document task type for config set")
+    parser.add_argument("--document-fields", default="", help="comma-separated v2 business fields for config set")
+    parser.add_argument("--document-description", default="", help="v2 document task config description")
+    parser.add_argument("--document-sheet-mode", default="", help="v2 sheet selector mode")
+    parser.add_argument("--document-sheet-id", default="", help="v2 fixed/fallback sheet id")
+    parser.add_argument("--document-sheet-title", default="", help="v2 exact sheet title selector")
+    parser.add_argument("--document-sheet-keyword", default="", help="v2 sheet title keyword selector")
+    parser.add_argument("--document-sheet-ids", default="", help="comma-separated v2 sheet ids for sheet_group")
+    parser.add_argument("--submit-scan-interval-seconds", type=int, default=300, help="v2 trigger scan interval")
+    parser.add_argument(
+        "--submit-target-date-offset-days",
+        type=int,
+        default=0,
+        help="v2 trigger date_sheet target offset; 0=today, -1=yesterday",
+    )
+    parser.add_argument("--correction-document-id", type=int, default=0, help="v2 correction document id")
+    parser.add_argument("--correction-sheet-id", default="", help="v2 correction sheet id")
+    parser.add_argument("--correction-row-index", type=int, default=0, help="v2 correction 1-based row index")
+    parser.add_argument("--correction-post-url", default="", help="v2 correction post URL selector")
+    parser.add_argument("--correction-field", default="", help="v2 correction business field name")
+    parser.add_argument("--correction-value", default="", help="v2 correction new value")
+    parser.add_argument("--correction-reason", default="", help="v2 correction reason")
+    parser.add_argument("--correction-operator", default="cli", help="v2 correction operator name")
     parser.add_argument(
         "--supervise",
         action="store_true",
@@ -243,6 +399,12 @@ def main() -> int:
 
     if args.once == "db":
         init_db()
+        return 0
+    if args.once == "crawler-app-db":
+        from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
+
+        init_crawler_app_db()
+        print(f"crawler_app database initialized: {Config.CRAWLER_APP_DB_NAME}")
         return 0
     if args.once == "config":
         init_db()
@@ -355,6 +517,75 @@ def main() -> int:
         rows = safe_run(lambda: crawl_profile_post_reads(target_date=target_date), "profile_post_reads_once") or []
         print(f"profile post reads crawled: {len(rows)}")
         return 0
+    if args.once in {"kol-daily-snapshot", "kol-daily-writeback", "kol-daily-crawl"}:
+        init_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        from apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots import (
+            run_kol_daily_snapshot_pipeline,
+            writeback_kol_daily_snapshots_to_tencent_docs,
+        )
+
+        if args.once == "kol-daily-writeback":
+            summary = safe_run(
+                lambda: writeback_kol_daily_snapshots_to_tencent_docs(
+                    snapshot_date=target_date,
+                    doc_url=args.tencent_doc_url or None,
+                ),
+                "kol_daily_writeback_once",
+            ) or {}
+        elif args.once == "kol-daily-crawl":
+            from apps.finance_crawler.workflows.profile_triggers import run_default_kol_daily_profile_trigger
+
+            summary = safe_run(
+                lambda: run_default_kol_daily_profile_trigger(
+                    target_date=target_date,
+                    trigger_type="manual",
+                ),
+                "kol_daily_crawl_once",
+            ) or {}
+        else:
+            summary = safe_run(
+                lambda: run_kol_daily_snapshot_pipeline(
+                    snapshot_date=target_date,
+                    source_doc_url=args.tencent_doc_url or None,
+                ),
+                "kol_daily_snapshot_once",
+            ) or {}
+        print(f"KOL daily summary: {summary}")
+        return 0
+    if args.once in {"profile-trigger-list", "profile-trigger-run"}:
+        from apps.finance_crawler.workflows.profile_triggers import (
+            KOL_DAILY_PROFILE_CONFIG_KEY,
+            list_profile_triggers,
+            run_profile_trigger_config,
+        )
+
+        init_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        if args.once == "profile-trigger-list":
+            print(list_profile_triggers(include_disabled=True))
+            return 0
+        config_key = args.document_config_key or KOL_DAILY_PROFILE_CONFIG_KEY
+        print(
+            safe_run(
+                lambda: run_profile_trigger_config(
+                    config_key,
+                    target_date=target_date,
+                    trigger_type="manual",
+                ),
+                "profile_trigger_run_once",
+            )
+            or {}
+        )
+        return 0
     if args.once == "article-sync":
         init_db()
         updates = _config_updates_from_args(args)
@@ -387,7 +618,7 @@ def main() -> int:
         return 0
     if args.once == "doc-link-reads":
         init_db()
-        updates = _config_updates_from_args(args)
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
         if updates:
             set_runtime_config(updates)
         load_runtime_config()
@@ -400,11 +631,328 @@ def main() -> int:
         return 0
     if args.once == "doc-columns-check":
         init_db()
-        updates = _config_updates_from_args(args)
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
         if updates:
             set_runtime_config(updates)
         load_runtime_config()
         print(_format_doc_columns_check(args.tencent_doc_url or None))
+        return 0
+    if args.once == "v2-read-count-submit":
+        from apps.finance_crawler.crawler_app.workflows.read_count import submit_read_count_tasks
+
+        init_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        print(
+            submit_read_count_tasks(
+                doc_url=args.tencent_doc_url or None,
+                target_date=target_date,
+            )
+        )
+        return 0
+    if args.once == "v2-read-count-crawl":
+        from apps.finance_crawler.crawler_app.workflows.read_count import crawl_pending_read_count_tasks
+
+        init_db()
+        load_runtime_config()
+        print(crawl_pending_read_count_tasks())
+        return 0
+    if args.once == "v2-read-count-writeback":
+        from apps.finance_crawler.crawler_app.workflows.read_count import writeback_read_count_results
+
+        init_db()
+        load_runtime_config()
+        print(writeback_read_count_results())
+        return 0
+    if args.once == "v2-read-count":
+        from apps.finance_crawler.crawler_app.workflows.read_count import run_read_count_workflow
+
+        init_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        print(
+            run_read_count_workflow(
+                doc_url=args.tencent_doc_url or None,
+                target_date=target_date,
+            )
+        )
+        return 0
+    if args.once in {
+        "v2-initial-check-submit",
+        "v2-initial-check-crawl",
+        "v2-initial-check-writeback",
+        "v2-initial-check",
+        "v2-detail-submit",
+        "v2-detail-crawl",
+        "v2-detail-writeback",
+        "v2-detail",
+    }:
+        from apps.finance_crawler.crawler_app.tasks.types import DETAIL, INITIAL_CHECK
+        from apps.finance_crawler.crawler_app.workflows.document_tasks import (
+            crawl_pending_document_tasks,
+            run_document_task_workflow,
+            submit_document_tasks,
+            writeback_document_task_results,
+        )
+
+        init_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        task_type = INITIAL_CHECK if "initial-check" in args.once else DETAIL
+        if args.once.endswith("-submit"):
+            print(
+                submit_document_tasks(
+                    task_type,
+                    doc_url=args.tencent_doc_url or None,
+                    target_date=target_date,
+                )
+            )
+        elif args.once.endswith("-crawl"):
+            print(crawl_pending_document_tasks(task_type))
+        elif args.once.endswith("-writeback"):
+            print(writeback_document_task_results(task_type))
+        else:
+            print(
+                run_document_task_workflow(
+                    task_type,
+                    doc_url=args.tencent_doc_url or None,
+                    target_date=target_date,
+                )
+            )
+        return 0
+    if args.once in {
+        "v2-doc-config-set",
+        "v2-doc-config-check",
+        "v2-doc-config-list",
+        "v2-doc-config-submit",
+        "v2-doc-config-run",
+    }:
+        from apps.finance_crawler.crawler_app.workflows.document_tasks import (
+            build_sheet_selector,
+            check_document_task_config,
+            list_document_task_configs,
+            parse_field_names,
+            run_configured_document_task_workflow,
+            submit_configured_document_tasks,
+            upsert_document_task_config,
+        )
+
+        init_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        if args.once == "v2-doc-config-list":
+            print(list_document_task_configs())
+            return 0
+        if not args.document_config_key:
+            raise ValueError("--document-config-key is required")
+        if args.once == "v2-doc-config-check":
+            print(check_document_task_config(args.document_config_key))
+            return 0
+        if args.once == "v2-doc-config-set":
+            if not args.tencent_doc_url:
+                raise ValueError("--tencent-doc-url is required for v2-doc-config-set")
+            if not args.document_task_type:
+                raise ValueError("--document-task-type is required for v2-doc-config-set")
+            print(
+                upsert_document_task_config(
+                    config_key=args.document_config_key,
+                    doc_url=args.tencent_doc_url,
+                    task_type=args.document_task_type,
+                    field_names=parse_field_names(args.document_fields),
+                    sheet_selector=build_sheet_selector(
+                        mode=args.document_sheet_mode or None,
+                        sheet_id=args.document_sheet_id or None,
+                        sheet_title=args.document_sheet_title or None,
+                        sheet_keyword=args.document_sheet_keyword or None,
+                        sheet_ids=args.document_sheet_ids or None,
+                    ),
+                    description=args.document_description or None,
+                )
+            )
+            return 0
+        if args.once == "v2-doc-config-submit":
+            print(
+                submit_configured_document_tasks(
+                    args.document_config_key,
+                    target_date=target_date,
+                )
+            )
+            return 0
+        print(
+            run_configured_document_task_workflow(
+                args.document_config_key,
+                target_date=target_date,
+            )
+        )
+        return 0
+    if args.once in {
+        "v2-trigger-set",
+        "v2-trigger-bind",
+        "v2-trigger-list",
+        "v2-trigger-submit",
+        "v2-submit-worker-once",
+    }:
+        from apps.finance_crawler.crawler_app.workflows.document_tasks import (
+            build_sheet_selector,
+            parse_field_names,
+        )
+        from apps.finance_crawler.crawler_app.workflows.submit_triggers import (
+            list_document_triggers,
+            submit_document_trigger_config,
+            submit_due_document_triggers,
+            upsert_document_trigger,
+            upsert_document_trigger_binding,
+        )
+
+        init_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        if args.once == "v2-trigger-list":
+            print(list_document_triggers())
+            return 0
+        if args.once == "v2-submit-worker-once":
+            print(submit_due_document_triggers())
+            return 0
+        if not args.document_config_key:
+            raise ValueError("--document-config-key is required")
+        if args.once == "v2-trigger-set":
+            if not args.tencent_doc_url:
+                raise ValueError("--tencent-doc-url is required for v2-trigger-set")
+            print(
+                upsert_document_trigger(
+                    config_key=args.document_config_key,
+                    doc_url=args.tencent_doc_url,
+                    sheet_selector=build_sheet_selector(
+                        mode=args.document_sheet_mode or None,
+                        sheet_id=args.document_sheet_id or None,
+                        sheet_title=args.document_sheet_title or None,
+                        sheet_keyword=args.document_sheet_keyword or None,
+                        sheet_ids=args.document_sheet_ids or None,
+                    ),
+                    submit_policy={"target_date_offset_days": args.submit_target_date_offset_days},
+                    scan_interval_seconds=args.submit_scan_interval_seconds,
+                    description=args.document_description or None,
+                )
+            )
+            return 0
+        if args.once == "v2-trigger-bind":
+            if not args.document_task_type:
+                raise ValueError("--document-task-type is required for v2-trigger-bind")
+            print(
+                upsert_document_trigger_binding(
+                    config_key=args.document_config_key,
+                    task_type=args.document_task_type,
+                    field_names=parse_field_names(args.document_fields),
+                    description=args.document_description or None,
+                )
+            )
+            return 0
+        print(
+            submit_document_trigger_config(
+                args.document_config_key,
+                target_date=target_date,
+                trigger_type="manual",
+            )
+        )
+        return 0
+    if args.once == "v2-crawl-worker-once":
+        init_db()
+        load_runtime_config()
+        print(run_v2_crawl_workers())
+        return 0
+    if args.once == "v2-writeback-worker-once":
+        init_db()
+        load_runtime_config()
+        print(run_v2_writeback_worker())
+        return 0
+    if args.once in {
+        "v2-correction-plan",
+        "v2-correction-writeback",
+        "v2-correction-apply",
+    }:
+        from apps.finance_crawler.crawler_app.workflows.corrections import (
+            apply_pending_correction_writebacks,
+            plan_and_apply_configured_document_correction,
+            plan_and_apply_document_correction,
+            plan_configured_document_correction,
+            plan_document_correction,
+        )
+
+        init_db()
+        load_runtime_config()
+        if args.once == "v2-correction-writeback":
+            print(apply_pending_correction_writebacks())
+            return 0
+        _require_correction_args(args)
+        target_date = _parse_optional_date(args.report_date)
+        if args.document_config_key:
+            row_index = args.correction_row_index or None
+            if args.once == "v2-correction-plan":
+                print(
+                    plan_configured_document_correction(
+                        config_key=args.document_config_key,
+                        target_date=target_date,
+                        row_index=row_index,
+                        post_url=args.correction_post_url or None,
+                        field_name=args.correction_field,
+                        new_value=args.correction_value,
+                        reason=args.correction_reason,
+                        operator_name=args.correction_operator,
+                    )
+                )
+                return 0
+            print(
+                plan_and_apply_configured_document_correction(
+                    config_key=args.document_config_key,
+                    target_date=target_date,
+                    row_index=row_index,
+                    post_url=args.correction_post_url or None,
+                    field_name=args.correction_field,
+                    new_value=args.correction_value,
+                    reason=args.correction_reason,
+                    operator_name=args.correction_operator,
+                )
+            )
+            return 0
+        if args.once == "v2-correction-plan":
+            print(
+                plan_document_correction(
+                    document_id=args.correction_document_id,
+                    sheet_id=args.correction_sheet_id,
+                    row_index=args.correction_row_index,
+                    field_name=args.correction_field,
+                    new_value=args.correction_value,
+                    reason=args.correction_reason,
+                    operator_name=args.correction_operator,
+                )
+            )
+            return 0
+        print(
+            plan_and_apply_document_correction(
+                document_id=args.correction_document_id,
+                sheet_id=args.correction_sheet_id,
+                row_index=args.correction_row_index,
+                field_name=args.correction_field,
+                new_value=args.correction_value,
+                reason=args.correction_reason,
+                operator_name=args.correction_operator,
+            )
+        )
         return 0
 
     try:
@@ -414,14 +962,14 @@ def main() -> int:
         return 0
 
 
-def _config_updates_from_args(args: argparse.Namespace) -> dict[str, str]:
+def _config_updates_from_args(args: argparse.Namespace, *, include_tencent_doc_url: bool = True) -> dict[str, str]:
     updates: dict[str, str] = {}
     for item in args.config_set or []:
         if "=" not in item:
             raise ValueError(f"--config-set expects KEY=VALUE, got: {item}")
         key, value = item.split("=", 1)
         updates[key.strip()] = value.strip()
-    if args.tencent_doc_url:
+    if include_tencent_doc_url and args.tencent_doc_url:
         updates["TENCENT_DOC_URL"] = args.tencent_doc_url
     if args.excel_input_path:
         updates["EXCEL_DETAIL_INPUT_PATH"] = args.excel_input_path
@@ -440,6 +988,28 @@ def _parse_optional_date(value: str) -> date | None:
         today = date.today()
         return date(today.year, int(cleaned[:2]), int(cleaned[2:]))
     raise ValueError(f"invalid date: {value}; expected YYYY-MM-DD or MMDD")
+
+
+def _require_correction_args(args: argparse.Namespace) -> None:
+    missing = []
+    if args.document_config_key:
+        if not args.correction_row_index and not args.correction_post_url:
+            missing.append("--correction-row-index or --correction-post-url")
+    else:
+        if not args.correction_document_id:
+            missing.append("--correction-document-id")
+        if not args.correction_sheet_id:
+            missing.append("--correction-sheet-id")
+        if not args.correction_row_index:
+            missing.append("--correction-row-index")
+    if not args.correction_field:
+        missing.append("--correction-field")
+    if args.correction_value is None:
+        missing.append("--correction-value")
+    if not args.correction_reason:
+        missing.append("--correction-reason")
+    if missing:
+        raise ValueError("missing correction arguments: " + ", ".join(missing))
 
 
 def _format_doc_columns_check(doc_url: str | None = None) -> str:
