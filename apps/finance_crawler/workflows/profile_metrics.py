@@ -11,6 +11,7 @@ import json
 import re
 import shlex
 import time
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -27,8 +28,10 @@ from apps.finance_crawler.crawler_app.capture.core import (
     PageSnapshot,
     PageState,
 )
+from apps.finance_crawler.crawler_app.errors import DEVICE_UNAVAILABLE, classify_crawl_error
 from apps.finance_crawler.integrations.tencent_docs import client
 from apps.finance_crawler.integrations.tencent_docs.write_requests import cell_request, row_cells_request
+from apps.finance_crawler.crawler_app.writeback.locator import load_sheet_context, locate_by_date_url
 from apps.finance_crawler.mobile.capture_engine import (
     capture_pages,
     collect_ui_records,
@@ -60,6 +63,7 @@ logger = get_logger("profile_metrics")
 
 SOURCE_TYPE = "tencent_docs"
 FANS_COL_INDEX = 4
+DUPLICATE_ROW_MARKER = "\u91cd\u590d"
 SUPPORTED_PROFILE_PLATFORMS = {
     "\u8682\u8681",
     "alipay",
@@ -239,41 +243,80 @@ def writeback_profile_metrics(limit: int | None = None) -> int:
         return 0
 
     requests_by_doc: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    successes: list[dict[str, Any]] = []
+    successes_by_doc: dict[tuple[str, str], list[dict[str, Any]]] = {}
     failures: list[tuple[dict[str, Any], str]] = []
+    contexts_by_doc: dict[tuple[str, str], Any] = {}
+    success_count = 0
     for row in rows:
         locator = row.get("source_locator") or {}
         try:
             doc = client.DocInfo(file_id=str(locator["file_id"]), sheet_id=str(locator["sheet_id"]))
-            row_index = int(locator["row_index"])
-            fans_col = int(locator.get("fans_col_index", FANS_COL_INDEX))
             key = (doc.file_id, doc.sheet_id)
+            context = contexts_by_doc.get(key)
+            if context is None:
+                context = load_sheet_context(doc, Config.PROFILE_METRICS_READ_RANGE)
+                contexts_by_doc[key] = context
+            metric_date = row.get("metric_date")
+            if not isinstance(metric_date, date):
+                parsed_date = _parse_date(str(metric_date or ""))
+                if parsed_date is None:
+                    raise RuntimeError(f"invalid metric_date for profile writeback: {metric_date}")
+                metric_date = parsed_date
+            located = locate_by_date_url(
+                context,
+                target_date=metric_date,
+                url=str(row.get("homepage_url") or ""),
+                date_col_index=int(locator.get("date_col_index", 0)),
+                url_col_index=int(locator.get("url_col_index", 3)),
+            )
+            if not located.matched:
+                raise RuntimeError(located.error or "profile writeback row was not located")
+            fans_col = int(locator.get("fans_col_index", FANS_COL_INDEX))
             requests_by_doc.setdefault(key, []).append(
                 row_cells_request(
-                    row_index,
+                    int(located.primary_row),
                     fans_col,
                     [row["fans_count"], "" if row.get("growth_count") is None else row["growth_count"]],
                     doc=doc,
                 )
             )
-            successes.append(row)
+            for duplicate_row_index in located.duplicate_rows:
+                requests_by_doc[key].append(
+                    row_cells_request(
+                        int(duplicate_row_index),
+                        fans_col,
+                        [DUPLICATE_ROW_MARKER, DUPLICATE_ROW_MARKER],
+                        doc=doc,
+                    )
+                )
+            success_row = dict(row)
+            success_locator = dict(locator)
+            success_locator["resolved_row_index"] = int(located.primary_row)
+            success_locator["duplicate_row_indexes"] = [int(item) for item in located.duplicate_rows]
+            success_row["source_locator"] = success_locator
+            successes_by_doc.setdefault(key, []).append(success_row)
         except Exception as exc:
             failures.append((row, str(exc)))
 
     for (file_id, sheet_id), requests in requests_by_doc.items():
-        client.post_batch_update(
-            requests,
-            "profile_metric_writeback",
-            doc=client.DocInfo(file_id=file_id, sheet_id=sheet_id),
-        )
-
-    for row in successes:
-        mark_profile_writeback(
-            metric_source_id=int(row["metric_source_id"]),
-            metric_id=int(row["metric_id"]) if row.get("metric_id") is not None else None,
-            locator=row.get("source_locator") or {},
-            status="success",
-        )
+        doc_successes = successes_by_doc.get((file_id, sheet_id), [])
+        try:
+            client.post_batch_update(
+                requests,
+                "profile_metric_writeback",
+                doc=client.DocInfo(file_id=file_id, sheet_id=sheet_id),
+            )
+            for row in doc_successes:
+                mark_profile_writeback(
+                    metric_source_id=int(row["metric_source_id"]),
+                    metric_id=int(row["metric_id"]) if row.get("metric_id") is not None else None,
+                    locator=row.get("source_locator") or {},
+                    status="success",
+                )
+            success_count += len(doc_successes)
+        except Exception as exc:
+            for row in doc_successes:
+                failures.append((row, str(exc)))
     for row, error in failures:
         mark_profile_writeback(
             metric_source_id=int(row["metric_source_id"]),
@@ -282,8 +325,8 @@ def writeback_profile_metrics(limit: int | None = None) -> int:
             status="error",
             error=error,
         )
-    logger.info("profile metric writeback finished: success=%s failed=%s", len(successes), len(failures))
-    return len(successes)
+    logger.info("profile metric writeback finished: success=%s failed=%s", success_count, len(failures))
+    return success_count
 
 
 def _crawl_profile(record: dict[str, Any]) -> dict[str, Any]:
@@ -313,50 +356,24 @@ def _crawl_profile(record: dict[str, Any]) -> dict[str, Any]:
                 "error": known_error,
             }
         app_type = str(record.get("app_type") or "unknown")
-        app_adapter = ProfileAppAdapter(app_type)
-        app_adapter.reset_state()
-        app_adapter.open_target(url)
-        summary = capture_pages(
-            session_device(),
-            output_dir,
-            max_scrolls=0,
-            wait_after_open=_profile_home_initial_wait(app_type),
-            wait_after_scroll=Config.DETAIL_SCROLL_WAIT,
-            enable_ocr=app_type.lower() == "tenpay",
-            dynamic_wait=False,
-            ready_timeout=8,
-            ready_check_interval=0.5,
-            serial=None,
-        )
-        records = _read_capture_records(summary)
-        screenshot_path = str(output_dir / "page_000.png") if (output_dir / "page_000.png").exists() else None
-        capture_pages_count = 1
-        if _profile_home_needs_recapture(records, app_type):
-            logger.info("profile home not ready app=%s; waiting and recapturing", app_type)
-            time.sleep(_profile_home_recapture_wait(app_type))
-            records = _capture_current_records(
-                session_device(),
-                output_dir,
-                "page_001_retry",
-                serial=assert_device_ready(),
-                enable_ocr=app_type.lower() == "tenpay",
-            )
-            retry_screenshot_path = output_dir / "page_001_retry.png"
-            if retry_screenshot_path.exists():
-                screenshot_path = str(retry_screenshot_path)
-            capture_pages_count = 2
+        action_run = ProfileFansActionRunner(app_type).run(url, output_dir)
         fans_result = _resolve_profile_fans_count(
-            records,
-            screenshot_path=screenshot_path,
-            output_dir=output_dir,
+            action_run.records,
+            screenshot_path=action_run.screenshot_path,
+            output_dir=action_run.output_dir,
             app_type=app_type,
             expected_account_name=str(record.get("account_name") or ""),
         )
         fans_count = fans_result.get("fans_count")
-        texts = [str(item.get("text") or "").strip() for item in records if str(item.get("text") or "").strip()]
+        texts = [str(item.get("text") or "").strip() for item in action_run.records if str(item.get("text") or "").strip()]
         blocked_error = None if fans_count is not None else _blocked_profile_page_error(texts)
         status = "success" if fans_count is not None else ("blocked" if blocked_error else "error")
         error = None if fans_count is not None else (blocked_error or fans_result.get("quality_error") or "profile fans count was not detected")
+        error_type = None if error is None else classify_crawl_error(
+            error,
+            status=status,
+            page_state=str(fans_result.get("page_state") or ""),
+        ).kind
         metric_id = record_profile_metric(
             target_id=int(record["target_id"]),
             metric_date=record["metric_date"],
@@ -367,12 +384,13 @@ def _crawl_profile(record: dict[str, Any]) -> dict[str, Any]:
             metrics={
                 "workflow": "profile_metrics",
                 "duration": round(time.perf_counter() - started, 3),
-                "capture_pages": capture_pages_count,
+                "capture_pages": action_run.capture_pages_count,
                 "fans": fans_result,
                 "capture_bundle": fans_result.get("capture_bundle"),
                 "field_results": fans_result.get("field_results") or [],
+                "error_type": error_type,
             },
-            screenshot_path=screenshot_path,
+            screenshot_path=action_run.screenshot_path,
             error=error,
         )
         return {
@@ -383,8 +401,10 @@ def _crawl_profile(record: dict[str, Any]) -> dict[str, Any]:
             "status": status,
             "fans_count": fans_count,
             "error": error,
+            "error_type": error_type,
         }
     except Exception as exc:
+        error_type = classify_crawl_error(exc).kind
         record_profile_metric(
             target_id=int(record["target_id"]),
             metric_date=record["metric_date"],
@@ -392,7 +412,7 @@ def _crawl_profile(record: dict[str, Any]) -> dict[str, Any]:
             homepage_url=url,
             status="error",
             fans_count=None,
-            metrics={"workflow": "profile_metrics", "duration": round(time.perf_counter() - started, 3)},
+            metrics={"workflow": "profile_metrics", "duration": round(time.perf_counter() - started, 3), "error_type": error_type},
             error=str(exc),
         )
         logger.warning("profile metric crawl failed target=%s url=%s: %s", record.get("target_id"), url, exc)
@@ -403,6 +423,7 @@ def _crawl_profile(record: dict[str, Any]) -> dict[str, Any]:
             "status": "error",
             "fans_count": None,
             "error": str(exc),
+            "error_type": error_type,
         }
 
 
@@ -544,6 +565,62 @@ class ProfileAppAdapter:
 
     def open_target(self, target_url: str) -> None:
         _open_profile_url(target_url, source_app=self.app_type)
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileActionRun:
+    records: list[dict[str, Any]]
+    screenshot_path: str | None
+    output_dir: Any
+    capture_pages_count: int
+
+
+class ProfileFansActionRunner:
+    """Run profile page actions and return evidence for field extractors."""
+
+    def __init__(self, app_type: str) -> None:
+        self.app_type = str(app_type or "unknown")
+        self.enable_ocr = self.app_type.lower() == "tenpay"
+        self.adapter = ProfileAppAdapter(self.app_type)
+
+    def run(self, url: str, output_dir: Any) -> ProfileActionRun:
+        self.adapter.reset_state()
+        self.adapter.open_target(url)
+        summary = capture_pages(
+            session_device(),
+            output_dir,
+            max_scrolls=0,
+            wait_after_open=_profile_home_initial_wait(self.app_type),
+            wait_after_scroll=Config.DETAIL_SCROLL_WAIT,
+            enable_ocr=self.enable_ocr,
+            dynamic_wait=False,
+            ready_timeout=8,
+            ready_check_interval=0.5,
+            serial=None,
+        )
+        records = _read_capture_records(summary)
+        screenshot_path = str(output_dir / "page_000.png") if (output_dir / "page_000.png").exists() else None
+        capture_pages_count = 1
+        if _profile_home_needs_recapture(records, self.app_type):
+            logger.info("profile home not ready app=%s; waiting and recapturing", self.app_type)
+            time.sleep(_profile_home_recapture_wait(self.app_type))
+            records = _capture_current_records(
+                session_device(),
+                output_dir,
+                "page_001_retry",
+                serial=assert_device_ready(),
+                enable_ocr=self.enable_ocr,
+            )
+            retry_screenshot_path = output_dir / "page_001_retry.png"
+            if retry_screenshot_path.exists():
+                screenshot_path = str(retry_screenshot_path)
+            capture_pages_count = 2
+        return ProfileActionRun(
+            records=records,
+            screenshot_path=screenshot_path,
+            output_dir=output_dir,
+            capture_pages_count=capture_pages_count,
+        )
 
 
 def _resolve_profile_fans_count(
@@ -1252,28 +1329,7 @@ def _max_consecutive_device_errors() -> int:
 
 
 def _is_device_unavailable_error(error: Any) -> bool:
-    if error is None:
-        return False
-    if isinstance(error, DeviceUnavailable):
-        return True
-    text = str(error).lower()
-    if not text:
-        return False
-    markers = (
-        "adb device",
-        "no adb device",
-        "configured device not found",
-        "multiple adb devices",
-        "device unauthorized",
-        "device not ready",
-        "device offline",
-        "device '",
-        "uiautomator2 device session is unavailable",
-        "adb shell unavailable",
-        "returned non-zero exit status",
-        "device check timed out",
-    )
-    return any(marker in text for marker in markers)
+    return classify_crawl_error(error).kind == DEVICE_UNAVAILABLE
 
 
 def _profile_doc(doc_url: str | None = None) -> client.DocInfo:

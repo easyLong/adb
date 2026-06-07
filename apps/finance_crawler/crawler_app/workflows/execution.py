@@ -10,6 +10,7 @@ from typing import Any
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawler_app.capture.core import CaptureBundle, FieldExtractionResult
 from apps.finance_crawler.crawler_app.capture.observations import build_capture_bundle_observations
+from apps.finance_crawler.crawler_app.errors import classify_crawl_error
 from apps.finance_crawler.crawler_app.storage import repository
 from apps.finance_crawler.crawler_app.documents.fields import REMARK
 from apps.finance_crawler.crawler_app.storage.db import get_conn
@@ -42,6 +43,12 @@ def crawl_pending_tasks(handler: TaskHandler, *, limit: int | None = None) -> di
             result = _crawl_submission(handler, submission)
             status = str(result.get("status") or "error")
             error = None if status == "success" else str(result.get("error") or status)
+            if error and not result.get("error_type"):
+                result["error_type"] = classify_crawl_error(
+                    error,
+                    status=status,
+                    page_state=str(result.get("page_state") or ""),
+                ).kind
 
             final_submission_status = repository.finish_task_execution(
                 conn,
@@ -129,7 +136,7 @@ def _crawl_submission(handler: TaskHandler, submission: dict[str, Any]) -> dict[
             submission.get("id"),
             exc,
         )
-        return {"status": "error", "error": str(exc)}
+        return {"status": "error", "error": str(exc), "error_type": classify_crawl_error(exc).kind}
     except Exception as exc:
         logger.warning(
             "crawler_app task failed task_type=%s submission=%s: %s",
@@ -137,7 +144,7 @@ def _crawl_submission(handler: TaskHandler, submission: dict[str, Any]) -> dict[
             submission.get("id"),
             exc,
         )
-        return {"status": "error", "error": str(exc)}
+        return {"status": "error", "error": str(exc), "error_type": classify_crawl_error(exc).kind}
 
 
 def _record_field_capture_observations(

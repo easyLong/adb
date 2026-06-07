@@ -67,6 +67,12 @@ from apps.finance_crawler.crawler_app.workflows.execution import (
     _sleep_between_submissions,
     execution_summary,
 )
+from apps.finance_crawler.crawler_app.errors import (
+    DEVICE_UNAVAILABLE,
+    FIELD_NOT_DETECTED,
+    PAGE_NOT_FOUND,
+    classify_crawl_error,
+)
 from apps.finance_crawler.crawler_app.workflows.submit_triggers import (
     TriggerBinding,
     _canonical_rows_by_url,
@@ -76,6 +82,11 @@ from apps.finance_crawler.crawler_app.workflows.submit_triggers import (
     _validate_trigger_binding_policy,
 )
 from apps.finance_crawler.crawler_app.writeback.executor import apply_pending_writebacks
+from apps.finance_crawler.crawler_app.writeback.locator import (
+    SheetWritebackContext,
+    locate_by_date_url,
+    locate_by_post_url,
+)
 from apps.finance_crawler.crawler_app.capture.observations import build_profile_metric_observations
 from apps.finance_crawler.crawlers.constants import SOURCE_ALIPAY, SOURCE_TENPAY
 from apps.finance_crawler.integrations.tencent_docs import client as tencent_docs_client
@@ -90,6 +101,7 @@ from apps.finance_crawler.mobile.action_plan import (
     ACTION_UI_CONTROLS,
 )
 from apps.finance_crawler.utils.device_health import AdbDevice, classify_adb_transport
+from apps.finance_crawler.workflows.profile_metrics import writeback_profile_metrics
 
 
 class CrawlerAppDocumentTests(unittest.TestCase):
@@ -540,6 +552,103 @@ class CrawlerAppDocumentTests(unittest.TestCase):
 
         self.assertEqual(located["https://example.com/a"], [3, 4])
         self.assertEqual(located["https://example.com/b"], [5])
+
+    def test_writeback_locator_uses_url_and_marks_duplicates(self) -> None:
+        mapping = column_resolver.resolve_header(["帖子链接", "发帖账号昵称"])
+        context = SheetWritebackContext(
+            rows=[
+                ["帖子链接", "发帖账号昵称"],
+                ["https://example.com/a", ""],
+                ["https://example.com/a", ""],
+            ],
+            start_row=0,
+            mapping=mapping,
+        )
+
+        located = locate_by_post_url(context, "https://example.com/a")
+
+        self.assertEqual(located.primary_row, 2)
+        self.assertEqual(located.duplicate_rows, (3,))
+
+    def test_writeback_locator_uses_date_and_homepage_url(self) -> None:
+        context = SheetWritebackContext(
+            rows=[
+                ["日期", "大V名称", "平台", "主页链接"],
+                ["2026-06-06", "acct", "tenpay", "https://example.com/a"],
+                ["2026-06-06", "acct2", "tenpay", "https://example.com/a"],
+            ],
+            start_row=0,
+            mapping=column_resolver.resolve_header(["日期", "大V名称", "平台", "主页链接"]),
+        )
+
+        located = locate_by_date_url(
+            context,
+            target_date=date(2026, 6, 6),
+            url="https://example.com/a",
+            date_col_index=0,
+            url_col_index=3,
+        )
+
+        self.assertEqual(located.primary_row, 2)
+        self.assertEqual(located.duplicate_rows, (3,))
+
+    def test_error_classifier_normalizes_common_failures(self) -> None:
+        self.assertEqual(classify_crawl_error("no adb device is ready").kind, DEVICE_UNAVAILABLE)
+        self.assertEqual(classify_crawl_error("内容不见了", status="not_found").kind, PAGE_NOT_FOUND)
+        self.assertEqual(classify_crawl_error("profile fans count was not detected").kind, FIELD_NOT_DETECTED)
+
+    def test_profile_writeback_relocates_by_date_and_homepage_url(self) -> None:
+        rows = [
+            {
+                "metric_source_id": 7,
+                "metric_id": 8,
+                "metric_date": date(2026, 6, 6),
+                "fans_count": 771,
+                "growth_count": 5,
+                "homepage_url": "https://example.com/profile",
+                "source_locator": {
+                    "file_id": "file1",
+                    "sheet_id": "sheet1",
+                    "row_index": 99,
+                    "date_col_index": 0,
+                    "url_col_index": 3,
+                    "fans_col_index": 6,
+                },
+            }
+        ]
+
+        with (
+            patch("apps.finance_crawler.workflows.profile_metrics.get_pending_profile_writebacks", return_value=rows),
+            patch("apps.finance_crawler.workflows.profile_metrics.mark_profile_writeback") as mark_writeback,
+            patch.object(tencent_docs_client, "post_batch_update") as post_batch,
+            patch.object(
+                tencent_docs_client,
+                "fetch_grid",
+                return_value=(
+                    [
+                        ["日期", "大V名称", "平台", "主页链接", "第几群", "类型", "粉丝数", "增粉数"],
+                        ["2026-06-06", "acct", "tenpay", "https://example.com/profile", "", "", "", ""],
+                        ["2026-06-06", "acct dup", "tenpay", "https://example.com/profile", "", "", "", ""],
+                    ],
+                    0,
+                ),
+            ),
+        ):
+            written = writeback_profile_metrics()
+
+        self.assertEqual(written, 1)
+        requests = post_batch.call_args.args[0]
+        primary = requests[0]["updateRangeRequest"]["gridData"]
+        duplicate = requests[1]["updateRangeRequest"]["gridData"]
+        self.assertEqual(primary["startRow"], 1)
+        self.assertEqual(primary["startColumn"], 6)
+        self.assertEqual(primary["rows"][0]["values"][0]["cellValue"]["text"], "771")
+        self.assertEqual(primary["rows"][0]["values"][1]["cellValue"]["text"], "5")
+        self.assertEqual(duplicate["startRow"], 2)
+        self.assertEqual(duplicate["rows"][0]["values"][0]["cellValue"]["text"], "重复")
+        self.assertEqual(duplicate["rows"][0]["values"][1]["cellValue"]["text"], "重复")
+        self.assertEqual(mark_writeback.call_args.kwargs["locator"]["resolved_row_index"], 2)
+        self.assertEqual(mark_writeback.call_args.kwargs["locator"]["duplicate_row_indexes"], [3])
 
     def test_kol_daily_crawl_scheduled_job_targets_today(self) -> None:
         from apps.finance_crawler import app as app_module

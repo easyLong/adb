@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Any
 
 from apps.finance_crawler.config import Config
-from apps.finance_crawler.crawler_app.documents.column_resolver import ColumnMapping, resolve_header
+from apps.finance_crawler.crawler_app.errors import classify_writeback_error
 from apps.finance_crawler.crawler_app.documents.fields import SCREENSHOT
 from apps.finance_crawler.crawler_app.storage import repository
+from apps.finance_crawler.crawler_app.writeback.locator import (
+    SheetWritebackContext,
+    load_sheet_context,
+    locate_by_post_url,
+)
 from apps.finance_crawler.integrations.tencent_docs import client
 from apps.finance_crawler.integrations.tencent_docs.screenshots import post_screenshot_images
 from apps.finance_crawler.integrations.tencent_docs.write_requests import cell_request
@@ -17,13 +21,6 @@ from apps.finance_crawler.utils.logger import get_logger
 
 logger = get_logger("crawler_app_writeback")
 DUPLICATE_ROW_MARKER = "\u91cd\u590d"
-
-
-@dataclass(frozen=True, slots=True)
-class SheetWritebackContext:
-    rows: list[list[str]]
-    start_row: int
-    mapping: ColumnMapping
 
 
 def apply_pending_writebacks(
@@ -34,13 +31,14 @@ def apply_pending_writebacks(
 ) -> dict[str, Any]:
     plans = repository.get_pending_writeback_plans(conn, limit=limit, source=source)
     if not plans:
-        return {"planned": 0, "success": 0, "failed": 0, "skipped": 0}
+        return {"planned": 0, "success": 0, "failed": 0, "skipped": 0, "error_types": {}}
 
     requests_by_doc: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     screenshot_rows_by_doc: dict[tuple[str, str], list[tuple[int, str, int]]] = defaultdict(list)
     plan_ids_by_doc: dict[tuple[str, str], list[int]] = defaultdict(list)
     contexts_by_doc: dict[tuple[str, str], SheetWritebackContext] = {}
     skipped: list[tuple[int, str, int | None]] = []
+    error_types: dict[str, int] = defaultdict(int)
 
     for plan in plans:
         field_name = str(plan["field_name"])
@@ -64,16 +62,13 @@ def apply_pending_writebacks(
         if not post_url:
             skipped.append((int(plan["id"]), "missing post_url for URL-based writeback", correction_id))
             continue
-        try:
-            row_indexes = _resolve_current_row_indexes(context, post_url)
-        except RuntimeError as exc:
-            skipped.append((int(plan["id"]), str(exc), correction_id))
-            continue
-        if not row_indexes:
-            skipped.append((int(plan["id"]), f"post_url not found in current sheet: {post_url}", correction_id))
+        located = locate_by_post_url(context, post_url)
+        if not located.matched:
+            skipped.append((int(plan["id"]), located.error or f"post_url not found in current sheet: {post_url}", correction_id))
             continue
 
         target_column = int(context.mapping.columns[field_name])
+        row_indexes = [int(located.primary_row), *[int(row_index) for row_index in located.duplicate_rows]]
         if field_name == SCREENSHOT:
             requests_by_doc[(file_id, sheet_id)].append(
                 cell_request(
@@ -107,6 +102,7 @@ def apply_pending_writebacks(
         plan_ids_by_doc[(file_id, sheet_id)].append(int(plan["id"]))
 
     for plan_id, error, correction_id in skipped:
+        error_types[classify_writeback_error(error).kind] += 1
         repository.mark_writeback_plans(conn, [plan_id], status="skipped", error=error)
         if correction_id:
             repository.mark_corrections(conn, [correction_id], status="skipped")
@@ -141,19 +137,19 @@ def apply_pending_writebacks(
             repository.mark_writeback_plans(conn, plan_ids, status="error", error=str(exc))
             repository.mark_corrections(conn, correction_ids, status="error")
             failed_count += len(plan_ids)
+            error_types[classify_writeback_error(exc).kind] += len(plan_ids)
 
     return {
         "planned": len(plans),
         "success": success_count,
         "failed": failed_count,
         "skipped": len(skipped),
+        "error_types": dict(error_types),
     }
 
 
 def _load_sheet_context(doc: client.DocInfo) -> SheetWritebackContext:
-    rows, start_row = client.fetch_grid(Config.DOC_LINK_READS_READ_RANGE, doc=doc)
-    header = rows[0] if rows else []
-    return SheetWritebackContext(rows=rows, start_row=start_row, mapping=resolve_header(header))
+    return load_sheet_context(doc, Config.DOC_LINK_READS_READ_RANGE)
 
 
 def _overwrite_cell_requests(
@@ -178,30 +174,6 @@ def _plan_post_url(plan: dict[str, Any]) -> str:
         if payload.get(key):
             return str(payload[key]).strip()
     return ""
-
-
-def _resolve_current_row_indexes(
-    context: SheetWritebackContext,
-    post_url: str,
-) -> list[int]:
-    post_url_col = context.mapping.columns.get("post_url")
-    if post_url_col is None:
-        raise RuntimeError("post_url column not mapped in current sheet")
-    target = post_url.strip()
-    if not target:
-        return []
-
-    matches = []
-    for offset, row in enumerate(context.rows):
-        if _cell_text(row, post_url_col) == target:
-            matches.append(context.start_row + offset + 1)
-    return matches
-
-
-def _cell_text(row: list[str], column_index: int) -> str:
-    if column_index < 0 or column_index >= len(row):
-        return ""
-    return str(row[column_index] or "").strip()
 
 
 def _correction_id(plan: dict[str, Any]) -> int | None:

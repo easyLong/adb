@@ -192,3 +192,9 @@ KOL 链路分两段：
 - 新增 App：先让链接识别能返回稳定 `app_type`，再补对应 action profile。
 - 新增回填字段：先定义字段名，再补行解析、采集结果、写回定位。
 - 高风险页面动作不要塞进 trigger；trigger 只负责“何时扫、扫哪里、提交哪些字段”，复杂动作放在 action profile 和 handler 里。
+
+## 深模块边界
+
+- 错误分类统一走 `crawler_app/errors.py`，执行结果记录 `error_type`，调度层不直接理解 App 的错误文案。
+- 写回定位统一走 `crawler_app/writeback/locator.py`，document 按 `post_url` 重定位，profile 按 `日期 + homepage_url` 重定位；重复行只写第一行，其余标记“重复”。
+- profile 主页采集按 `ActionRunner -> FieldExtractor -> EvidenceValidator` 分层：runner 只负责打开、等待、截图/OCR 和重采；extractor 只提字段；validator 只判断证据是否可信。
