@@ -250,7 +250,7 @@ def extract_profile_fans_count(records: list[dict[str, Any]]) -> int | None:
 
     for record in records:
         text = str(record.get("text") or "").strip()
-        bounds = record.get("bounds") or {}
+        bounds = _profile_counter_bounds(record.get("bounds") or {})
         if not text or not isinstance(bounds, dict):
             continue
         inline_match = re.search(
@@ -267,18 +267,32 @@ def extract_profile_fans_count(records: list[dict[str, Any]]) -> int | None:
 
     for _, label_bounds in labels:
         label_x = (int(label_bounds.get("left", 0)) + int(label_bounds.get("right", 0))) / 2
+        label_left = int(label_bounds.get("left", 0))
+        label_right = int(label_bounds.get("right", 0))
+        label_width = max(label_right - label_left, 1)
         label_top = int(label_bounds.get("top", 0))
         candidates: list[tuple[float, int]] = []
         for value, _, number_bounds in numeric:
+            number_left = int(number_bounds.get("left", 0))
+            number_right = int(number_bounds.get("right", 0))
             number_x = (int(number_bounds.get("left", 0)) + int(number_bounds.get("right", 0))) / 2
             number_bottom = int(number_bounds.get("bottom", 0))
             number_top = int(number_bounds.get("top", 0))
-            if number_bottom <= label_top + 20 and abs(number_x - label_x) <= 170 and 350 <= number_top <= 1400:
+            horizontal_overlap = min(label_right, number_right) - max(label_left, number_left)
+            max_center_distance = max(90, int(label_width * 1.15))
+            if (
+                number_bottom <= label_top + 20
+                and (horizontal_overlap > 0 or abs(number_x - label_x) <= max_center_distance)
+                and 350 <= number_top <= 1400
+            ):
                 distance = abs(number_x - label_x) + abs(label_top - number_bottom)
                 candidates.append((distance, value))
         if candidates:
             candidates.sort(key=lambda item: item[0])
             return candidates[0][1]
+
+    if any(_profile_counter_has_position(label_bounds) for _, label_bounds in labels):
+        return None
 
     ordered: list[tuple[int, int, str]] = []
     for record in records:
@@ -295,6 +309,27 @@ def extract_profile_fans_count(records: list[dict[str, Any]]) -> int | None:
             if parsed is not None:
                 return parsed
     return None
+
+
+def _profile_counter_has_position(bounds: dict[str, Any]) -> bool:
+    return (
+        int(bounds.get("right", 0)) > int(bounds.get("left", 0))
+        and int(bounds.get("bottom", 0)) > int(bounds.get("top", 0))
+    )
+
+
+def _profile_counter_bounds(bounds: dict[str, Any]) -> dict[str, int]:
+    left = int(bounds.get("left", 0) or 0)
+    top = int(bounds.get("top", 0) or 0)
+    width = int(bounds.get("width", 0) or 0)
+    height = int(bounds.get("height", 0) or 0)
+    right = int(bounds.get("right", left + width) or 0)
+    bottom = int(bounds.get("bottom", top + height) or 0)
+    if right <= left and width > 0:
+        right = left + width
+    if bottom <= top and height > 0:
+        bottom = top + height
+    return {"left": left, "top": top, "right": right, "bottom": bottom}
 
 
 def _parse_profile_counter(text: str) -> int | None:

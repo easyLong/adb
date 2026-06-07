@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import date, datetime
 from typing import Any
 
+from apps.finance_crawler.crawler_app.capture.observations import FieldCaptureObservation
 from apps.finance_crawler.crawler_app.documents.column_resolver import ColumnMapping
 from apps.finance_crawler.crawler_app.documents.rows import DocumentSourceRow
 from apps.finance_crawler.crawler_app.tasks.submission import TaskSubmission
@@ -20,6 +21,75 @@ def json_loads(value: str | bytes | None) -> Any:
     if not value:
         return {}
     return json.loads(value)
+
+
+def upsert_field_capture_observations(conn, observations: list[FieldCaptureObservation]) -> int:
+    if not observations:
+        return 0
+    with conn.cursor() as cursor:
+        for observation in observations:
+            cursor.execute(
+                """
+                INSERT INTO field_capture_observations (
+                    subject_type, subject_id, target_type, target_id,
+                    task_type, app_type, field_name,
+                    action_template_key, action_names_json,
+                    page_state, extraction_source,
+                    value_text, value_number,
+                    accepted, confidence, evidence_json, quality_error,
+                    screenshot_path, observed_at
+                )
+                VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s
+                )
+                ON DUPLICATE KEY UPDATE
+                    target_type = VALUES(target_type),
+                    target_id = VALUES(target_id),
+                    task_type = VALUES(task_type),
+                    app_type = VALUES(app_type),
+                    action_template_key = VALUES(action_template_key),
+                    action_names_json = VALUES(action_names_json),
+                    page_state = VALUES(page_state),
+                    extraction_source = VALUES(extraction_source),
+                    value_text = VALUES(value_text),
+                    value_number = VALUES(value_number),
+                    accepted = VALUES(accepted),
+                    confidence = VALUES(confidence),
+                    evidence_json = VALUES(evidence_json),
+                    quality_error = VALUES(quality_error),
+                    screenshot_path = VALUES(screenshot_path),
+                    observed_at = VALUES(observed_at),
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    observation.subject_type,
+                    observation.subject_id,
+                    observation.target_type,
+                    observation.target_id,
+                    observation.task_type,
+                    observation.app_type,
+                    observation.field_name,
+                    observation.action_template_key,
+                    json_dumps(list(observation.action_names)),
+                    observation.page_state,
+                    observation.extraction_source,
+                    observation.value_text,
+                    observation.value_number,
+                    1 if observation.accepted else 0,
+                    observation.confidence,
+                    json_dumps(observation.evidence),
+                    observation.quality_error,
+                    observation.screenshot_path,
+                    observation.observed_at,
+                ),
+            )
+    return len(observations)
 
 
 def upsert_kol_base_profile(

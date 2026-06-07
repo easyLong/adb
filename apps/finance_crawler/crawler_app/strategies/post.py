@@ -5,6 +5,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from apps.finance_crawler.crawler_app.capture.post_fields import (
+    build_post_capture_bundle,
+    extract_post_field_results,
+    writeback_values_from_field_results,
+)
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawler_app.capture.planner import resolve_capture_plan_for_task
 from apps.finance_crawler.crawler_app.documents.fields import (
@@ -50,7 +55,7 @@ def crawl_initial_check_task(submission: dict[str, Any]) -> dict[str, Any]:
             ).to_json_dict(),
         }
     )
-    return result
+    return _with_post_field_results(result, task_type=INITIAL_CHECK, app_type=app_type, fields=fields)
 
 
 def initial_check_metrics(result: dict[str, Any]) -> dict[str, Any]:
@@ -62,6 +67,9 @@ def initial_check_metrics(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def initial_check_writeback_values(result: dict[str, Any]) -> dict[str, Any]:
+    field_values = writeback_values_from_field_results(result)
+    if field_values:
+        return field_values
     status = str(result.get("status") or "")
     if status == "success":
         return {
@@ -102,6 +110,26 @@ def crawl_detail_task(submission: dict[str, Any]) -> dict[str, Any]:
             ).to_json_dict(),
         }
     )
+    return _with_post_field_results(result, task_type=DETAIL, app_type=app_type, fields=fields)
+
+
+def _with_post_field_results(
+    result: dict[str, Any],
+    *,
+    task_type: str,
+    app_type: str,
+    fields: tuple[str, ...],
+) -> dict[str, Any]:
+    result_fields = _fields_with_runtime_outputs(task_type, fields)
+    bundle = build_post_capture_bundle(
+        task_type=task_type,
+        app_type=app_type,
+        requested_fields=result_fields,
+        result=result,
+    )
+    field_results = extract_post_field_results(bundle)
+    result["capture_bundle"] = bundle.to_json_dict()
+    result["field_results"] = [item.to_json_dict() for item in field_results]
     return result
 
 
@@ -118,6 +146,9 @@ def detail_metrics(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def detail_writeback_values(result: dict[str, Any]) -> dict[str, Any]:
+    field_values = writeback_values_from_field_results(result)
+    if field_values:
+        return field_values
     status = str(result.get("status") or "")
     if status == "success":
         values: dict[str, Any] = {
@@ -147,6 +178,18 @@ def _requested_fields(submission: dict[str, Any], *, default: tuple[str, ...]) -
         return default
     fields = tuple(str(item) for item in requested if str(item))
     return fields or default
+
+
+def _fields_with_runtime_outputs(task_type: str, fields: tuple[str, ...]) -> tuple[str, ...]:
+    output_fields = list(dict.fromkeys(fields))
+    if task_type == INITIAL_CHECK:
+        for field_name in (CHECK_RESULT, REMARK):
+            if field_name not in output_fields:
+                output_fields.append(field_name)
+    else:
+        if REMARK not in output_fields:
+            output_fields.append(REMARK)
+    return tuple(output_fields)
 
 
 def _open_and_check_with_app_recovery(

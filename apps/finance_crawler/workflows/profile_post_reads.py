@@ -20,13 +20,17 @@ from apps.finance_crawler.mobile.capture_engine import (
 from apps.finance_crawler.mobile.device_session import device as session_device
 from apps.finance_crawler.mobile.device_session import reset_device_session
 from apps.finance_crawler.mobile.read_count_parser import extract_read_count_from_texts
-from apps.finance_crawler.storage.profile_metrics import (
+from apps.finance_crawler.crawler_app.storage.profile_metrics import (
     get_profile_targets_for_post_reads,
     update_profile_post_read_metric,
 )
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.logger import get_logger
-from apps.finance_crawler.workflows.profile_metrics import _open_profile_url
+from apps.finance_crawler.workflows.profile_metrics import (
+    _is_device_unavailable_error,
+    _max_consecutive_device_errors,
+    _open_profile_url,
+)
 
 logger = get_logger("profile_post_reads")
 
@@ -55,6 +59,8 @@ def crawl_profile_post_reads(
         raise
 
     results = []
+    consecutive_device_errors = 0
+    max_device_errors = _max_consecutive_device_errors()
     for index, record in enumerate(records, start=1):
         logger.info(
             "profile post read crawl %s/%s row=%s account=%s date=%s",
@@ -64,7 +70,18 @@ def crawl_profile_post_reads(
             record.get("account_name"),
             metric_date,
         )
-        results.append(_crawl_one_profile(record, metric_date=metric_date, serial=serial))
+        result = _crawl_one_profile(record, metric_date=metric_date, serial=serial)
+        results.append(result)
+        if _is_device_unavailable_error(result.get("error")):
+            consecutive_device_errors += 1
+            if consecutive_device_errors >= max_device_errors:
+                reset_device_session()
+                raise DeviceUnavailable(
+                    "profile post read crawl stopped after %s consecutive device errors: %s"
+                    % (consecutive_device_errors, result.get("error"))
+                )
+        else:
+            consecutive_device_errors = 0
     return results
 
 

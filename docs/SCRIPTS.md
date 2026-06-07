@@ -21,6 +21,9 @@ cd c:\Code\adb
 | `config` | 查看或更新运行配置 |
 | `scheduler` | 启动 scheduler |
 | `supervisor` | 启动 supervisor，scheduler 崩溃后自动重启 |
+| `workers-start` | 一键启动队列隔离 worker：submit-heartbeat、crawl、writeback、profile |
+| `workers-status` | 查看队列隔离 worker 运行状态 |
+| `workers-stop` | 停止队列隔离 worker |
 
 查看配置：
 
@@ -37,7 +40,8 @@ cd c:\Code\adb
 启动常驻：
 
 ```powershell
-.\scripts\run.ps1 -Task supervisor
+.\scripts\run.ps1 -Task workers-start
+.\scripts\run.ps1 -Task workers-status
 ```
 
 ## 2. document 链路命令

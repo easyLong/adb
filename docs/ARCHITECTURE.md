@@ -4,6 +4,8 @@
 
 ![ADB App 爬虫架构](assets/adb-crawler-architecture.png)
 
+可维护源图见 [adb-crawler-architecture.mmd](assets/adb-crawler-architecture.mmd)。PNG 为模型生成的文档图，结构变更时优先同步 Mermaid 源图，再重新生成图片。
+
 项目现在拆成两条长期主链路：
 
 ```text
@@ -28,7 +30,7 @@ profile 链路：主页型任务
 | 入口层 | `apps/finance_crawler/app.py`, `scripts/run.ps1` | CLI、scheduler、supervisor、一次性任务 |
 | 配置层 | `config.py`, `services/runtime_config.py` | 环境变量、MySQL 运行配置、腾讯文档 OpenAPI 配置 |
 | 文档任务层 | `crawler_app/` | 帖子/链接型任务的提交、执行、回填、修正 |
-| 主页任务层 | `workflows/profile_*`, `storage/profile_metrics.py` | 主页触发器、主页动作模板、粉丝数、阅读数、回填 |
+| 主页任务层 | `workflows/profile_*`, `crawler_app/storage/profile_metrics.py` | 主页触发器、主页动作模板、粉丝数、阅读数、回填 |
 | 设备层 | `mobile/`, `utils/device_health.py` | ADB 连接、设备选择、App 打开、截图、XML、OCR、重启恢复 |
 | App 适配层 | `crawlers/`, `utils/link_source.py` | 链接识别、App 类型识别、App 差异策略 |
 | 外部集成层 | `integrations/tencent_docs/` | 腾讯文档读取、批量写回、图片上传 |
@@ -166,7 +168,8 @@ KOL 链路分两段：
 常驻入口：
 
 ```powershell
-.\scripts\run.ps1 -Task supervisor
+.\scripts\run.ps1 -Task workers-start
+.\scripts\run.ps1 -Task workers-status
 ```
 
 当前常驻任务：
@@ -174,10 +177,10 @@ KOL 链路分两段：
 | 任务 | 频率 | 说明 |
 | --- | --- | --- |
 | `v2_submit_worker` | `SUBMIT_WORKER_INTERVAL_SECONDS`，当前 300 秒 | 扫 document 触发器 |
-| `v2_crawl_worker` | `V2_CRAWL_WORKER_INTERVAL_SECONDS`，当前 30 秒 | 扫 document 任务队列 |
+| `v2_crawl_worker` | `V2_CRAWL_WORKER_INTERVAL_SECONDS`，当前 30 秒 | 扫 document 采集队列 |
 | `v2_writeback_worker` | `V2_WRITEBACK_WORKER_INTERVAL_SECONDS`，当前 30 秒 | 扫 document 写回计划 |
 | `kol_daily_snapshot` | `KOL_DAILY_SNAPSHOT_TIME`，当前 22:00 | 生成 KOL 明日行 |
-| `kol_daily_crawl` | `KOL_DAILY_CRAWL_TIME`，当前 08:00 | 通过 profile trigger 跑今日主页任务 |
+| `kol_daily_crawl` | `KOL_DAILY_CRAWL_TIME`，当前 08:00 | 通过 profile trigger 跑今日主页队列 |
 | `heartbeat` | `HEARTBEAT_INTERVAL_MINUTES` | 心跳日志 |
 
 `ENABLE_LEGACY_SCHEDULER_JOBS=false` 时，旧版 fetch/check/detail/report 周期任务不会注册。

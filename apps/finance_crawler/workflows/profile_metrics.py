@@ -8,6 +8,7 @@ updates the configured sheet cell.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import time
 from datetime import date, datetime
@@ -17,15 +18,31 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import requests
 
 from apps.finance_crawler.config import Config
+from apps.finance_crawler.crawler_app.capture.core import (
+    ActionTemplate,
+    CaptureBundle,
+    EvidenceValidation,
+    FieldExtraction,
+    FieldExtractionResult,
+    PageSnapshot,
+    PageState,
+)
 from apps.finance_crawler.integrations.tencent_docs import client
 from apps.finance_crawler.integrations.tencent_docs.write_requests import cell_request, row_cells_request
-from apps.finance_crawler.mobile.capture_engine import capture_pages, open_app_link, run_adb
+from apps.finance_crawler.mobile.capture_engine import (
+    capture_pages,
+    collect_ui_records,
+    open_app_link,
+    run_adb,
+    save_screenshot,
+    try_ocr,
+)
 from apps.finance_crawler.mobile.capture_records import read_capture_records as _read_capture_records
 from apps.finance_crawler.mobile.device_session import device as session_device
 from apps.finance_crawler.mobile.device_session import reset_device_session
-from apps.finance_crawler.mobile.parsers import extract_profile_fans_count
+from apps.finance_crawler.mobile.parsers import extract_profile_fans_count, parse_count_token
 from apps.finance_crawler.storage.db import log_task
-from apps.finance_crawler.storage.profile_metrics import (
+from apps.finance_crawler.crawler_app.storage.profile_metrics import (
     create_daily_profile_metric_sources,
     get_pending_profile_metric_sources,
     get_pending_profile_writebacks,
@@ -190,6 +207,8 @@ def crawl_pending_profile_metrics(
         raise
 
     results: list[dict[str, Any]] = []
+    consecutive_device_errors = 0
+    max_device_errors = _max_consecutive_device_errors()
     for index, record in enumerate(records, start=1):
         logger.info(
             "profile metric crawl %s/%s row=%s account=%s",
@@ -200,6 +219,16 @@ def crawl_pending_profile_metrics(
         )
         result = _crawl_profile(record)
         results.append(result)
+        if _is_device_unavailable_error(result.get("error")):
+            consecutive_device_errors += 1
+            if consecutive_device_errors >= max_device_errors:
+                reset_device_session()
+                raise DeviceUnavailable(
+                    "profile metric crawl stopped after %s consecutive device errors: %s"
+                    % (consecutive_device_errors, result.get("error"))
+                )
+        else:
+            consecutive_device_errors = 0
     return results
 
 
@@ -283,26 +312,51 @@ def _crawl_profile(record: dict[str, Any]) -> dict[str, Any]:
                 "fans_count": None,
                 "error": known_error,
             }
-        _open_profile_url(url, source_app=record.get("app_type"))
+        app_type = str(record.get("app_type") or "unknown")
+        app_adapter = ProfileAppAdapter(app_type)
+        app_adapter.reset_state()
+        app_adapter.open_target(url)
         summary = capture_pages(
             session_device(),
             output_dir,
             max_scrolls=0,
-            wait_after_open=max(Config.PAGE_LOAD_WAIT, 4.0),
+            wait_after_open=_profile_home_initial_wait(app_type),
             wait_after_scroll=Config.DETAIL_SCROLL_WAIT,
-            enable_ocr=str(record.get("app_type") or "").lower() == "tenpay",
+            enable_ocr=app_type.lower() == "tenpay",
             dynamic_wait=False,
             ready_timeout=8,
             ready_check_interval=0.5,
             serial=None,
         )
         records = _read_capture_records(summary)
-        fans_count = extract_profile_fans_count(records)
+        screenshot_path = str(output_dir / "page_000.png") if (output_dir / "page_000.png").exists() else None
+        capture_pages_count = 1
+        if _profile_home_needs_recapture(records, app_type):
+            logger.info("profile home not ready app=%s; waiting and recapturing", app_type)
+            time.sleep(_profile_home_recapture_wait(app_type))
+            records = _capture_current_records(
+                session_device(),
+                output_dir,
+                "page_001_retry",
+                serial=assert_device_ready(),
+                enable_ocr=app_type.lower() == "tenpay",
+            )
+            retry_screenshot_path = output_dir / "page_001_retry.png"
+            if retry_screenshot_path.exists():
+                screenshot_path = str(retry_screenshot_path)
+            capture_pages_count = 2
+        fans_result = _resolve_profile_fans_count(
+            records,
+            screenshot_path=screenshot_path,
+            output_dir=output_dir,
+            app_type=app_type,
+            expected_account_name=str(record.get("account_name") or ""),
+        )
+        fans_count = fans_result.get("fans_count")
         texts = [str(item.get("text") or "").strip() for item in records if str(item.get("text") or "").strip()]
         blocked_error = None if fans_count is not None else _blocked_profile_page_error(texts)
         status = "success" if fans_count is not None else ("blocked" if blocked_error else "error")
-        error = None if fans_count is not None else (blocked_error or "profile fans count was not detected")
-        screenshot_path = str(output_dir / "page_000.png") if (output_dir / "page_000.png").exists() else None
+        error = None if fans_count is not None else (blocked_error or fans_result.get("quality_error") or "profile fans count was not detected")
         metric_id = record_profile_metric(
             target_id=int(record["target_id"]),
             metric_date=record["metric_date"],
@@ -313,7 +367,10 @@ def _crawl_profile(record: dict[str, Any]) -> dict[str, Any]:
             metrics={
                 "workflow": "profile_metrics",
                 "duration": round(time.perf_counter() - started, 3),
-                "capture_pages": 1,
+                "capture_pages": capture_pages_count,
+                "fans": fans_result,
+                "capture_bundle": fans_result.get("capture_bundle"),
+                "field_results": fans_result.get("field_results") or [],
             },
             screenshot_path=screenshot_path,
             error=error,
@@ -457,6 +514,694 @@ def _open_profile_url(url: str, *, source_app: str | None = None) -> None:
         )
 
 
+def _reset_profile_app_state(source_app: Any) -> None:
+    app_type = str(source_app or "").lower()
+    if app_type == "antfortune":
+        package_name = Config.AFWEALTH_PACKAGE
+    elif app_type == "tenpay":
+        package_name = Config.TENPAY_PACKAGE
+    else:
+        package_name = Config.ALIPAY_PACKAGE
+    try:
+        serial = assert_device_ready()
+        run_adb(["shell", "am", "force-stop", package_name], serial=serial, timeout=10)
+        reset_device_session()
+        time.sleep(Config.APP_RESTART_WAIT)
+    except Exception as exc:
+        if _is_device_unavailable_error(exc):
+            raise DeviceUnavailable(str(exc)) from exc
+        logger.info("profile app state reset skipped app=%s package=%s error=%s", app_type, package_name, exc)
+
+
+class ProfileAppAdapter:
+    """App-specific open/reset behavior for profile metric targets."""
+
+    def __init__(self, app_type: str) -> None:
+        self.app_type = str(app_type or "unknown").lower()
+
+    def reset_state(self) -> None:
+        _reset_profile_app_state(self.app_type)
+
+    def open_target(self, target_url: str) -> None:
+        _open_profile_url(target_url, source_app=self.app_type)
+
+
+def _resolve_profile_fans_count(
+    records: list[dict[str, Any]],
+    *,
+    screenshot_path: str | None,
+    output_dir: Any,
+    app_type: str,
+    expected_account_name: str = "",
+) -> dict[str, Any]:
+    """Extract fans count with quality gates to avoid silently accepting approximations."""
+
+    action_template = _profile_fans_action_template(app_type)
+    snapshot = PageSnapshot(
+        app_type=app_type or "unknown",
+        records=records,
+        screenshot_path=screenshot_path,
+        output_dir=output_dir,
+        expected_account_name=expected_account_name,
+    )
+    page_state = ProfilePageStateDetector().detect(snapshot)
+    extraction = ProfileFansCountExtractor().extract(snapshot, page_state, action_template)
+    validation = ProfileFansEvidenceValidator().validate(extraction, snapshot, page_state, action_template)
+    result: dict[str, Any] = {
+        "fans_count": extraction.value if validation.accepted else None,
+        "home_fans_count": extraction.evidence.get("home_fans_count"),
+        "page_state": extraction.page_state or page_state.name,
+        "page_state_confidence": page_state.confidence,
+        "source": extraction.source if validation.accepted else None,
+        "exact_required": bool(extraction.evidence.get("exact_required")),
+        "exact_used": bool(extraction.evidence.get("exact_used")),
+        "account_verified": bool(extraction.evidence.get("account_verified")),
+        "action_template": action_template.key,
+        "actions": list(action_template.actions),
+        "quality_error": None if validation.accepted else (validation.reason or extraction.quality_error),
+    }
+    bundle, field_result = _profile_fans_standard_results(
+        snapshot=snapshot,
+        action_template=action_template,
+        extraction=extraction,
+        validation=validation,
+        result=result,
+    )
+    result["capture_bundle"] = bundle.to_json_dict()
+    result["field_results"] = [field_result.to_json_dict()]
+    return result
+
+
+def _profile_fans_standard_results(
+    *,
+    snapshot: PageSnapshot,
+    action_template: ActionTemplate,
+    extraction: FieldExtraction,
+    validation: EvidenceValidation,
+    result: dict[str, Any],
+) -> tuple[CaptureBundle, FieldExtractionResult]:
+    bundle = CaptureBundle(
+        task_type=action_template.task_type,
+        app_type=action_template.app_type or snapshot.app_type or "unknown",
+        requested_fields=action_template.fields,
+        action_template_key=action_template.key,
+        actions=action_template.actions,
+        status="success" if validation.accepted else "error",
+        page_state=extraction.page_state or "unknown",
+        ui_records=snapshot.records,
+        screenshot_path=snapshot.screenshot_path,
+        metadata={
+            "expected_account_name": snapshot.expected_account_name,
+            "output_dir": str(snapshot.output_dir) if snapshot.output_dir else None,
+        },
+        error=None if validation.accepted else (validation.reason or extraction.quality_error),
+    )
+    field_result = FieldExtractionResult(
+        field_name="fans_count",
+        value=result.get("fans_count"),
+        source=result.get("source"),
+        accepted=validation.accepted,
+        page_state=str(result.get("page_state") or extraction.page_state or "unknown"),
+        confidence=extraction.confidence if validation.accepted else 0.0,
+        evidence=dict(result),
+        quality_error=result.get("quality_error"),
+    )
+    return bundle, field_result
+
+
+def _profile_fans_action_template(app_type: str) -> ActionTemplate:
+    app = str(app_type or "unknown").lower()
+    if app == "tenpay":
+        return ActionTemplate(
+            key="tenpay_profile_daily_metrics_v1:fans_count",
+            app_type=app,
+            task_type="profile_daily_metrics",
+            fields=("fans_count",),
+            actions=(
+                "reset_app",
+                "open_profile",
+                "capture_home",
+                "ui_controls",
+                "ocr",
+                "tenpay_counter_layout",
+                "open_exact_fans_if_abbreviated",
+                "verify_account_anchor",
+            ),
+            config={
+                "exact_if_abbreviated": True,
+                "ocr": True,
+                "tenpay_counter_layout": True,
+                "require_account_anchor": True,
+            },
+        )
+    return ActionTemplate(
+        key=f"{app}_profile_daily_metrics_v1:fans_count",
+        app_type=app,
+        task_type="profile_daily_metrics",
+        fields=("fans_count",),
+        actions=("open_profile", "capture_home", "ui_controls", "open_exact_fans_if_abbreviated"),
+        config={"exact_if_abbreviated": True, "require_account_anchor": True},
+    )
+
+
+class ProfilePageStateDetector:
+    def detect(self, snapshot: PageSnapshot) -> PageState:
+        records = snapshot.records
+        texts = [str(item.get("text") or "").strip() for item in records if str(item.get("text") or "").strip()]
+        if _profile_login_required_error(texts):
+            return PageState(
+                name="login_required",
+                confidence=0.95,
+                evidence={"reason": _profile_login_required_error(texts), "text_count": len(texts)},
+            )
+        if _blocked_profile_page_error(texts):
+            return PageState(
+                name="blocked",
+                confidence=0.9,
+                evidence={"reason": _blocked_profile_page_error(texts), "text_count": len(texts)},
+            )
+        if _has_exact_fans_evidence(records):
+            return PageState(
+                name="fans_detail",
+                confidence=0.95,
+                evidence={"exact_fans_evidence": True, "account_verified": _has_expected_profile_anchor(records, snapshot.expected_account_name)},
+            )
+        if _has_profile_home_fans_context(records):
+            return PageState(
+                name="profile_home",
+                confidence=0.9,
+                evidence={"home_fans_context": True, "account_verified": _has_expected_profile_anchor(records, snapshot.expected_account_name)},
+            )
+        if _profile_home_needs_recapture(records, snapshot.app_type):
+            return PageState(name="loading", confidence=0.8, evidence={"text_count": len(texts)})
+        return PageState(name="unknown", confidence=0.2, evidence={"text_count": len(texts)})
+
+
+class ProfileFansCountExtractor:
+    field_name = "fans_count"
+
+    def extract(
+        self,
+        snapshot: PageSnapshot,
+        page_state: PageState,
+        action_template: ActionTemplate,
+    ) -> FieldExtraction:
+        records = snapshot.records
+        output_dir = snapshot.output_dir
+        exact_required = _has_abbreviated_fans_count(records)
+        has_home_context = page_state.name == "profile_home"
+        has_exact_evidence = page_state.name == "fans_detail"
+        account_verified = _has_expected_profile_anchor(records, snapshot.expected_account_name)
+        homepage_ocr_records: list[dict[str, Any]] = []
+        evidence: dict[str, Any] = {
+            "exact_required": exact_required,
+            "exact_used": False,
+            "account_verified": account_verified,
+            "home_fans_count": None,
+        }
+
+        ui_exact = _extract_exact_fans_count(records)
+        if ui_exact is not None and has_exact_evidence and account_verified:
+            evidence.update({"exact_used": True})
+            return FieldExtraction(
+                field_name=self.field_name,
+                value=ui_exact,
+                source="ui_exact",
+                page_state="fans_detail",
+                confidence=0.95,
+                evidence=evidence,
+            )
+
+        if snapshot.screenshot_path and output_dir:
+            homepage_ocr_records = try_ocr(output_dir / "page_000.png") or []
+            if not homepage_ocr_records and snapshot.screenshot_path:
+                homepage_ocr_records = try_ocr(snapshot.screenshot_path) or []
+        if homepage_ocr_records:
+            (output_dir / "page_000_ocr_records.json").write_text(
+                json.dumps(homepage_ocr_records, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            ocr_exact = _extract_exact_fans_count(homepage_ocr_records)
+            if (
+                ocr_exact is not None
+                and _has_exact_fans_evidence(homepage_ocr_records)
+                and account_verified
+            ):
+                evidence.update({"exact_used": True})
+                return FieldExtraction(
+                    field_name=self.field_name,
+                    value=ocr_exact,
+                    source="ocr_exact",
+                    page_state="fans_detail",
+                    confidence=0.9,
+                    evidence=evidence,
+                )
+
+        if has_home_context:
+            evidence["home_fans_count"] = _extract_home_profile_fans_count(records)
+        else:
+            quality_error = (
+                "exact fans page is not tied to expected profile"
+                if has_exact_evidence and not account_verified
+                else "profile fans context was not detected"
+            )
+            if page_state.name == "login_required":
+                quality_error = str(page_state.evidence.get("reason") or "profile login required")
+            elif page_state.name == "blocked":
+                quality_error = str(page_state.evidence.get("reason") or "profile page is blocked")
+            return FieldExtraction(
+                field_name=self.field_name,
+                value=None,
+                source=None,
+                page_state=page_state.name,
+                confidence=0.0,
+                evidence=evidence,
+                quality_error=quality_error,
+            )
+
+        if exact_required:
+            exact_fans = _open_exact_fans_page_if_abbreviated(
+                records,
+                output_dir=output_dir,
+                app_type=action_template.app_type,
+            )
+            if exact_fans is not None:
+                evidence.update({"exact_used": True})
+                return FieldExtraction(
+                    field_name=self.field_name,
+                    value=exact_fans,
+                    source="exact_page",
+                    page_state="fans_detail",
+                    confidence=0.95,
+                    evidence=evidence,
+                )
+            return FieldExtraction(
+                field_name=self.field_name,
+                value=None,
+                source=None,
+                page_state=page_state.name,
+                confidence=0.0,
+                evidence=evidence,
+                quality_error="abbreviated fans count requires exact detail page",
+            )
+
+        if evidence.get("home_fans_count") is not None:
+            return FieldExtraction(
+                field_name=self.field_name,
+                value=evidence["home_fans_count"],
+                source="ui_home",
+                page_state="profile_home",
+                confidence=0.8,
+                evidence=evidence,
+            )
+        return FieldExtraction(
+            field_name=self.field_name,
+            value=None,
+            source=None,
+            page_state=page_state.name,
+            confidence=0.0,
+            evidence=evidence,
+            quality_error="profile fans count was not detected",
+        )
+
+
+class ProfileFansEvidenceValidator:
+    def validate(
+        self,
+        extraction: FieldExtraction,
+        snapshot: PageSnapshot,
+        page_state: PageState,
+        action_template: ActionTemplate,
+    ) -> EvidenceValidation:
+        if extraction.quality_error:
+            return EvidenceValidation(False, extraction.quality_error, extraction.evidence)
+        if extraction.value is None:
+            return EvidenceValidation(False, "profile fans count was not detected", extraction.evidence)
+        if extraction.page_state == "fans_detail" and action_template.config.get("require_account_anchor"):
+            if not extraction.evidence.get("account_verified"):
+                return EvidenceValidation(False, "exact fans page is not tied to expected profile", extraction.evidence)
+        if extraction.evidence.get("exact_required") and not extraction.evidence.get("exact_used"):
+            return EvidenceValidation(False, "abbreviated fans count requires exact detail page", extraction.evidence)
+        return EvidenceValidation(True, None, extraction.evidence)
+
+
+def _open_exact_fans_page_if_abbreviated(
+    records: list[dict[str, Any]],
+    *,
+    output_dir: Any,
+    app_type: str,
+) -> int | None:
+    """Open the fans detail page when the homepage only shows an abbreviated count."""
+
+    if not _has_abbreviated_fans_count(records):
+        return None
+    tap_bounds = _fans_tap_bounds(records)
+    if not tap_bounds:
+        logger.info("exact fans skipped: abbreviated count found but fans tap target was not located")
+        return None
+
+    try:
+        serial = assert_device_ready()
+        device = session_device()
+        x = int((int(tap_bounds.get("left", 0)) + int(tap_bounds.get("right", 0))) / 2)
+        y = int((int(tap_bounds.get("top", 0)) + int(tap_bounds.get("bottom", 0))) / 2)
+        if x <= 0 or y <= 0:
+            return None
+        logger.info("opening exact fans page app=%s tap=(%s,%s)", app_type, x, y)
+        run_adb(["shell", "input", "tap", str(x), str(y)], serial=serial, timeout=10)
+        time.sleep(max(Config.PAGE_LOAD_WAIT, 2.5))
+        exact_image_path = output_dir / "fans_exact.png"
+        exact_records = _capture_current_records(device, output_dir, "fans_exact", serial=serial)
+        exact_count = _extract_exact_fans_count(exact_records)
+        if exact_count is None:
+            ocr_records = try_ocr(exact_image_path) or []
+            if ocr_records:
+                (output_dir / "fans_exact_ocr_records.json").write_text(
+                    json.dumps(ocr_records, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                exact_count = _extract_exact_fans_count(ocr_records)
+        if exact_count is not None:
+            logger.info("exact fans count detected: %s", exact_count)
+            return exact_count
+        logger.info("exact fans page opened but exact count was not detected")
+    except Exception as exc:
+        if _is_device_unavailable_error(exc):
+            raise DeviceUnavailable(str(exc)) from exc
+        logger.warning("exact fans lookup failed: %s", exc)
+    return None
+
+
+def _capture_current_records(
+    device: Any,
+    output_dir: Any,
+    name: str,
+    *,
+    serial: str | None = None,
+    enable_ocr: bool = False,
+) -> list[dict[str, Any]]:
+    image_path = output_dir / f"{name}.png"
+    xml_path = output_dir / f"{name}.xml"
+    records_path = output_dir / f"{name}_records.json"
+    save_screenshot(device, image_path, serial=serial)
+    xml_text = device.dump_hierarchy(compressed=False, pretty=True)
+    xml_path.write_text(xml_text, encoding="utf-8")
+    records = collect_ui_records(xml_text, 0)
+    for record in records:
+        record["source"] = "ui"
+    if enable_ocr:
+        ocr_records = try_ocr(image_path) or []
+        for record in ocr_records:
+            record["source"] = "ocr"
+        if ocr_records:
+            (output_dir / f"{name}_ocr_records.json").write_text(
+                json.dumps(ocr_records, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        records = [*records, *ocr_records]
+    records_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    return records
+
+
+def _profile_home_initial_wait(app_type: str) -> float:
+    lowered = str(app_type or "").lower()
+    if lowered == "tenpay":
+        return max(Config.PAGE_LOAD_WAIT, 8.0)
+    if lowered == "antfortune":
+        return max(Config.PAGE_LOAD_WAIT, 6.0)
+    return max(Config.PAGE_LOAD_WAIT, 4.0)
+
+
+def _profile_home_recapture_wait(app_type: str) -> float:
+    lowered = str(app_type or "").lower()
+    if lowered == "tenpay":
+        return max(Config.PAGE_LOAD_WAIT, 12.0)
+    if lowered == "antfortune":
+        return max(Config.PAGE_LOAD_WAIT, 8.0)
+    return max(Config.PAGE_LOAD_WAIT, 4.0)
+
+
+def _profile_home_needs_recapture(records: list[dict[str, Any]], app_type: str) -> bool:
+    lowered = str(app_type or "").lower()
+    if lowered not in {"tenpay", "antfortune"}:
+        return False
+    if _has_profile_home_fans_context(records) or _has_exact_fans_evidence(records):
+        return False
+    texts = [str(record.get("text") or "").strip() for record in records if str(record.get("text") or "").strip()]
+    if not texts:
+        return True
+    if lowered == "tenpay":
+        return any("\u817e\u8baf\u7406\u8d22\u901a" in text for text in texts) and len(texts) <= 6
+    if lowered == "antfortune":
+        return len(texts) <= 6
+    return False
+
+
+def _has_abbreviated_fans_count(records: list[dict[str, Any]]) -> bool:
+    fans_label = "\u7c89\u4e1d"
+    for record in records:
+        text = str(record.get("text") or "").strip()
+        if not text:
+            continue
+        compact = text.replace(" ", "")
+        if fans_label in compact and any(unit in compact for unit in ("\u4e07", "w", "W")):
+            return True
+    for value_record, label_record in _fans_counter_pairs(records):
+        value_text = str(value_record.get("text") or "").strip()
+        label_text = str(label_record.get("text") or "").strip()
+        if fans_label in label_text and any(unit in value_text for unit in ("\u4e07", "w", "W")):
+            return True
+    tenpay_pair = _tenpay_fans_counter_pair(records)
+    if tenpay_pair:
+        value_text = str(tenpay_pair[0].get("text") or "").strip()
+        return any(unit in value_text for unit in ("\u4e07", "w", "W"))
+    return False
+
+
+def _has_profile_fans_context(records: list[dict[str, Any]]) -> bool:
+    for record in records:
+        text = str(record.get("text") or "").strip()
+        if "\u7c89\u4e1d" in text:
+            return True
+    return bool(_fans_counter_pairs(records) or _tenpay_fans_counter_pair(records))
+
+
+def _has_profile_home_fans_context(records: list[dict[str, Any]]) -> bool:
+    if _fans_counter_pairs(records) or _tenpay_fans_counter_pair(records):
+        return True
+    for record in records:
+        text = re.sub(r"\s+", "", str(record.get("text") or ""))
+        if "\u7c89\u4e1d" not in text or "\u4eba" in text:
+            continue
+        if text == "\u7c89\u4e1d":
+            return True
+        if re.search(r"\d+(?:\.\d+)?(?:[\u4e07wWkK])?\u7c89\u4e1d", text):
+            return True
+    return False
+
+
+def _has_expected_profile_anchor(records: list[dict[str, Any]], expected_account_name: str) -> bool:
+    expected = re.sub(r"\s+", "", expected_account_name or "")
+    if not expected:
+        return True
+    for record in records:
+        text = re.sub(r"\s+", "", str(record.get("text") or ""))
+        if expected and expected in text:
+            return True
+    return False
+
+
+def _has_exact_fans_evidence(records: list[dict[str, Any]]) -> bool:
+    for record in records:
+        text = str(record.get("text") or "").strip().replace(",", "")
+        if not text:
+            continue
+        compact = re.sub(r"\s+", "", text)
+        if "\u7c89\u4e1d" in compact and "\u4eba" in compact and re.search(r"\d{5,}", compact):
+            return True
+        patterns = [
+            r"(?:TA\u7684\u7c89\u4e1d|\u4ed6\u7684\u7c89\u4e1d|\u5979\u7684\u7c89\u4e1d)\(\d{5,}\u4eba\)",
+            r"(?:\u7c89\u4e1d\u603b\u6570|\u5168\u90e8\u7c89\u4e1d|\u7c89\u4e1d\u6570)\D*\d{5,}",
+        ]
+        if any(re.search(pattern, compact) for pattern in patterns):
+            return True
+    return False
+
+
+def _fans_tap_bounds(records: list[dict[str, Any]]) -> dict[str, int] | None:
+    pairs = _fans_counter_pairs(records)
+    if pairs:
+        value_bounds = _normalized_bounds(pairs[0][0].get("bounds") or {})
+        label_bounds = _normalized_bounds(pairs[0][1].get("bounds") or {})
+        return _merge_bounds(value_bounds, label_bounds)
+    tenpay_pair = _tenpay_fans_counter_pair(records)
+    if tenpay_pair:
+        return _merge_bounds(
+            _normalized_bounds(tenpay_pair[0].get("bounds") or {}),
+            _normalized_bounds(tenpay_pair[1].get("bounds") or {}),
+        )
+    for record in records:
+        text = str(record.get("text") or "")
+        bounds = _normalized_bounds(record.get("bounds") or {})
+        if "\u7c89\u4e1d" in text and isinstance(bounds, dict):
+            return bounds
+    return None
+
+
+def _fans_counter_pairs(records: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    fans_label = "\u7c89\u4e1d"
+    numeric: list[tuple[dict[str, Any], dict[str, int]]] = []
+    labels: list[tuple[dict[str, Any], dict[str, int]]] = []
+
+    for record in records:
+        text = str(record.get("text") or "").strip()
+        bounds = _normalized_bounds(record.get("bounds") or {})
+        if not text or not isinstance(bounds, dict):
+            continue
+        if fans_label in text:
+            labels.append((record, bounds))
+        if _looks_like_counter_text(text):
+            numeric.append((record, bounds))
+
+    pairs: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+    for label_record, label_bounds in labels:
+        label_x = (int(label_bounds.get("left", 0)) + int(label_bounds.get("right", 0))) / 2
+        label_left = int(label_bounds.get("left", 0))
+        label_right = int(label_bounds.get("right", 0))
+        label_width = max(label_right - label_left, 1)
+        label_top = int(label_bounds.get("top", 0))
+        for value_record, value_bounds in numeric:
+            value_left = int(value_bounds.get("left", 0))
+            value_right = int(value_bounds.get("right", 0))
+            value_x = (int(value_bounds.get("left", 0)) + int(value_bounds.get("right", 0))) / 2
+            value_bottom = int(value_bounds.get("bottom", 0))
+            value_top = int(value_bounds.get("top", 0))
+            horizontal_overlap = min(label_right, value_right) - max(label_left, value_left)
+            max_center_distance = max(90, int(label_width * 1.15))
+            if (
+                value_bottom <= label_top + 24
+                and (horizontal_overlap > 0 or abs(value_x - label_x) <= max_center_distance)
+                and 250 <= value_top <= 1500
+            ):
+                distance = abs(value_x - label_x) + abs(label_top - value_bottom)
+                pairs.append((distance, value_record, label_record))
+    pairs.sort(key=lambda item: item[0])
+    return [(value, label) for _, value, label in pairs]
+
+
+def _extract_home_profile_fans_count(records: list[dict[str, Any]]) -> int | None:
+    fans_count = extract_profile_fans_count(records)
+    if fans_count is not None:
+        return fans_count
+    tenpay_pair = _tenpay_fans_counter_pair(records)
+    if not tenpay_pair:
+        return None
+    return parse_count_token(str(tenpay_pair[0].get("text") or ""))
+
+
+def _tenpay_fans_counter_pair(records: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Infer the middle counter on Tenpay profile pages when OCR misses the fans label."""
+
+    texts = [str(record.get("text") or "").strip() for record in records]
+    if not any(
+        marker in text
+        for text in texts
+        for marker in ("\u7406\u8d22\u901a\u793e\u533a", "\u5b9e\u76d8\u603b\u91d1\u989d", "\u6301\u4ed3\u6536\u76ca", "\u52a8\u6001")
+    ):
+        return None
+
+    candidates: list[tuple[int, int, dict[str, Any], dict[str, int]]] = []
+    for record in records:
+        text = str(record.get("text") or "").strip()
+        bounds = _normalized_bounds(record.get("bounds") or {})
+        if not _looks_like_counter_text(text):
+            continue
+        top = int(bounds.get("top", 0))
+        left = int(bounds.get("left", 0))
+        if 650 <= top <= 950 and 0 <= left <= 650:
+            candidates.append((top, left, record, bounds))
+    if len(candidates) < 3:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    best_group: list[tuple[int, int, dict[str, Any], dict[str, int]]] = []
+    for index, candidate in enumerate(candidates):
+        top = candidate[0]
+        group = [item for item in candidates[index:] if abs(item[0] - top) <= 90]
+        if len(group) >= 3:
+            best_group = sorted(group[:3], key=lambda item: item[1])
+            break
+    if len(best_group) < 3:
+        return None
+
+    value_record = best_group[1][2]
+    value_bounds = best_group[1][3]
+    label_bounds = {
+        "left": int(value_bounds.get("left", 0)),
+        "top": int(value_bounds.get("bottom", 0)),
+        "right": int(value_bounds.get("right", 0)),
+        "bottom": int(value_bounds.get("bottom", 0)) + 90,
+    }
+    label_record = {"text": "\u7c89\u4e1d", "bounds": label_bounds, "source": "tenpay_layout"}
+    return value_record, label_record
+
+
+def _looks_like_counter_text(text: str) -> bool:
+    compact = text.strip().replace(",", "").replace(" ", "")
+    if not compact:
+        return False
+    return bool(re.fullmatch(r"\d+(?:\.\d+)?(?:[\u4e07wWkK])?", compact))
+
+
+def _normalized_bounds(bounds: dict[str, Any]) -> dict[str, int]:
+    left = int(bounds.get("left", 0) or 0)
+    top = int(bounds.get("top", 0) or 0)
+    right = int(bounds.get("right", left + int(bounds.get("width", 0) or 0)) or 0)
+    bottom = int(bounds.get("bottom", top + int(bounds.get("height", 0) or 0)) or 0)
+    return {"left": left, "top": top, "right": right, "bottom": bottom}
+
+
+def _merge_bounds(first: dict[str, Any], second: dict[str, Any]) -> dict[str, int]:
+    first = _normalized_bounds(first)
+    second = _normalized_bounds(second)
+    return {
+        "left": min(int(first.get("left", 0)), int(second.get("left", 0))),
+        "top": min(int(first.get("top", 0)), int(second.get("top", 0))),
+        "right": max(int(first.get("right", 0)), int(second.get("right", 0))),
+        "bottom": max(int(first.get("bottom", 0)), int(second.get("bottom", 0))),
+    }
+
+
+def _extract_exact_fans_count(records: list[dict[str, Any]]) -> int | None:
+    candidates: list[int] = []
+    for record in records:
+        text = str(record.get("text") or "").strip().replace(",", "")
+        if not text:
+            continue
+        compact = re.sub(r"\s+", "", text)
+        if "\u7c89\u4e1d" in compact and "\u4eba" in compact:
+            for value in re.findall(r"\d{5,}", compact):
+                candidates.append(int(value))
+        patterns = [
+            r"(?:TA\u7684\u7c89\u4e1d|\u4ed6\u7684\u7c89\u4e1d|\u5979\u7684\u7c89\u4e1d)\((?P<num>\d{5,})\u4eba\)",
+            r"(?:\u7c89\u4e1d\u603b\u6570|\u5168\u90e8\u7c89\u4e1d|\u7c89\u4e1d\u6570|\u7c89\u4e1d)\D*(?P<num>\d{5,})",
+            r"(?P<num>\d{5,})\D*(?:\u7c89\u4e1d)",
+            r"^(?P<num>\d{5,})$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, compact)
+            if match:
+                candidates.append(int(match.group("num")))
+    if not candidates:
+        if _has_profile_fans_context(records):
+            fans_count = _extract_home_profile_fans_count(records)
+            if fans_count is not None and not _has_abbreviated_fans_count(records):
+                return fans_count
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0]
+
+
 def _antfortune_deep_link(url: str) -> str | None:
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
@@ -487,6 +1232,48 @@ def _blocked_profile_page_error(texts: list[str]) -> str | None:
     if "404" in combined or "\u51fa\u9519\u4e86" in combined:
         return "profile page is unavailable"
     return None
+
+
+def _profile_login_required_error(texts: list[str]) -> str | None:
+    combined = "\n".join(texts)
+    markers = (
+        "\u6253\u5f00\u652f\u4ed8\u5b9d\u767b\u5f55",
+        "\u5bc6\u7801\u767b\u5f55",
+        "\u624b\u673a\u53f7\u767b\u5f55",
+        "\u767b\u5f55\u540e\u67e5\u770b",
+    )
+    if any(marker in combined for marker in markers):
+        return "profile page requires login"
+    return None
+
+
+def _max_consecutive_device_errors() -> int:
+    return max(1, min(3, int(Config.CRAWL_MAX_CONSECUTIVE_ERRORS or 3)))
+
+
+def _is_device_unavailable_error(error: Any) -> bool:
+    if error is None:
+        return False
+    if isinstance(error, DeviceUnavailable):
+        return True
+    text = str(error).lower()
+    if not text:
+        return False
+    markers = (
+        "adb device",
+        "no adb device",
+        "configured device not found",
+        "multiple adb devices",
+        "device unauthorized",
+        "device not ready",
+        "device offline",
+        "device '",
+        "uiautomator2 device session is unavailable",
+        "adb shell unavailable",
+        "returned non-zero exit status",
+        "device check timed out",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _profile_doc(doc_url: str | None = None) -> client.DocInfo:

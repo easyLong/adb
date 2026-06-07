@@ -14,16 +14,20 @@
    命令手册。说明 `scripts/run.ps1` 支持的任务和常用跑法。
 4. [RUNTIME_CONFIG.md](RUNTIME_CONFIG.md)  
    运行配置。说明 MySQL 配置、腾讯文档 OpenAPI、定时任务和采集行为配置。
-5. [CRAWLER_APP_V2.md](CRAWLER_APP_V2.md)  
+5. [ACTION_TEMPLATES.md](ACTION_TEMPLATES.md)
+   App 采集动作模板经验库。说明哪个 App 采集哪种数据、采用什么动作、UI/OCR/跳转/滚动等技术手段，以及什么证据算成功。
+6. [CRAWLER_APP_V2.md](CRAWLER_APP_V2.md)
    v2 文档任务设计细节，主要面向帖子链接型任务。
-6. [V2_AUTO_RUN_OPERATION.md](V2_AUTO_RUN_OPERATION.md)  
+7. [V2_AUTO_RUN_OPERATION.md](V2_AUTO_RUN_OPERATION.md)
    v2 文档触发器操作手册。
-7. [init.sql](init.sql)  
+8. [init.sql](init.sql)
    数据库初始化 SQL。
 
 架构图：
 
 ![ADB App 爬虫架构](assets/adb-crawler-architecture.png)
+
+源图：[assets/adb-crawler-architecture.mmd](assets/adb-crawler-architecture.mmd)
 
 当前架构有两条主线：
 
@@ -42,7 +46,8 @@
 常驻入口：
 
 ```powershell
-.\scripts\run.ps1 -Task supervisor
+.\scripts\run.ps1 -Task workers-start
+.\scripts\run.ps1 -Task workers-status
 ```
 
 ## 历史参考

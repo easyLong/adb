@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import random
 import time
+from datetime import datetime
 from typing import Any
 
 from apps.finance_crawler.config import Config
+from apps.finance_crawler.crawler_app.capture.core import CaptureBundle, FieldExtractionResult
+from apps.finance_crawler.crawler_app.capture.observations import build_capture_bundle_observations
 from apps.finance_crawler.crawler_app.storage import repository
 from apps.finance_crawler.crawler_app.documents.fields import REMARK
 from apps.finance_crawler.crawler_app.storage.db import get_conn
@@ -50,6 +53,12 @@ def crawl_pending_tasks(handler: TaskHandler, *, limit: int | None = None) -> di
                 opened_url=str(result.get("opened_url") or submission["post_url"]),
                 screenshot_path=result.get("screenshot_path"),
                 error=error,
+            )
+            _record_field_capture_observations(
+                conn,
+                submission=submission,
+                execution_id=execution_id,
+                result=result,
             )
             result_for_writeback = dict(result)
             result_for_writeback["final_submission_status"] = final_submission_status
@@ -129,6 +138,66 @@ def _crawl_submission(handler: TaskHandler, submission: dict[str, Any]) -> dict[
             exc,
         )
         return {"status": "error", "error": str(exc)}
+
+
+def _record_field_capture_observations(
+    conn,
+    *,
+    submission: dict[str, Any],
+    execution_id: int,
+    result: dict[str, Any],
+) -> int:
+    bundle_payload = result.get("capture_bundle")
+    result_payload = result.get("field_results")
+    if not isinstance(bundle_payload, dict) or not isinstance(result_payload, list):
+        return 0
+    bundle = _capture_bundle_from_payload(bundle_payload, result)
+    field_results = [_field_result_from_payload(item) for item in result_payload if isinstance(item, dict)]
+    if not field_results:
+        return 0
+    source_row_id = submission.get("source_row_id")
+    target_type = "source_row" if source_row_id else "task_submission"
+    target_id = int(source_row_id or submission["id"])
+    observations = build_capture_bundle_observations(
+        subject_type="task_execution",
+        subject_id=execution_id,
+        target_type=target_type,
+        target_id=target_id,
+        bundle=bundle,
+        field_results=field_results,
+        observed_at=datetime.now(),
+    )
+    return repository.upsert_field_capture_observations(conn, observations)
+
+
+def _capture_bundle_from_payload(payload: dict[str, Any], result: dict[str, Any]) -> CaptureBundle:
+    return CaptureBundle(
+        task_type=str(payload.get("task_type") or ""),
+        app_type=str(payload.get("app_type") or "unknown"),
+        requested_fields=tuple(str(item) for item in payload.get("requested_fields") or ()),
+        action_template_key=str(payload.get("action_template_key") or "") or None,
+        actions=tuple(str(item) for item in payload.get("actions") or ()),
+        opened_url=str(payload.get("opened_url") or result.get("opened_url") or "") or None,
+        status=str(payload.get("status") or result.get("status") or "unknown"),
+        page_state=str(payload.get("page_state") or "unknown"),
+        screenshot_path=str(payload.get("screenshot_path") or result.get("screenshot_path") or "") or None,
+        raw_result=result,
+        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        error=str(payload.get("error") or result.get("error") or "") or None,
+    )
+
+
+def _field_result_from_payload(payload: dict[str, Any]) -> FieldExtractionResult:
+    return FieldExtractionResult(
+        field_name=str(payload.get("field_name") or ""),
+        value=payload.get("value"),
+        source=str(payload.get("source") or "") or None,
+        accepted=bool(payload.get("accepted")),
+        page_state=str(payload.get("page_state") or "unknown"),
+        confidence=float(payload.get("confidence") or 0.0),
+        evidence=payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {},
+        quality_error=str(payload.get("quality_error") or "") or None,
+    )
 
 
 def _requested_writeback_values(submission: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:

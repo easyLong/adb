@@ -164,7 +164,7 @@ profile writeback
 | --- | --- | --- |
 | `alipay_profile_daily_metrics_v1` | 支付宝 | 粉丝数精确化，最近 3 条帖子阅读数取最大 |
 | `antfortune_profile_daily_metrics_v1` | 蚂蚁财富 | 粉丝数精确化，最近 3 条帖子阅读数取最大 |
-| `tenpay_profile_daily_metrics_v1` | 理财通 | 带 OCR 兜底 |
+| `tenpay_profile_daily_metrics_v1` | 理财通 | App 重启清状态，UI/OCR 采集，三列计数器识别，粉丝详情页精确化，账号锚点校验 |
 | `unknown_profile_daily_metrics_v1` | 兜底 | 基础主页采集 |
 
 ## 5. KOL 每日流程
@@ -224,7 +224,8 @@ profile_trigger_configs.kol_daily_metrics_wpvy0d
 启动：
 
 ```powershell
-.\scripts\run.ps1 -Task supervisor
+.\scripts\run.ps1 -Task workers-start
+.\scripts\run.ps1 -Task workers-status
 ```
 
 当前常驻任务：

@@ -118,14 +118,45 @@ def _reload_runtime_config_for_task(task_name: str) -> None:
     load_runtime_config()
 
 
+def _kol_profile_trigger_scheduler_enabled() -> bool:
+    return bool(Config.KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL and Config.KOL_DAILY_CRAWL_TIME)
+
+
+def _legacy_profile_scheduler_enabled() -> bool:
+    if not (Config.PROFILE_METRICS_DOC_URL and Config.PROFILE_METRICS_INTERVAL_MINUTES > 0):
+        return False
+    if _kol_profile_trigger_scheduler_enabled():
+        logger.warning(
+            "skip legacy profile metrics scheduler because KOL profile trigger is enabled"
+        )
+        return False
+    return True
+
+
+def _configured_scheduler_roles() -> set[str]:
+    raw = str(Config.SCHEDULER_ROLES or "all").strip().lower()
+    if not raw or raw == "all":
+        return {"all"}
+    roles = {item.strip() for item in re.split(r"[,;\s]+", raw) if item.strip()}
+    return roles or {"all"}
+
+
+def _scheduler_role_enabled(*roles: str) -> bool:
+    configured = _configured_scheduler_roles()
+    return "all" in configured or any(role in configured for role in roles)
+
+
 def _register_jobs() -> None:
-    if Config.ENABLE_LEGACY_SCHEDULER_JOBS:
+    roles = _configured_scheduler_roles()
+    logger.info("scheduler roles enabled: %s", ",".join(sorted(roles)))
+
+    if _scheduler_role_enabled("legacy") and Config.ENABLE_LEGACY_SCHEDULER_JOBS:
         schedule.every(Config.FETCH_INTERVAL_MINUTES).minutes.do(
             safe_run, fetch_and_save, "fetch_docs"
         )
         logger.info("registered fetch every %s minutes", Config.FETCH_INTERVAL_MINUTES)
 
-    if Config.SUBMIT_WORKER_INTERVAL_SECONDS > 0:
+    if _scheduler_role_enabled("submit", "v2_submit") and Config.SUBMIT_WORKER_INTERVAL_SECONDS > 0:
         from apps.finance_crawler.crawler_app.workflows.submit_triggers import submit_due_document_triggers
 
         schedule.every(Config.SUBMIT_WORKER_INTERVAL_SECONDS).seconds.do(
@@ -136,7 +167,7 @@ def _register_jobs() -> None:
             Config.SUBMIT_WORKER_INTERVAL_SECONDS,
         )
 
-    if Config.V2_CRAWL_WORKER_INTERVAL_SECONDS > 0:
+    if _scheduler_role_enabled("crawl", "v2_crawl") and Config.V2_CRAWL_WORKER_INTERVAL_SECONDS > 0:
         schedule.every(Config.V2_CRAWL_WORKER_INTERVAL_SECONDS).seconds.do(
             safe_run, run_v2_crawl_workers, "v2_crawl_worker"
         )
@@ -145,7 +176,7 @@ def _register_jobs() -> None:
             Config.V2_CRAWL_WORKER_INTERVAL_SECONDS,
         )
 
-    if Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS > 0:
+    if _scheduler_role_enabled("writeback", "v2_writeback") and Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS > 0:
         schedule.every(Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS).seconds.do(
             safe_run, run_v2_writeback_worker, "v2_writeback_worker"
         )
@@ -154,7 +185,7 @@ def _register_jobs() -> None:
             Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS,
         )
 
-    if Config.ENABLE_LEGACY_SCHEDULER_JOBS and Config.ENABLE_CHECKER:
+    if _scheduler_role_enabled("legacy") and Config.ENABLE_LEGACY_SCHEDULER_JOBS and Config.ENABLE_CHECKER:
         from apps.finance_crawler.jobs.checker import run_check
 
         schedule.every(Config.CHECK_INTERVAL_MINUTES).minutes.do(
@@ -162,7 +193,7 @@ def _register_jobs() -> None:
         )
         logger.info("registered check every %s minutes", Config.CHECK_INTERVAL_MINUTES)
 
-    if Config.ENABLE_LEGACY_SCHEDULER_JOBS and Config.DETAIL_INTERVAL_MINUTES > 0:
+    if _scheduler_role_enabled("legacy") and Config.ENABLE_LEGACY_SCHEDULER_JOBS and Config.DETAIL_INTERVAL_MINUTES > 0:
         schedule.every(Config.DETAIL_INTERVAL_MINUTES).minutes.do(
             safe_run, run_detail, "detail_crawl_due"
         )
@@ -171,21 +202,22 @@ def _register_jobs() -> None:
             Config.DETAIL_INTERVAL_MINUTES,
         )
 
-    if Config.ENABLE_LEGACY_SCHEDULER_JOBS:
+    if _scheduler_role_enabled("legacy") and Config.ENABLE_LEGACY_SCHEDULER_JOBS:
         schedule.every().day.at(Config.REPORT_TIME).do(
             safe_run, generate_report, "report"
         )
         logger.info("registered report daily at %s", Config.REPORT_TIME)
 
-    if Config.PROFILE_METRICS_DOC_URL and Config.PROFILE_METRICS_INTERVAL_MINUTES > 0:
-        if Config.PROFILE_METRICS_DAILY_PREPARE_TIME:
-            schedule.every().day.at(Config.PROFILE_METRICS_DAILY_PREPARE_TIME).do(
-                safe_run, ensure_daily_profile_metric_rows, "profile_daily_rows"
-            )
-            logger.info(
-                "registered profile daily row prepare at %s",
-                Config.PROFILE_METRICS_DAILY_PREPARE_TIME,
-            )
+    if _scheduler_role_enabled("profile") and _legacy_profile_scheduler_enabled() and Config.PROFILE_METRICS_DAILY_PREPARE_TIME:
+        schedule.every().day.at(Config.PROFILE_METRICS_DAILY_PREPARE_TIME).do(
+            safe_run, ensure_daily_profile_metric_rows, "profile_daily_rows"
+        )
+        logger.info(
+            "registered profile daily row prepare at %s",
+            Config.PROFILE_METRICS_DAILY_PREPARE_TIME,
+        )
+
+    if _scheduler_role_enabled("profile") and _legacy_profile_scheduler_enabled():
         schedule.every(Config.PROFILE_METRICS_INTERVAL_MINUTES).minutes.do(
             safe_run, run_profile_metrics, "profile_metrics"
         )
@@ -194,7 +226,7 @@ def _register_jobs() -> None:
             Config.PROFILE_METRICS_INTERVAL_MINUTES,
         )
 
-    if Config.KOL_DAILY_SNAPSHOT_DOC_URL and Config.KOL_DAILY_SNAPSHOT_TIME:
+    if _scheduler_role_enabled("profile", "kol_snapshot") and Config.KOL_DAILY_SNAPSHOT_DOC_URL and Config.KOL_DAILY_SNAPSHOT_TIME:
         schedule.every().day.at(Config.KOL_DAILY_SNAPSHOT_TIME).do(
             safe_run, run_kol_daily_snapshot_job, "kol_daily_snapshot"
         )
@@ -203,7 +235,7 @@ def _register_jobs() -> None:
             Config.KOL_DAILY_SNAPSHOT_TIME,
         )
 
-    if Config.KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL and Config.KOL_DAILY_CRAWL_TIME:
+    if _scheduler_role_enabled("profile", "kol_crawl") and _kol_profile_trigger_scheduler_enabled():
         from apps.finance_crawler.workflows.profile_triggers import ensure_default_profile_trigger_configs
 
         ensure_default_profile_trigger_configs()
@@ -215,7 +247,7 @@ def _register_jobs() -> None:
             Config.KOL_DAILY_CRAWL_TIME,
         )
 
-    if Config.HEARTBEAT_INTERVAL_MINUTES > 0:
+    if _scheduler_role_enabled("heartbeat") and Config.HEARTBEAT_INTERVAL_MINUTES > 0:
         schedule.every(Config.HEARTBEAT_INTERVAL_MINUTES).minutes.do(
             safe_run, heartbeat, "heartbeat"
         )
@@ -228,27 +260,27 @@ def run_forever() -> None:
     load_runtime_config()
     _register_jobs()
 
-    if Config.ENABLE_LEGACY_SCHEDULER_JOBS:
+    if _scheduler_role_enabled("legacy") and Config.ENABLE_LEGACY_SCHEDULER_JOBS:
         logger.info("sync Tencent Docs once on startup")
         safe_run(fetch_and_save, "fetch_docs_init")
-    if Config.SUBMIT_WORKER_INTERVAL_SECONDS > 0:
+    if _scheduler_role_enabled("submit", "v2_submit") and Config.SUBMIT_WORKER_INTERVAL_SECONDS > 0:
         from apps.finance_crawler.crawler_app.workflows.submit_triggers import submit_due_document_triggers
 
         logger.info("scan v2 document trigger configs once on startup")
         safe_run(submit_due_document_triggers, "v2_submit_worker_init")
-    if Config.V2_CRAWL_WORKER_INTERVAL_SECONDS > 0:
+    if _scheduler_role_enabled("crawl", "v2_crawl") and Config.V2_CRAWL_WORKER_INTERVAL_SECONDS > 0:
         logger.info("scan v2 crawl queues once on startup")
         safe_run(run_v2_crawl_workers, "v2_crawl_worker_init")
-    if Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS > 0:
+    if _scheduler_role_enabled("writeback", "v2_writeback") and Config.V2_WRITEBACK_WORKER_INTERVAL_SECONDS > 0:
         logger.info("scan v2 writeback queue once on startup")
         safe_run(run_v2_writeback_worker, "v2_writeback_worker_init")
-    if Config.ENABLE_LEGACY_SCHEDULER_JOBS and Config.DETAIL_INTERVAL_MINUTES > 0:
+    if _scheduler_role_enabled("legacy") and Config.ENABLE_LEGACY_SCHEDULER_JOBS and Config.DETAIL_INTERVAL_MINUTES > 0:
         logger.info("scan due detail tasks once on startup")
         safe_run(run_detail, "detail_crawl_due_init")
-    if Config.PROFILE_METRICS_DOC_URL and Config.PROFILE_METRICS_INTERVAL_MINUTES > 0:
-        if Config.PROFILE_METRICS_DAILY_PREPARE_TIME:
-            logger.info("ensure profile daily rows once on startup")
-            safe_run(ensure_daily_profile_metric_rows, "profile_daily_rows_init")
+    if _scheduler_role_enabled("profile") and _legacy_profile_scheduler_enabled() and Config.PROFILE_METRICS_DAILY_PREPARE_TIME:
+        logger.info("ensure profile daily rows once on startup")
+        safe_run(ensure_daily_profile_metric_rows, "profile_daily_rows_init")
+    if _scheduler_role_enabled("profile") and _legacy_profile_scheduler_enabled():
         logger.info("run profile metrics once on startup")
         safe_run(run_profile_metrics, "profile_metrics_init")
 

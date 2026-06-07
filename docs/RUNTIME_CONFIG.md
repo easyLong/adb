@@ -76,12 +76,33 @@ MYSQL_APP_DATABASE=crawler_app
 | `SUBMIT_WORKER_INTERVAL_SECONDS` | `300` | document submit worker 唤醒间隔，建议 5 分钟 |
 | `V2_CRAWL_WORKER_INTERVAL_SECONDS` | `30` | document crawl worker 唤醒间隔 |
 | `V2_WRITEBACK_WORKER_INTERVAL_SECONDS` | `30` | document writeback worker 唤醒间隔 |
+| `SCHEDULER_ROLES` | `all` | scheduler 注册哪些角色；可用 `submit,crawl,writeback,profile,heartbeat` 拆成多个常驻进程 |
 | `HEARTBEAT_INTERVAL_MINUTES` | `30` | scheduler 心跳 |
 | `TASK_RUNNING_TIMEOUT_MINUTES` | `360` | running 任务超时回收 |
 
 每个 document trigger 还有自己的 `scan_interval_seconds`，用于控制同一个在线文档多久真正扫描一次。当前建议 trigger 级别设置为 `600` 秒。
 
 常驻进程每次任务开始前会重新加载运行时配置。
+
+如果 ADB 采集耗时较长，建议用一键队列隔离常驻进程，避免 crawl 阻塞 submit/writeback：
+
+```powershell
+.\scripts\run.ps1 -Task workers-start
+.\scripts\run.ps1 -Task workers-status
+.\scripts\run.ps1 -Task workers-stop
+```
+
+`workers-start` 会启动 4 个隐藏常驻进程：
+```text
+submit-heartbeat -> SCHEDULER_ROLES=submit,heartbeat
+crawl            -> SCHEDULER_ROLES=crawl
+writeback        -> SCHEDULER_ROLES=writeback
+profile          -> SCHEDULER_ROLES=profile
+```
+
+PID 和 stdout/stderr 日志在 `apps/finance_crawler/logs/queue_workers/`。
+
+这是队列隔离，不是多线程。`submit` 和 `writeback` 不会被采集任务阻塞；`crawl` 负责 document 采集队列；`profile` 负责 KOL/profile 队列。
 
 ## KOL 每日生成和主页采集
 
@@ -106,12 +127,13 @@ profile_trigger_configs.kol_daily_metrics_wpvy0d
 ## Profile 主页动作模板
 
 主页动作模板存在 `profile_action_profiles`。
+动作细节和已验证经验见 [ACTION_TEMPLATES.md](ACTION_TEMPLATES.md)。
 
 | action_profile_key | 说明 |
 | --- | --- |
 | `alipay_profile_daily_metrics_v1` | 支付宝主页粉丝数、最近 3 条帖子阅读数取最大 |
 | `antfortune_profile_daily_metrics_v1` | 蚂蚁财富主页粉丝数、最近 3 条帖子阅读数取最大 |
-| `tenpay_profile_daily_metrics_v1` | 理财通主页采集，带 OCR 兜底 |
+| `tenpay_profile_daily_metrics_v1` | 理财通主页采集，带 App 重启、UI/OCR、三列计数器识别、粉丝详情页精确化和账号锚点校验 |
 | `unknown_profile_daily_metrics_v1` | 兜底模板 |
 
 profile trigger 的 `action_profile_key` 可以为空。为空时，系统按每行主页链接识别 `app_type`，自动选择对应 action profile。
@@ -173,6 +195,7 @@ alipay + detail + account_name,read_count,screenshot
 ## 注意事项
 
 - 日常不要固定 `PROFILE_METRICS_TARGET_DATE`，否则旧 profile 链路会一直抓同一天。
+- 启用 `KOL_DAILY_CRAWL_TIME` 和 `KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL` 后，scheduler 会优先走新的 profile trigger，并跳过旧 `PROFILE_METRICS_*` 自动调度；旧 profile 命令仍可手动执行。
 - `KOL_DAILY_SNAPSHOT_TIME=22:00` 只生成明日行，不采集。
 - `KOL_DAILY_CRAWL_TIME=08:00` 才采集今日主页数据。
 - 文档字段优先按表头 title 识别，列号配置只是兜底。

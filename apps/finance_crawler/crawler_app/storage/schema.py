@@ -195,6 +195,7 @@ def ensure_crawler_app_tables(cursor) -> None:
         """
     )
     _insert_default_profile_action_profiles(cursor)
+    _ensure_profile_metric_tables(cursor)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS column_mappings (
@@ -435,6 +436,41 @@ def ensure_crawler_app_tables(cursor) -> None:
     _add_column_if_missing(cursor, "task_executions", "metrics_json", "LONGTEXT NULL AFTER opened_url")
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS field_capture_observations (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            subject_type VARCHAR(64) NOT NULL,
+            subject_id BIGINT UNSIGNED NULL,
+            target_type VARCHAR(64) NULL,
+            target_id BIGINT UNSIGNED NULL,
+            task_type VARCHAR(64) NOT NULL,
+            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
+            field_name VARCHAR(64) NOT NULL,
+            action_template_key VARCHAR(128) NULL,
+            action_names_json LONGTEXT NULL,
+            page_state VARCHAR(64) NULL,
+            extraction_source VARCHAR(64) NULL,
+            value_text TEXT NULL,
+            value_number BIGINT NULL,
+            accepted TINYINT NOT NULL DEFAULT 0,
+            confidence DECIMAL(6,4) NULL,
+            evidence_json LONGTEXT NULL,
+            quality_error TEXT NULL,
+            screenshot_path VARCHAR(700) NULL,
+            observed_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_field_capture_subject (subject_type, subject_id, field_name),
+            INDEX idx_field_capture_subject (subject_type, subject_id),
+            INDEX idx_field_capture_target (target_type, target_id),
+            INDEX idx_field_capture_field (app_type, task_type, field_name),
+            INDEX idx_field_capture_template (action_template_key),
+            INDEX idx_field_capture_state (page_state, accepted),
+            INDEX idx_field_capture_observed (observed_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS writeback_plans (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             submission_id BIGINT UNSIGNED NULL,
@@ -541,6 +577,108 @@ def _add_unique_index_if_missing(cursor, table_name: str, index_name: str, colum
 def _index_exists(cursor, table_name: str, index_name: str) -> bool:
     cursor.execute(f"SHOW INDEX FROM `{table_name}` WHERE Key_name = %s", (index_name,))
     return cursor.fetchone() is not None
+
+
+def _ensure_profile_metric_tables(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_targets (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            profile_key VARCHAR(191) NOT NULL,
+            account_name VARCHAR(255) NULL,
+            platform VARCHAR(64) NULL,
+            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
+            homepage_url VARCHAR(1000) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            source_json LONGTEXT NULL,
+            first_seen_date DATE NULL,
+            latest_seen_date DATE NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_key (profile_key),
+            INDEX idx_profile_status (status),
+            INDEX idx_profile_app (app_type),
+            INDEX idx_profile_url (homepage_url(191))
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_metric_sources (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            target_id BIGINT UNSIGNED NOT NULL,
+            metric_date DATE NOT NULL,
+            source_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            source_name VARCHAR(191) NULL,
+            source_key VARCHAR(191) NOT NULL,
+            source_locator_json LONGTEXT NULL,
+            requested_fields_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            attempts INT NOT NULL DEFAULT 0,
+            max_attempts INT NOT NULL DEFAULT 3,
+            last_error TEXT NULL,
+            latest_metric_id BIGINT UNSIGNED NULL,
+            writeback_status VARCHAR(32) NULL,
+            writeback_error TEXT NULL,
+            written_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_metric_source (source_type, source_key),
+            INDEX idx_profile_metric_source_target (target_id),
+            INDEX idx_profile_metric_source_date (metric_date),
+            INDEX idx_profile_metric_source_status (status),
+            INDEX idx_profile_metric_writeback (writeback_status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _add_column_if_missing(cursor, "profile_metric_sources", "attempts", "INT NOT NULL DEFAULT 0")
+    _add_column_if_missing(cursor, "profile_metric_sources", "max_attempts", "INT NOT NULL DEFAULT 3")
+    _add_column_if_missing(cursor, "profile_metric_sources", "last_error", "TEXT NULL")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_metric_runs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            target_id BIGINT UNSIGNED NOT NULL,
+            metric_date DATE NOT NULL,
+            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
+            homepage_url VARCHAR(1000) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            fans_count INT NULL,
+            growth_count INT NULL,
+            read_count INT NULL,
+            metrics_json LONGTEXT NULL,
+            screenshot_path VARCHAR(700) NULL,
+            error TEXT NULL,
+            crawled_at DATETIME NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_metric_target_date (target_id, metric_date),
+            INDEX idx_profile_metric_target (target_id),
+            INDEX idx_profile_metric_date (metric_date),
+            INDEX idx_profile_metric_status (status),
+            INDEX idx_profile_metric_app (app_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS profile_metric_writebacks (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            metric_source_id BIGINT UNSIGNED NOT NULL,
+            metric_id BIGINT UNSIGNED NULL,
+            sink_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
+            sink_locator_json LONGTEXT NULL,
+            field_name VARCHAR(64) NOT NULL DEFAULT 'fans_count',
+            status VARCHAR(32) NOT NULL,
+            error TEXT NULL,
+            written_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_profile_metric_writeback_field (metric_source_id, field_name),
+            INDEX idx_profile_metric_writeback_source (metric_source_id),
+            INDEX idx_profile_metric_writeback_metric (metric_id),
+            INDEX idx_profile_metric_writeback_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
 
 
 def _insert_default_capture_action_profiles(cursor) -> None:
@@ -755,13 +893,13 @@ def _insert_default_profile_action_profiles(cursor) -> None:
             "tenpay",
             "profile_daily_metrics",
             "fans_count,growth_count,read_count",
-            "open_profile,capture_fans,ocr_if_needed,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
+            "reset_app,open_profile,capture_home,ui_controls,ocr,tenpay_counter_layout,open_exact_fans_if_abbreviated,verify_account_anchor,scan_recent_posts,tap_post,capture_read_count,aggregate_max_recent_posts,writeback",
             '["fans_count","growth_count","read_count"]',
-            '["open_profile","capture_fans","ocr_if_needed","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
-            '{"fans_count":{"exact_if_abbreviated":true,"ocr":true},"read_count":{"recent_posts_limit":3,"ocr":true},"holding":{"enabled":false}}',
+            '["reset_app","open_profile","capture_home","ui_controls","ocr","tenpay_counter_layout","open_exact_fans_if_abbreviated","verify_account_anchor","scan_recent_posts","tap_post","capture_read_count","aggregate_max_recent_posts","writeback"]',
+            '{"fans_count":{"exact_if_abbreviated":true,"home_candidate_only_when_abbreviated":true,"ocr":true,"tenpay_counter_layout":true,"detail_page_pattern":"TA的粉丝({count}人)","require_account_anchor":true,"reject_stale_detail_page":true},"read_count":{"recent_posts_limit":3,"ocr":true,"aggregation":"max"},"render_ready":{"initial_wait_seconds":8,"recapture_if_title_only":true,"recapture_wait_seconds":12},"recovery":{"reset_app_before_profile":true,"device_fail_fast":true},"holding":{"enabled":false}}',
             '{"read_count":{"source":"recent_posts","method":"max","max_posts":3},"growth_count":{"source":"previous_day_fans_count"}}',
             10,
-            "Tenpay profile metrics with OCR fallback.",
+            "Tenpay profile metrics: reset app, use UI/OCR, infer middle fans counter, click exact fans page for abbreviated counts, and verify account anchor.",
         ),
         (
             "unknown_profile_daily_metrics_v1",

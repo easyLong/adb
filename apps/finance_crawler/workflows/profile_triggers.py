@@ -7,7 +7,7 @@ from typing import Any
 
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.integrations.tencent_docs.client import parse_doc_url_info
-from apps.finance_crawler.storage.profile_metrics import (
+from apps.finance_crawler.crawler_app.storage.profile_metrics import (
     PROFILE_DAILY_METRICS_FIELDS,
     finish_profile_trigger_run,
     get_profile_action_profile,

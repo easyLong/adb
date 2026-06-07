@@ -1,6 +1,8 @@
 import subprocess
 import unittest
 from datetime import datetime, date
+from pathlib import Path
+from unittest.mock import patch
 
 from apps.finance_crawler.mobile.capture_engine import _is_input_injection_permission_error
 from apps.finance_crawler.mobile.page_status import detect_page_status_from_texts
@@ -18,8 +20,16 @@ from apps.finance_crawler.workflows.docs_link_reads import (
 from apps.finance_crawler.workflows.profile_post_reads import extract_read_count_from_texts, infer_post_date
 from apps.finance_crawler.workflows.profile_metrics import (
     _daily_template_values,
+    _extract_exact_fans_count,
+    _fans_tap_bounds,
+    _has_abbreviated_fans_count,
+    _has_exact_fans_evidence,
+    _has_profile_fans_context,
+    _is_device_unavailable_error,
     _next_append_row,
     _parse_profile_source_row,
+    _profile_home_needs_recapture,
+    _resolve_profile_fans_count,
 )
 from apps.finance_crawler.integrations.tencent_docs.client import DocInfo
 
@@ -80,6 +90,41 @@ class ProfileMetricParserTests(unittest.TestCase):
 
         self.assertEqual(extract_profile_fans_count(records), 8203)
 
+    def test_extract_fans_count_uses_width_height_bounds(self) -> None:
+        records = [
+            {"text": "17", "bounds": {"left": 68, "top": 800, "width": 48, "height": 44}},
+            {"text": "771", "bounds": {"left": 204, "top": 800, "width": 70, "height": 44}},
+            {"text": "2.177", "bounds": {"left": 350, "top": 801, "width": 106, "height": 46}},
+            {"text": "\u5173\u6ce8", "bounds": {"left": 55, "top": 860, "width": 75, "height": 42}},
+            {"text": "\u7c89\u4e1d", "bounds": {"left": 191, "top": 859, "width": 77, "height": 43}},
+            {"text": "\u5df2\u83b7\u8bc4\u8d5e", "bounds": {"left": 336, "top": 862, "width": 137, "height": 38}},
+        ]
+
+        self.assertEqual(extract_profile_fans_count(records), 771)
+
+    def test_missing_tenpay_fans_value_does_not_use_follow_count(self) -> None:
+        records = [
+            {"text": "\u7406\u8d22\u901a\u793e\u533a\u4f18\u8d28\u521b\u4f5c\u8005", "bounds": {"left": 388, "top": 461, "width": 341, "height": 33}},
+            {"text": "17", "bounds": {"left": 68, "top": 800, "width": 48, "height": 44}},
+            {"text": "2.177", "bounds": {"left": 350, "top": 801, "width": 106, "height": 46}},
+            {"text": "\u5173\u6ce8", "bounds": {"left": 55, "top": 860, "width": 75, "height": 42}},
+            {"text": "\u7c89\u4e1d", "bounds": {"left": 191, "top": 859, "width": 77, "height": 43}},
+            {"text": "\u5df2\u83b7\u8bc4\u8d5e", "bounds": {"left": 336, "top": 862, "width": 137, "height": 38}},
+        ]
+
+        self.assertIsNone(extract_profile_fans_count(records))
+        result = _resolve_profile_fans_count(
+            records,
+            screenshot_path=None,
+            output_dir=Path("."),
+            app_type="tenpay",
+            expected_account_name="\u95fb\u57fa\u8d77\u821e",
+        )
+
+        self.assertIsNone(result["fans_count"])
+        self.assertEqual(result["page_state"], "profile_home")
+        self.assertEqual(result["quality_error"], "profile fans count was not detected")
+
     def test_extract_fans_count_from_inline_antfortune_counter(self) -> None:
         records = [
             {
@@ -89,6 +134,167 @@ class ProfileMetricParserTests(unittest.TestCase):
         ]
 
         self.assertEqual(extract_profile_fans_count(records), 8743)
+
+    def test_abbreviated_fans_count_requests_exact_page(self) -> None:
+        records = [
+            {"text": "1.2\u4e07", "bounds": {"left": 174, "top": 736, "right": 250, "bottom": 793}},
+            {"text": "\u7c89\u4e1d", "bounds": {"left": 165, "top": 790, "right": 233, "bottom": 832}},
+        ]
+
+        self.assertTrue(_has_abbreviated_fans_count(records))
+        self.assertEqual(
+            _fans_tap_bounds(records),
+            {"left": 165, "top": 736, "right": 250, "bottom": 832},
+        )
+
+    def test_exact_fans_count_prefers_detail_page_integer(self) -> None:
+        records = [
+            {"text": "\u7c89\u4e1d\u603b\u6570 12345", "bounds": {"left": 30, "top": 250, "right": 400, "bottom": 310}},
+            {"text": "1.2\u4e07\u7c89\u4e1d", "bounds": {"left": 30, "top": 500, "right": 240, "bottom": 560}},
+        ]
+
+        self.assertTrue(_has_exact_fans_evidence(records))
+        self.assertEqual(_extract_exact_fans_count(records), 12345)
+
+    def test_exact_fans_count_ignores_status_bar_number(self) -> None:
+        records = [
+            {"text": "22", "bounds": {"left": 1004, "top": 45, "right": 1048, "bottom": 88}},
+            {"text": "TA\u7684\u7c89\u4e1d(20665\u4eba)", "bounds": {"left": 62, "top": 313, "right": 543, "bottom": 364}},
+        ]
+
+        self.assertEqual(_extract_exact_fans_count(records), 20665)
+
+    def test_status_bar_number_is_not_profile_fans_context(self) -> None:
+        records = [
+            {"text": "09:32", "bounds": {"left": 394, "top": 38, "right": 501, "bottom": 96}},
+            {"text": "21", "bounds": {"left": 1004, "top": 45, "right": 1048, "bottom": 88}},
+            {"text": "\u817e\u8baf\u7406\u8d22\u901a", "bounds": {"left": 450, "top": 146, "right": 735, "bottom": 223}},
+        ]
+
+        self.assertFalse(_has_profile_fans_context(records))
+        self.assertIsNone(_extract_exact_fans_count(records))
+
+    def test_abbreviated_fans_count_is_rejected_without_exact_page(self) -> None:
+        records = [
+            {"text": "1.2\u4e07", "bounds": {"left": 174, "top": 736, "right": 250, "bottom": 793}},
+            {"text": "\u7c89\u4e1d", "bounds": {"left": 165, "top": 790, "right": 233, "bottom": 832}},
+        ]
+
+        with patch("apps.finance_crawler.workflows.profile_metrics._open_exact_fans_page_if_abbreviated", return_value=None):
+            result = _resolve_profile_fans_count(
+                records,
+                screenshot_path=None,
+                output_dir=Path("."),
+                app_type="tenpay",
+            )
+
+        self.assertIsNone(result["fans_count"])
+        self.assertEqual(result["home_fans_count"], 12000)
+        self.assertTrue(result["exact_required"])
+        self.assertFalse(result["exact_used"])
+        self.assertEqual(result["quality_error"], "abbreviated fans count requires exact detail page")
+
+    def test_plain_home_fans_count_is_allowed_as_home_source(self) -> None:
+        records = [
+            {"text": "14", "bounds": {"left": 174, "top": 736, "right": 222, "bottom": 793}},
+            {"text": "\u7c89\u4e1d", "bounds": {"left": 165, "top": 790, "right": 233, "bottom": 832}},
+        ]
+
+        result = _resolve_profile_fans_count(
+            records,
+            screenshot_path=None,
+            output_dir=Path("."),
+            app_type="tenpay",
+        )
+
+        self.assertEqual(result["fans_count"], 14)
+        self.assertEqual(result["source"], "ui_home")
+        self.assertFalse(result["exact_required"])
+        self.assertFalse(result["exact_used"])
+        self.assertEqual(result["page_state"], "profile_home")
+        self.assertEqual(result["action_template"], "tenpay_profile_daily_metrics_v1:fans_count")
+        self.assertIn("capture_home", result["actions"])
+        self.assertEqual(result["capture_bundle"]["task_type"], "profile_daily_metrics")
+        self.assertEqual(result["capture_bundle"]["requested_fields"], ["fans_count"])
+        self.assertEqual(result["field_results"][0]["field_name"], "fans_count")
+        self.assertTrue(result["field_results"][0]["accepted"])
+
+    def test_profile_login_page_is_rejected_with_state(self) -> None:
+        records = [
+            {"text": "\u6253\u5f00\u652f\u4ed8\u5b9d\u767b\u5f55"},
+            {"text": "\u5bc6\u7801\u767b\u5f55"},
+        ]
+
+        result = _resolve_profile_fans_count(
+            records,
+            screenshot_path=None,
+            output_dir=Path("."),
+            app_type="antfortune",
+        )
+
+        self.assertIsNone(result["fans_count"])
+        self.assertEqual(result["page_state"], "login_required")
+        self.assertEqual(result["quality_error"], "profile page requires login")
+
+    def test_tenpay_profile_counter_layout_recovers_misread_fans_label(self) -> None:
+        records = [
+            {"text": "\u7406\u8d22\u901a\u793e\u533a\u4f18\u8d28\u521b\u4f5c\u8005", "bounds": {"left": 388, "top": 461, "width": 341, "height": 33}},
+            {"text": "103", "bounds": {"left": 55, "top": 800, "width": 76, "height": 45}},
+            {"text": "2.1\u4e07", "bounds": {"left": 195, "top": 799, "width": 104, "height": 47}},
+            {"text": "8.5\u4e07", "bounds": {"left": 379, "top": 798, "width": 113, "height": 49}},
+            {"text": "\u5173\u6ce8", "bounds": {"left": 56, "top": 860, "width": 75, "height": 42}},
+            {"text": "\u5df2\u83b7\u8bc4\u8d5e", "bounds": {"left": 368, "top": 862, "width": 138, "height": 38}},
+        ]
+
+        self.assertTrue(_has_profile_fans_context(records))
+        self.assertTrue(_has_abbreviated_fans_count(records))
+        self.assertEqual(
+            _fans_tap_bounds(records),
+            {"left": 195, "top": 799, "right": 299, "bottom": 936},
+        )
+
+    def test_initial_fans_detail_page_must_match_expected_profile(self) -> None:
+        records = [
+            {"text": "\u817e\u8baf\u7406\u8d22\u901a", "bounds": {"left": 418, "top": 145, "width": 277, "height": 50}},
+            {"text": "TA\u7684\u7c89\u4e1d(16590\u4eba)", "bounds": {"left": 59, "top": 295, "width": 452, "height": 49}},
+            {"text": "\u7406\u8d22\u901a\u7528\u6237", "bounds": {"left": 185, "top": 649, "width": 227, "height": 44}},
+        ]
+
+        result = _resolve_profile_fans_count(
+            records,
+            screenshot_path=None,
+            output_dir=Path("."),
+            app_type="tenpay",
+            expected_account_name="\u62ce\u58f6\u51b2",
+        )
+
+        self.assertIsNone(result["fans_count"])
+        self.assertEqual(result["page_state"], "fans_detail")
+        self.assertFalse(result["account_verified"])
+        self.assertEqual(result["quality_error"], "exact fans page is not tied to expected profile")
+
+    def test_tenpay_title_only_page_needs_recapture(self) -> None:
+        records = [
+            {"text": "10:20", "bounds": {"left": 394, "top": 38, "right": 501, "bottom": 96}},
+            {"text": "\u817e\u8baf\u7406\u8d22\u901a", "bounds": {"left": 450, "top": 146, "right": 735, "bottom": 223}},
+        ]
+
+        self.assertTrue(_profile_home_needs_recapture(records, "tenpay"))
+
+    def test_tenpay_ready_profile_page_does_not_need_recapture(self) -> None:
+        records = [
+            {"text": "\u7406\u8d22\u901a\u793e\u533a\u4f18\u8d28\u521b\u4f5c\u8005", "bounds": {"left": 388, "top": 461, "width": 341, "height": 33}},
+            {"text": "103", "bounds": {"left": 55, "top": 800, "width": 76, "height": 45}},
+            {"text": "2.1\u4e07", "bounds": {"left": 195, "top": 799, "width": 104, "height": 47}},
+            {"text": "8.5\u4e07", "bounds": {"left": 379, "top": 798, "width": 113, "height": 49}},
+        ]
+
+        self.assertFalse(_profile_home_needs_recapture(records, "tenpay"))
+
+    def test_device_error_classifier_detects_adb_failures(self) -> None:
+        self.assertTrue(_is_device_unavailable_error("no adb device is ready; devices=none"))
+        self.assertTrue(_is_device_unavailable_error("uiautomator2 device session is unavailable: disconnected"))
+        self.assertFalse(_is_device_unavailable_error("profile fans count was not detected"))
 
     def test_tenpay_profile_source_is_supported(self) -> None:
         parsed = _parse_profile_source_row(

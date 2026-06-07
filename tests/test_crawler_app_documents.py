@@ -1,9 +1,18 @@
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import ANY, patch
 
 from apps.finance_crawler.config import Config
-from apps.finance_crawler.crawler_app.capture.planner import plan_capture_for_task, plan_capture_from_profile
+from apps.finance_crawler.crawler_app.capture.planner import (
+    plan_capture_for_task,
+    plan_capture_from_profile,
+    plan_minimal_capture_actions,
+)
+from apps.finance_crawler.crawler_app.capture.post_fields import (
+    build_post_capture_bundle,
+    extract_post_field_results,
+    writeback_values_from_field_results,
+)
 from apps.finance_crawler.crawler_app.documents import column_resolver
 from apps.finance_crawler.crawler_app.documents.fields import (
     ACCOUNT_NAME,
@@ -53,6 +62,7 @@ from apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots import (
 )
 from apps.finance_crawler.crawler_app.workflows.execution import (
     _attach_capture_action_profile,
+    _record_field_capture_observations,
     _requested_writeback_values,
     _sleep_between_submissions,
     execution_summary,
@@ -66,6 +76,7 @@ from apps.finance_crawler.crawler_app.workflows.submit_triggers import (
     _validate_trigger_binding_policy,
 )
 from apps.finance_crawler.crawler_app.writeback.executor import apply_pending_writebacks
+from apps.finance_crawler.crawler_app.capture.observations import build_profile_metric_observations
 from apps.finance_crawler.crawlers.constants import SOURCE_ALIPAY, SOURCE_TENPAY
 from apps.finance_crawler.integrations.tencent_docs import client as tencent_docs_client
 from apps.finance_crawler.integrations.tencent_docs.client import DocInfo, SheetInfo
@@ -110,7 +121,12 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS profile_action_profiles", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS profile_trigger_configs", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS profile_trigger_runs", ddl)
+        self.assertIn("CREATE TABLE IF NOT EXISTS profile_targets", ddl)
+        self.assertIn("CREATE TABLE IF NOT EXISTS profile_metric_sources", ddl)
+        self.assertIn("CREATE TABLE IF NOT EXISTS profile_metric_runs", ddl)
+        self.assertIn("CREATE TABLE IF NOT EXISTS profile_metric_writebacks", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS capture_action_profiles", ddl)
+        self.assertIn("CREATE TABLE IF NOT EXISTS field_capture_observations", ddl)
         self.assertIn("app_type VARCHAR(64) NOT NULL", ddl)
         self.assertIn("task_type VARCHAR(64) NOT NULL", ddl)
         self.assertIn("field_combo VARCHAR(512) NOT NULL", ddl)
@@ -135,6 +151,228 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         profile_action_keys = {row[0] for row in profile_action_rows}
         self.assertIn("alipay_profile_daily_metrics_v1", profile_action_keys)
         self.assertIn("antfortune_profile_daily_metrics_v1", profile_action_keys)
+
+    def test_profile_metric_repository_uses_crawler_app_db(self) -> None:
+        from apps.finance_crawler.crawler_app.storage import db as crawler_app_db
+        from apps.finance_crawler.crawler_app.storage import profile_metrics as crawler_profile_metrics
+        from apps.finance_crawler.storage import profile_metrics as legacy_profile_metrics
+
+        self.assertIs(crawler_profile_metrics.get_conn, crawler_app_db.get_conn)
+        self.assertIs(legacy_profile_metrics.get_conn, crawler_app_db.get_conn)
+
+    def test_profile_metric_observation_rows_extract_field_evidence(self) -> None:
+        rows = build_profile_metric_observations(
+            metric_id=12,
+            target_id=34,
+            task_type="profile_daily_metrics",
+            app_type="tenpay",
+            status="success",
+            fans_count=20664,
+            read_count=None,
+            metrics={
+                "fans": {
+                    "fans_count": 20664,
+                    "page_state": "fans_detail",
+                    "page_state_confidence": 0.95,
+                    "source": "exact_page",
+                    "action_template": "tenpay_profile_daily_metrics_v1:fans_count",
+                    "actions": ["open_profile", "open_exact_fans_if_abbreviated"],
+                    "exact_required": True,
+                    "exact_used": True,
+                    "account_verified": True,
+                    "quality_error": None,
+                }
+            },
+            screenshot_path="runs/profile/page_000.png",
+            error=None,
+            observed_at=datetime(2026, 6, 7, 8, 0, 0),
+        )
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.subject_type, "profile_metric_run")
+        self.assertEqual(row.field_name, "fans_count")
+        self.assertEqual(row.value_number, 20664)
+        self.assertTrue(row.accepted)
+        self.assertEqual(row.page_state, "fans_detail")
+        self.assertEqual(row.extraction_source, "exact_page")
+        self.assertEqual(row.action_template_key, "tenpay_profile_daily_metrics_v1:fans_count")
+
+    def test_profile_metric_observation_acceptance_is_field_scoped(self) -> None:
+        rows = build_profile_metric_observations(
+            metric_id=12,
+            target_id=34,
+            task_type="profile_daily_metrics",
+            app_type="tenpay",
+            status="error",
+            fans_count=None,
+            read_count=None,
+            metrics={
+                "fans": {
+                    "fans_count": 20664,
+                    "page_state": "fans_detail",
+                    "source": "exact_page",
+                    "action_template": "tenpay_profile_daily_metrics_v1:fans_count",
+                    "quality_error": None,
+                },
+                "posts": [],
+                "post_count": 0,
+            },
+            screenshot_path="runs/profile/page_000.png",
+            error="profile post read count was not detected",
+            observed_at=datetime(2026, 6, 7, 8, 0, 0),
+        )
+
+        rows_by_field = {row.field_name: row for row in rows}
+        self.assertTrue(rows_by_field["fans_count"].accepted)
+        self.assertFalse(rows_by_field["read_count"].accepted)
+
+    def test_profile_metric_observations_prefer_standard_field_results(self) -> None:
+        rows = build_profile_metric_observations(
+            metric_id=12,
+            target_id=34,
+            task_type="profile_daily_metrics",
+            app_type="tenpay",
+            status="success",
+            fans_count=20664,
+            read_count=None,
+            metrics={
+                "capture_bundle": {
+                    "task_type": "profile_daily_metrics",
+                    "app_type": "tenpay",
+                    "requested_fields": ["fans_count"],
+                    "action_template_key": "tenpay_profile_daily_metrics_v1:fans_count",
+                    "actions": ["open_profile", "capture_home"],
+                    "status": "success",
+                    "page_state": "fans_detail",
+                    "screenshot_path": "shot.png",
+                },
+                "field_results": [
+                    {
+                        "field_name": "fans_count",
+                        "value": 20664,
+                        "source": "exact_page",
+                        "accepted": True,
+                        "page_state": "fans_detail",
+                        "confidence": 0.95,
+                        "evidence": {"source": "standard"},
+                    }
+                ],
+                "fans": {
+                    "fans_count": 999,
+                    "source": "legacy_should_not_win",
+                },
+            },
+            screenshot_path="legacy-shot.png",
+            error=None,
+            observed_at=datetime(2026, 6, 7, 8, 0, 0),
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].field_name, "fans_count")
+        self.assertEqual(rows[0].value_number, 20664)
+        self.assertEqual(rows[0].action_template_key, "tenpay_profile_daily_metrics_v1:fans_count")
+        self.assertEqual(rows[0].screenshot_path, "shot.png")
+
+    def test_post_field_results_share_one_capture_bundle(self) -> None:
+        bundle = build_post_capture_bundle(
+            task_type=DETAIL,
+            app_type=SOURCE_ALIPAY,
+            requested_fields=(ACCOUNT_NAME, READ_COUNT_FIELD, SCREENSHOT, REMARK),
+            result={
+                "status": "success",
+                "opened_url": "https://example.com/post",
+                "account_name": "acct",
+                "read_count": 123,
+                "screenshot_path": "shot.png",
+                "capture_plan": {
+                    "actions": ["open_link", "ui_controls", "screenshot"],
+                },
+            },
+        )
+
+        results = {item.field_name: item for item in extract_post_field_results(bundle)}
+
+        self.assertEqual(bundle.page_state, "post_detail")
+        self.assertEqual(results[ACCOUNT_NAME].value, "acct")
+        self.assertEqual(results[READ_COUNT_FIELD].value, 123)
+        self.assertEqual(results[SCREENSHOT].value, "shot.png")
+        self.assertTrue(all(item.accepted for item in results.values()))
+
+    def test_writeback_values_can_be_generated_from_field_results(self) -> None:
+        result = {
+            "field_results": [
+                {"field_name": ACCOUNT_NAME, "value": "acct", "accepted": True},
+                {"field_name": READ_COUNT_FIELD, "value": 123, "accepted": True},
+                {"field_name": SCREENSHOT, "value": "shot.png", "accepted": True},
+                {"field_name": COMMENT_COUNT, "value": None, "accepted": False},
+            ]
+        }
+
+        self.assertEqual(
+            writeback_values_from_field_results(result),
+            {
+                ACCOUNT_NAME: "acct",
+                READ_COUNT_FIELD: 123,
+                SCREENSHOT: "shot.png",
+            },
+        )
+        self.assertEqual(detail_writeback_values(result), writeback_values_from_field_results(result))
+
+    def test_execution_records_field_capture_observations(self) -> None:
+        captured = []
+
+        def fake_upsert(_conn, observations):
+            captured.extend(observations)
+            return len(observations)
+
+        result = {
+            "capture_bundle": {
+                "task_type": DETAIL,
+                "app_type": SOURCE_ALIPAY,
+                "requested_fields": [READ_COUNT_FIELD, SCREENSHOT],
+                "actions": ["open_link", "ui_controls", "screenshot"],
+                "opened_url": "https://example.com/post",
+                "status": "success",
+                "page_state": "post_detail",
+                "screenshot_path": "shot.png",
+            },
+            "field_results": [
+                {
+                    "field_name": READ_COUNT_FIELD,
+                    "value": 123,
+                    "source": "ui_controls",
+                    "accepted": True,
+                    "page_state": "post_detail",
+                    "confidence": 0.8,
+                    "evidence": {"status": "success"},
+                },
+                {
+                    "field_name": SCREENSHOT,
+                    "value": "shot.png",
+                    "source": "screenshot",
+                    "accepted": True,
+                    "page_state": "post_detail",
+                    "confidence": 0.8,
+                    "evidence": {"status": "success"},
+                },
+            ],
+        }
+
+        with patch("apps.finance_crawler.crawler_app.workflows.execution.repository.upsert_field_capture_observations", fake_upsert):
+            count = _record_field_capture_observations(
+                object(),
+                submission={"id": 7, "source_row_id": 5},
+                execution_id=11,
+                result=result,
+            )
+
+        self.assertEqual(count, 2)
+        self.assertEqual(captured[0].subject_type, "task_execution")
+        self.assertEqual(captured[0].subject_id, 11)
+        self.assertEqual(captured[0].target_type, "source_row")
+        self.assertEqual(captured[0].target_id, 5)
+        self.assertEqual(captured[0].field_name, READ_COUNT_FIELD)
 
     def test_kol_daily_header_resolves_by_title(self) -> None:
         header = [
@@ -322,6 +560,50 @@ class CrawlerAppDocumentTests(unittest.TestCase):
             app_module.run_kol_daily_crawl_job()
 
         self.assertEqual(captured_dates, [(date(2026, 6, 6), "scheduled")])
+
+    def test_scheduler_prefers_profile_trigger_over_legacy_profile_metrics(self) -> None:
+        from apps.finance_crawler import app as app_module
+
+        with (
+            patch.object(Config, "PROFILE_METRICS_DOC_URL", "https://docs.qq.com/sheet/legacy"),
+            patch.object(Config, "PROFILE_METRICS_INTERVAL_MINUTES", 5),
+            patch.object(Config, "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL", "https://docs.qq.com/sheet/kol"),
+            patch.object(Config, "KOL_DAILY_CRAWL_TIME", "08:00"),
+        ):
+            self.assertTrue(app_module._kol_profile_trigger_scheduler_enabled())
+            self.assertFalse(app_module._legacy_profile_scheduler_enabled())
+
+    def test_scheduler_can_still_register_legacy_profile_metrics_without_profile_trigger(self) -> None:
+        from apps.finance_crawler import app as app_module
+
+        with (
+            patch.object(Config, "PROFILE_METRICS_DOC_URL", "https://docs.qq.com/sheet/legacy"),
+            patch.object(Config, "PROFILE_METRICS_INTERVAL_MINUTES", 5),
+            patch.object(Config, "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL", ""),
+            patch.object(Config, "KOL_DAILY_CRAWL_TIME", "08:00"),
+        ):
+            self.assertFalse(app_module._kol_profile_trigger_scheduler_enabled())
+            self.assertTrue(app_module._legacy_profile_scheduler_enabled())
+
+    def test_scheduler_roles_split_independent_queues(self) -> None:
+        from apps.finance_crawler import app as app_module
+
+        with patch.object(Config, "SCHEDULER_ROLES", "submit,crawl"):
+            self.assertEqual(app_module._configured_scheduler_roles(), {"submit", "crawl"})
+            self.assertTrue(app_module._scheduler_role_enabled("submit", "v2_submit"))
+            self.assertTrue(app_module._scheduler_role_enabled("crawl", "v2_crawl"))
+            self.assertFalse(app_module._scheduler_role_enabled("writeback", "v2_writeback"))
+            self.assertFalse(app_module._scheduler_role_enabled("profile"))
+
+        with patch.object(Config, "SCHEDULER_ROLES", "profile"):
+            self.assertEqual(app_module._configured_scheduler_roles(), {"profile"})
+            self.assertTrue(app_module._scheduler_role_enabled("profile"))
+            self.assertFalse(app_module._scheduler_role_enabled("crawl", "v2_crawl"))
+
+        with patch.object(Config, "SCHEDULER_ROLES", "all"):
+            self.assertEqual(app_module._configured_scheduler_roles(), {"all"})
+            self.assertTrue(app_module._scheduler_role_enabled("profile"))
+            self.assertTrue(app_module._scheduler_role_enabled("writeback"))
 
     def test_resolves_fixed_fields_from_shifted_titles(self) -> None:
         header = [
@@ -979,6 +1261,10 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         restart.assert_called_once_with("app://post", source_app=SOURCE_ALIPAY)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["app_restart_attempts"], 1)
+        self.assertEqual(
+            initial_check_writeback_values(result),
+            {ACCOUNT_NAME: "acct", CHECK_RESULT: "Y", REMARK: "\u6210\u529f"},
+        )
 
     def test_v2_detail_recovers_blank_page_failure(self) -> None:
         blank = {"status": "error", "error": "post content was not detected; page may be blank"}
@@ -1010,6 +1296,10 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["app_metrics"]["blank_reopen_attempts"], 1)
         self.assertEqual(result["app_metrics"]["app_restart_attempts"], 1)
+        self.assertEqual(
+            detail_writeback_values(result),
+            {ACCOUNT_NAME: "acct", READ_COUNT_FIELD: 3, REMARK: "\u6210\u529f"},
+        )
 
     def test_read_count_capture_plan_uses_simple_ui_capture(self) -> None:
         with patch.object(Config, "DOC_LINK_READS_ENABLE_OCR", False):
@@ -1041,6 +1331,34 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertEqual(plan.actions, (ACTION_OPEN_LINK, ACTION_SCREENSHOT, ACTION_OCR))
         self.assertEqual(plan.max_scrolls, 2)
         self.assertEqual(plan.open_retries, 1)
+
+    def test_capture_plan_merges_fields_into_minimal_action_set(self) -> None:
+        with patch.object(Config, "DOC_LINK_READS_ENABLE_OCR", False):
+            plan = plan_capture_for_task(
+                task_type=DETAIL,
+                app_type=SOURCE_ALIPAY,
+                fields=(ACCOUNT_NAME, READ_COUNT_FIELD, SCREENSHOT, REMARK, READ_COUNT_FIELD),
+            )
+
+        self.assertEqual(
+            plan.actions,
+            (ACTION_OPEN_LINK, ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_TAP_RETRY),
+        )
+        self.assertEqual(plan.fields, (ACCOUNT_NAME, READ_COUNT_FIELD, SCREENSHOT, REMARK))
+        self.assertEqual(len(plan.actions), len(set(plan.actions)))
+        self.assertEqual(plan.max_scrolls, 0)
+
+    def test_minimal_action_set_adds_dependencies_once(self) -> None:
+        actions = plan_minimal_capture_actions(
+            app_type=SOURCE_ALIPAY,
+            fields=("trade_details", SCREENSHOT),
+        )
+
+        self.assertEqual(
+            actions.actions,
+            (ACTION_OPEN_LINK, ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_OCR, ACTION_CLICK_DETAIL),
+        )
+        self.assertEqual(len(actions.actions), len(set(actions.actions)))
 
     def test_read_count_capture_plan_enables_app_ocr_policy(self) -> None:
         with patch.object(Config, "DOC_LINK_READS_ENABLE_OCR", False):

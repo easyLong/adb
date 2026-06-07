@@ -115,7 +115,7 @@ writeback worker 回填 pending writeback_plans
 ```text
 submit worker 每 5 分钟醒一次，看有没有到期 trigger
 每个 document trigger 自己通常每 10 分钟真正扫描一次在线文档
-crawl/writeback worker 每 30 秒处理自己的队列
+crawl/writeback worker 每 30 秒处理自己的队列；submit、crawl、writeback、profile 是隔离队列
 ```
 
 `ENABLE_LEGACY_SCHEDULER_JOBS=false` 表示 scheduler 不启动旧版 fetch/check/detail 链路，只跑 v2 和已启用的新任务。
@@ -276,13 +276,15 @@ schedule_time: 08:00
 前台启动：
 
 ```powershell
-.\scripts\run.ps1 -Task scheduler
+.\scripts\run.ps1 -Task workers-start
+.\scripts\run.ps1 -Task workers-status
 ```
 
 守护启动，进程异常退出后会自动拉起：
 
 ```powershell
-.\scripts\run.ps1 -Task supervisor
+.\scripts\run.ps1 -Task workers-start
+.\scripts\run.ps1 -Task workers-status
 ```
 
 启动后会注册：
@@ -353,7 +355,8 @@ cd c:\Code\adb
 .\scripts\run.ps1 -Task v2-crawl-worker-once
 .\scripts\run.ps1 -Task v2-writeback-worker-once
 
-.\scripts\run.ps1 -Task supervisor
+.\scripts\run.ps1 -Task workers-start
+.\scripts\run.ps1 -Task workers-status
 ```
 
 ## 12. 日常排查

@@ -6,7 +6,6 @@ import pymysql
 import pymysql.cursors
 
 from apps.finance_crawler.config import Config
-from apps.finance_crawler.crawler_app.storage.schema import ensure_crawler_app_tables
 from apps.finance_crawler.storage.framework_db import ensure_framework_tables
 from apps.finance_crawler.utils.logger import get_logger
 
@@ -76,7 +75,6 @@ def init_db() -> None:
                 """
             )
             ensure_framework_tables(cursor)
-            ensure_crawler_app_tables(cursor)
 
         conn.commit()
         logger.info("数据库初始化完成")

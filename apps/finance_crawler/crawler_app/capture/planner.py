@@ -7,9 +7,11 @@ from typing import Any
 
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawler_app.documents.fields import (
+    ACCOUNT_NAME,
     CHECK_RESULT,
     COMMENT_COUNT,
     READ_COUNT,
+    REMARK,
     SCREENSHOT,
 )
 from apps.finance_crawler.crawlers.constants import SOURCE_TENPAY
@@ -32,11 +34,33 @@ class AppCapturePolicy:
     requires_ocr: bool = False
 
 
-FIELD_ACTIONS: dict[str, tuple[str, ...]] = {
-    READ_COUNT: (ACTION_UI_CONTROLS, ACTION_SCREENSHOT),
-    COMMENT_COUNT: (ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_SCROLL),
-    SCREENSHOT: (ACTION_SCREENSHOT,),
-    CHECK_RESULT: (ACTION_UI_CONTROLS,),
+@dataclass(frozen=True, slots=True)
+class FieldEvidenceRequirement:
+    """Evidence actions required to extract one field from a shared capture."""
+
+    actions: tuple[str, ...]
+    min_scrolls: int = 0
+    open_retries: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class MinimalCaptureActions:
+    """Merged action set that can satisfy all requested fields once."""
+
+    actions: tuple[str, ...]
+    max_scrolls: int = 0
+    open_retries: int = 0
+
+
+FIELD_EVIDENCE_REQUIREMENTS: dict[str, FieldEvidenceRequirement] = {
+    ACCOUNT_NAME: FieldEvidenceRequirement((ACTION_UI_CONTROLS,)),
+    READ_COUNT: FieldEvidenceRequirement(
+        (ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_TAP_RETRY),
+    ),
+    COMMENT_COUNT: FieldEvidenceRequirement((ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_SCROLL), min_scrolls=1),
+    SCREENSHOT: FieldEvidenceRequirement((ACTION_SCREENSHOT,)),
+    REMARK: FieldEvidenceRequirement(()),
+    CHECK_RESULT: FieldEvidenceRequirement((ACTION_UI_CONTROLS,)),
 }
 
 APP_POLICIES: dict[str, AppCapturePolicy] = {
@@ -51,6 +75,11 @@ INTERACTIVE_DETAIL_FIELDS = {
     "fund_details",
 }
 
+ACTION_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    ACTION_OCR: (ACTION_SCREENSHOT,),
+    ACTION_CLICK_DETAIL: (ACTION_SCREENSHOT,),
+}
+
 
 def plan_capture_for_task(
     *,
@@ -58,39 +87,58 @@ def plan_capture_for_task(
     app_type: str,
     fields: tuple[str, ...],
 ) -> FieldCapturePlan:
+    merged = plan_minimal_capture_actions(app_type=app_type, fields=fields)
+
+    return FieldCapturePlan(
+        task_type=task_type,
+        app_type=app_type or "unknown",
+        fields=tuple(dict.fromkeys(fields)),
+        actions=merged.actions,
+        max_scrolls=merged.max_scrolls,
+        wait_after_open=max(Config.PAGE_LOAD_WAIT, 3.0),
+        wait_after_scroll=Config.DETAIL_SCROLL_WAIT if merged.max_scrolls > 0 else 0.0,
+        open_retries=merged.open_retries,
+        ready_timeout=0.0,
+        ready_check_interval=0.5,
+    )
+
+
+def plan_minimal_capture_actions(*, app_type: str, fields: tuple[str, ...]) -> MinimalCaptureActions:
+    """Merge field evidence needs into one smallest reusable capture action set."""
+
     actions = {ACTION_OPEN_LINK}
-    for field_name in fields:
-        actions.update(FIELD_ACTIONS.get(field_name, (ACTION_UI_CONTROLS,)))
+    max_scrolls = 0
+    open_retries = 0
+    for field_name in tuple(dict.fromkeys(fields)):
+        requirement = FIELD_EVIDENCE_REQUIREMENTS.get(
+            field_name,
+            FieldEvidenceRequirement((ACTION_UI_CONTROLS,)),
+        )
+        actions.update(requirement.actions)
+        max_scrolls = max(max_scrolls, requirement.min_scrolls)
+        open_retries = max(open_retries, requirement.open_retries)
         if field_name in INTERACTIVE_DETAIL_FIELDS:
             actions.add(ACTION_CLICK_DETAIL)
             actions.add(ACTION_OCR)
-
-    if READ_COUNT in fields:
-        actions.add(ACTION_TAP_RETRY)
-        if Config.DOC_LINK_READS_ENABLE_OCR:
+        if field_name == READ_COUNT and Config.DOC_LINK_READS_ENABLE_OCR:
             actions.add(ACTION_OCR)
 
     policy = APP_POLICIES.get(app_type)
-    max_scrolls = 0
-    if ACTION_SCROLL in actions:
-        max_scrolls = 1
     if policy:
         actions.update(policy.extra_actions)
         max_scrolls = max(max_scrolls, policy.min_scrolls)
         if policy.requires_ocr:
             actions.add(ACTION_OCR)
 
-    return FieldCapturePlan(
-        task_type=task_type,
-        app_type=app_type or "unknown",
-        fields=tuple(dict.fromkeys(fields)),
+    actions = _with_dependencies(actions)
+    if ACTION_SCROLL in actions:
+        max_scrolls = max(max_scrolls, 1)
+    if READ_COUNT in fields:
+        open_retries = max(open_retries, Config.DOC_LINK_READS_OPEN_RETRIES)
+    return MinimalCaptureActions(
         actions=_ordered_actions(actions),
         max_scrolls=max_scrolls,
-        wait_after_open=max(Config.PAGE_LOAD_WAIT, 3.0),
-        wait_after_scroll=Config.DETAIL_SCROLL_WAIT if max_scrolls > 0 else 0.0,
-        open_retries=Config.DOC_LINK_READS_OPEN_RETRIES if READ_COUNT in fields else 0,
-        ready_timeout=0.0,
-        ready_check_interval=0.5,
+        open_retries=open_retries,
     )
 
 
@@ -145,6 +193,18 @@ def _ordered_actions(actions: set[str]) -> tuple[str, ...]:
         ACTION_CLICK_DETAIL,
     )
     return tuple(action for action in order if action in actions)
+
+
+def _with_dependencies(actions: set[str]) -> set[str]:
+    expanded = set(actions)
+    pending = list(actions)
+    while pending:
+        action = pending.pop()
+        for dependency in ACTION_DEPENDENCIES.get(action, ()):
+            if dependency not in expanded:
+                expanded.add(dependency)
+                pending.append(dependency)
+    return expanded
 
 
 def _config_int(value: Any, default: int) -> int:

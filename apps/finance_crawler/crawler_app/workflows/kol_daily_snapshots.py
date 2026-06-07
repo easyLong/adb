@@ -13,15 +13,14 @@ from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawler_app.documents.column_resolver import normalize_title
 from apps.finance_crawler.crawler_app.storage import repository
 from apps.finance_crawler.crawler_app.storage.db import get_conn
-from apps.finance_crawler.integrations.tencent_docs import client
-from apps.finance_crawler.integrations.tencent_docs.write_requests import row_cells_request
-from apps.finance_crawler.storage.db import get_conn as get_metric_conn
-from apps.finance_crawler.storage.profile_metrics import (
+from apps.finance_crawler.crawler_app.storage.profile_metrics import (
     get_profile_action_profile,
     mark_profile_writeback,
     profile_key_for_url,
     upsert_profile_source,
 )
+from apps.finance_crawler.integrations.tencent_docs import client
+from apps.finance_crawler.integrations.tencent_docs.write_requests import row_cells_request
 from apps.finance_crawler.utils.link_source import detect_link_source
 from apps.finance_crawler.utils.logger import get_logger
 from apps.finance_crawler.workflows.profile_metrics import crawl_pending_profile_metrics
@@ -606,7 +605,7 @@ def locate_kol_daily_rows_by_date_url(
 
 def _kol_daily_crawl_metric_rows(target_date: date, *, source_name: str | None = None) -> list[dict[str, Any]]:
     resolved_source_name = source_name or KOL_DAILY_CRAWL_SOURCE_NAME
-    conn = get_metric_conn()
+    conn = get_conn()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
