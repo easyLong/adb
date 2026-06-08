@@ -25,7 +25,7 @@ flowchart LR
         P2["profile_trigger_configs"]
         P3["profile_trigger_runs"]
         P4["profile_metric_sources"]
-        P5["profile crawl"]
+        P5["ProfileFansActionRunner"]
         P6["profile_metric_runs"]
         P7["profile_metric_writebacks"]
         P8["Tencent Docs Writeback"]
@@ -35,11 +35,12 @@ flowchart LR
         C1["ADB devices<br/>USB / Wi-Fi"]
         C2["App adapters<br/>alipay / antfortune / tenpay"]
         C3["Action profiles<br/>App + fields + page state"]
-        C4["UI XML"]
-        C5["Screenshots"]
-        C6["OCR"]
-        C7["Field extractors"]
-        C8["Evidence validation"]
+        C4["ActionRunner"]
+        C5["UI XML"]
+        C6["Screenshots"]
+        C7["OCR"]
+        C8["FieldExtractor"]
+        C9["EvidenceValidator"]
     end
 
     subgraph STORAGE["Storage / Runtime"]
@@ -48,6 +49,8 @@ flowchart LR
         S3["Tencent Docs OpenAPI"]
         S4["queue-isolated workers<br/>submit / crawl / writeback / profile"]
         S5["logs + captures"]
+        S6["Error Classifier<br/>standard error_type"]
+        S7["Writeback Locator<br/>post_url / date + homepage_url"]
     end
 
     A1 --> D1
@@ -59,8 +62,8 @@ flowchart LR
 
     D6 --> C1
     P5 --> C1
-    C1 --> C2 --> C3 --> C4 --> C7 --> C8
-    C3 --> C5 --> C6 --> C7
+    C1 --> C2 --> C3 --> C4 --> C5 --> C8 --> C9
+    C4 --> C6 --> C7 --> C8
 
     D1 -. config .-> S1
     P2 -. config .-> S1
@@ -76,14 +79,21 @@ flowchart LR
     S3 --> A1
     D9 --> S3
     P8 --> S3
-    C5 --> S5
     C6 --> S5
+    C7 --> S5
+    D6 -. errors .-> S6
+    P5 -. errors .-> S6
+    D8 -. locate .-> S7
+    P7 -. locate .-> S7
 
     K1["Writeback guard:<br/>locate by URL / homepage + date;<br/>do not trust stale row_index"]
     K2["Tenpay fans guard:<br/>Follow / Fans / Likes are separate columns;<br/>missing Fans value must fail, not borrow adjacent values"]
     K3["Project boundary:<br/>Android App / ADB only;<br/>no desktop, browser, UI Automation, or mock crawling"]
+    K4["Deep module boundary:<br/>ActionRunner -> FieldExtractor -> EvidenceValidator"]
+    K5["Standard errors:<br/>device_unavailable, login_required,<br/>page_not_found, field_not_detected"]
 
-    D8 -.-> K1
-    P7 -.-> K1
-    C8 -.-> K2
+    S7 -.-> K1
+    C9 -.-> K2
     ENTRY -.-> K3
+    C4 -.-> K4
+    S6 -.-> K5

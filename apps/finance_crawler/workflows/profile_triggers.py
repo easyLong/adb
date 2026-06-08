@@ -8,7 +8,6 @@ from typing import Any
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.integrations.tencent_docs.client import parse_doc_url_info
 from apps.finance_crawler.crawler_app.storage.profile_metrics import (
-    PROFILE_DAILY_METRICS_FIELDS,
     finish_profile_trigger_run,
     get_profile_action_profile,
     get_profile_trigger_config,
@@ -23,6 +22,7 @@ logger = get_logger("profile_triggers")
 KOL_DAILY_PROFILE_CONFIG_KEY = "kol_daily_metrics_wpvy0d"
 KOL_DAILY_PROFILE_SOURCE_NAME = "kol_daily_crawl"
 PROFILE_DAILY_METRICS_TASK_TYPE = "profile_daily_metrics"
+KOL_DAILY_PROFILE_FIELDS = ("fans_count", "growth_count")
 
 
 def ensure_default_profile_trigger_configs() -> list[dict[str, Any]]:
@@ -40,10 +40,9 @@ def ensure_default_profile_trigger_configs() -> list[dict[str, Any]]:
         read_range="A1:I5000",
         row_adapter="kol_daily_profile",
         source_name=KOL_DAILY_PROFILE_SOURCE_NAME,
-        requested_fields=PROFILE_DAILY_METRICS_FIELDS,
+        requested_fields=KOL_DAILY_PROFILE_FIELDS,
         action_profile_key=None,
         aggregation_policy={
-            "read_count": {"source": "recent_posts", "method": "max", "max_posts": 3},
             "growth_count": {"source": "previous_day_fans_count"},
         },
         schedule_time=Config.KOL_DAILY_CRAWL_TIME or "08:00",
@@ -91,7 +90,7 @@ def run_profile_trigger_config(
         action_profile = get_profile_action_profile(
             action_profile_key=configured_action_profile_key,
             task_type=str(config.get("task_type") or PROFILE_DAILY_METRICS_TASK_TYPE),
-            field_names=tuple(config.get("requested_fields") or PROFILE_DAILY_METRICS_FIELDS),
+            field_names=tuple(config.get("requested_fields") or KOL_DAILY_PROFILE_FIELDS),
         )
         action_profile_key = str((action_profile or {}).get("action_profile_key") or configured_action_profile_key)
     else:
@@ -115,7 +114,7 @@ def run_profile_trigger_config(
             doc_url=_doc_url_for_config(config),
             limit=limit,
             source_name=str(config.get("source_name") or KOL_DAILY_PROFILE_SOURCE_NAME),
-            requested_fields=tuple(config.get("requested_fields") or PROFILE_DAILY_METRICS_FIELDS),
+            requested_fields=tuple(config.get("requested_fields") or KOL_DAILY_PROFILE_FIELDS),
             action_profile_key=action_profile_key or None,
             trigger_config_id=int(config["id"]),
             trigger_run_id=run_id,

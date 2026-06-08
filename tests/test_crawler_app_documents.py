@@ -58,6 +58,8 @@ from apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots import (
     parse_kol_crawl_source_row,
     parse_kol_daily_row,
     resolve_kol_daily_header,
+    run_kol_daily_crawl_pipeline,
+    writeback_kol_daily_crawl_results_to_tencent_docs,
     writeback_kol_daily_snapshots_to_tencent_docs,
 )
 from apps.finance_crawler.crawler_app.workflows.execution import (
@@ -669,6 +671,84 @@ class CrawlerAppDocumentTests(unittest.TestCase):
             app_module.run_kol_daily_crawl_job()
 
         self.assertEqual(captured_dates, [(date(2026, 6, 6), "scheduled")])
+
+    def test_kol_daily_crawl_skips_post_reads_when_read_count_not_requested(self) -> None:
+        with (
+            patch(
+                "apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots.sync_kol_crawl_sources_from_writeback_doc",
+                return_value={"imported": 1},
+            ) as sync_sources,
+            patch(
+                "apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots.crawl_pending_profile_metrics",
+                return_value=[{"status": "success"}],
+            ),
+            patch(
+                "apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots.crawl_profile_post_reads",
+                return_value=[{"status": "success"}],
+            ) as crawl_reads,
+            patch(
+                "apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots.writeback_kol_daily_crawl_results_to_tencent_docs",
+                return_value={"written": 1},
+            ),
+        ):
+            summary = run_kol_daily_crawl_pipeline(
+                target_date=date(2026, 6, 8),
+                requested_fields=("fans_count", "growth_count"),
+            )
+
+        sync_sources.assert_called_once()
+        self.assertEqual(sync_sources.call_args.kwargs["requested_fields"], ("fans_count", "growth_count"))
+        crawl_reads.assert_not_called()
+        self.assertEqual(summary["fans_crawled"], 1)
+        self.assertEqual(summary["read_crawled"], 0)
+
+    def test_kol_daily_writeback_only_writes_requested_metric_fields(self) -> None:
+        metric_rows = [
+            {
+                "metric_source_id": 7,
+                "metric_id": 8,
+                "metric_date": date(2026, 6, 8),
+                "metric_status": "success",
+                "homepage_url": "https://example.com/profile",
+                "fans_count": 22,
+                "growth_count": 3,
+                "read_count": 999,
+                "source_locator": {"requested_fields": ["fans_count", "growth_count"]},
+            }
+        ]
+
+        with (
+            patch.object(
+                tencent_docs_client,
+                "fetch_grid",
+                return_value=(
+                    [
+                        ["日期", "大V名称", "平台", "主页链接", "第几群", "类型", "粉丝数", "增粉数", "阅读数"],
+                        ["2026-06-08", "acct", "tenpay", "https://example.com/profile", "", "", "", "", "old"],
+                    ],
+                    0,
+                ),
+            ),
+            patch.object(tencent_docs_client, "fetch_sheet_title", return_value="大V数据统计"),
+            patch.object(tencent_docs_client, "post_batch_update") as post_batch,
+            patch(
+                "apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots._kol_daily_crawl_metric_rows",
+                return_value=metric_rows,
+            ),
+            patch(
+                "apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots.mark_profile_writeback",
+            ),
+        ):
+            summary = writeback_kol_daily_crawl_results_to_tencent_docs(
+                target_date=date(2026, 6, 8),
+                doc_url="https://docs.qq.com/sheet/file?tab=sheet",
+            )
+
+        self.assertEqual(summary["written"], 1)
+        request = post_batch.call_args.args[0][0]["updateRangeRequest"]["gridData"]
+        self.assertEqual(request["startColumn"], 6)
+        values = request["rows"][0]["values"]
+        self.assertEqual([item["cellValue"]["text"] for item in values], ["22", "3"])
 
     def test_scheduler_prefers_profile_trigger_over_legacy_profile_metrics(self) -> None:
         from apps.finance_crawler import app as app_module

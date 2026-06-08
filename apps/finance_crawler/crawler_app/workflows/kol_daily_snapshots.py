@@ -30,6 +30,7 @@ logger = get_logger("kol_daily_snapshots")
 
 OTHER_TYPE = "\u5176\u5b83"
 KOL_DAILY_CRAWL_SOURCE_NAME = "kol_daily_crawl"
+KOL_DAILY_CRAWL_FIELDS = ("fans_count", "growth_count")
 KOL_DAILY_WRITEBACK_RANGE = "A1:I5000"
 KOL_DAILY_COL_DATE = 0
 KOL_DAILY_COL_ACCOUNT = 1
@@ -220,7 +221,7 @@ def run_kol_daily_crawl_pipeline(
 ) -> dict[str, Any]:
     resolved_date = target_date or date.today()
     resolved_source_name = source_name or KOL_DAILY_CRAWL_SOURCE_NAME
-    resolved_fields = tuple(requested_fields or ("fans_count", "growth_count", "read_count"))
+    resolved_fields = tuple(requested_fields or KOL_DAILY_CRAWL_FIELDS)
     sync_summary = sync_kol_crawl_sources_from_writeback_doc(
         target_date=resolved_date,
         doc_url=doc_url,
@@ -236,11 +237,14 @@ def run_kol_daily_crawl_pipeline(
         target_date=resolved_date,
         source_name=resolved_source_name,
     )
-    read_results = crawl_profile_post_reads(
-        limit=resolved_limit or None,
-        target_date=resolved_date,
-        source_name=resolved_source_name,
-    )
+    if "read_count" in resolved_fields:
+        read_results = crawl_profile_post_reads(
+            limit=resolved_limit or None,
+            target_date=resolved_date,
+            source_name=resolved_source_name,
+        )
+    else:
+        read_results = []
     writeback_summary = writeback_kol_daily_crawl_results_to_tencent_docs(
         target_date=resolved_date,
         doc_url=doc_url,
@@ -271,7 +275,7 @@ def sync_kol_crawl_sources_from_writeback_doc(
 ) -> dict[str, Any]:
     resolved_date = target_date or date.today()
     resolved_source_name = source_name or KOL_DAILY_CRAWL_SOURCE_NAME
-    resolved_fields = tuple(requested_fields or ("fans_count", "growth_count", "read_count"))
+    resolved_fields = tuple(requested_fields or KOL_DAILY_CRAWL_FIELDS)
     resolved_doc_url = (doc_url or Config.KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL or "").strip()
     if not resolved_doc_url:
         raise ValueError("KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL is not configured")
@@ -416,20 +420,20 @@ def writeback_kol_daily_crawl_results_to_tencent_docs(
         if len(matches) > 1:
             failures.append((item, "duplicate rows by date and homepage_url"))
             continue
-        values = [
-            "" if item.get("fans_count") is None else item.get("fans_count"),
-            "" if item.get("growth_count") is None else item.get("growth_count"),
-            "" if item.get("read_count") is None else item.get("read_count"),
-        ]
-        requests.append(
-            row_cells_request(
-                matches[0],
-                KOL_DAILY_COL_FANS,
-                values,
-                text_format={"fontSize": max(int(Config.KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE or 10), 1)},
-                doc=doc,
+        writeback_requests = _kol_daily_metric_writeback_requests(item)
+        if not writeback_requests:
+            failures.append((item, "no requested metric fields to write back"))
+            continue
+        for writeback in writeback_requests:
+            requests.append(
+                row_cells_request(
+                    matches[0],
+                    writeback["start_col"],
+                    writeback["values"],
+                    text_format={"fontSize": max(int(Config.KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE or 10), 1)},
+                    doc=doc,
+                )
             )
-        )
         successes.append(item)
 
     if requests:
@@ -471,6 +475,38 @@ def writeback_kol_daily_crawl_results_to_tencent_docs(
     }
     logger.info("KOL daily crawl results written back: %s", summary)
     return summary
+
+
+def _kol_daily_metric_writeback_requests(item: dict[str, Any]) -> list[dict[str, Any]]:
+    locator = item.get("source_locator") or {}
+    requested_fields = tuple(locator.get("requested_fields") or KOL_DAILY_CRAWL_FIELDS)
+    columns = [
+        ("fans_count", KOL_DAILY_COL_FANS, item.get("fans_count")),
+        ("growth_count", KOL_DAILY_COL_GROWTH, item.get("growth_count")),
+        ("read_count", KOL_DAILY_COL_READ, item.get("read_count")),
+    ]
+    selected = [
+        (field_name, column_index, "" if value is None else value)
+        for field_name, column_index, value in columns
+        if field_name in requested_fields
+    ]
+    if not selected:
+        return []
+
+    requests: list[dict[str, Any]] = []
+    run_start = selected[0][1]
+    run_values: list[Any] = []
+    previous_col = run_start - 1
+    for _, column_index, value in selected:
+        if column_index != previous_col + 1 and run_values:
+            requests.append({"start_col": run_start, "values": run_values})
+            run_start = column_index
+            run_values = []
+        run_values.append(value)
+        previous_col = column_index
+    if run_values:
+        requests.append({"start_col": run_start, "values": run_values})
+    return requests
 
 
 def ensure_kol_daily_snapshots_from_base_profiles(*, snapshot_date: date | None = None) -> dict[str, Any]:
