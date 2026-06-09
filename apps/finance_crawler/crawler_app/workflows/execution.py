@@ -39,6 +39,17 @@ def crawl_pending_tasks(handler: TaskHandler, *, limit: int | None = None) -> di
                 int(submission["id"]),
                 worker_id=handler.worker_id,
             )
+            if execution_id is None:
+                conn.commit()
+                logger.info(
+                    "crawler_app skipped stale submission task_type=%s submission=%s status=%s attempts=%s/%s",
+                    handler.task_type,
+                    submission.get("id"),
+                    submission.get("status"),
+                    submission.get("attempts"),
+                    submission.get("max_attempts"),
+                )
+                continue
             conn.commit()
             result = _crawl_submission(handler, submission)
             status = str(result.get("status") or "error")
@@ -252,6 +263,9 @@ def _sleep_between_submissions(task_type: str) -> None:
     if task_type == "detail":
         delay_min = max(Config.DETAIL_POST_DELAY_MIN, 0)
         delay_max = max(Config.DETAIL_POST_DELAY_MAX, delay_min)
+    elif task_type == "read_count":
+        delay_min = max(Config.READ_COUNT_POST_DELAY_MIN, 0)
+        delay_max = max(Config.READ_COUNT_POST_DELAY_MAX, delay_min)
     else:
         delay_min = max(Config.POST_DELAY_MIN, 0)
         delay_max = max(Config.POST_DELAY_MAX, delay_min)

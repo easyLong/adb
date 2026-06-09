@@ -63,7 +63,7 @@ writeback_plans
 | --- | --- |
 | `v2-trigger-set` | 创建或更新 document 触发器 |
 | `v2-trigger-bind` | 给触发器绑定任务类型和字段 |
-| `v2-trigger-list` | 查看触发器 |
+| `v2-trigger-list` | 查看触发器，包括 disabled 触发器 |
 | `v2-trigger-submit` | 手动提交一个触发器 |
 | `v2-submit-worker-once` | 手动跑一次 submit worker |
 
@@ -81,6 +81,30 @@ writeback_plans
   -DocumentConfigKey redsoil_detail `
   -DocumentTaskType detail `
   -DocumentFields account_name,read_count,screenshot,remark
+```
+
+阅读数-only 示例：
+
+```powershell
+.\scripts\run.ps1 -Task v2-trigger-set `
+  -DocumentConfigKey redsoil_read_count `
+  -TencentDocUrl "https://docs.qq.com/sheet/DV1ZuSnBjdGpVY1Fi" `
+  -DocumentSheetMode date_sheet `
+  -SubmitTargetDateOffsetDays -1 `
+  -SubmitScanIntervalSeconds 600
+
+.\scripts\run.ps1 -Task v2-trigger-bind `
+  -DocumentConfigKey redsoil_read_count `
+  -DocumentTaskType read_count `
+  -DocumentFields read_count
+```
+
+手动提交历史日期：
+
+```powershell
+.\scripts\run.ps1 -Task v2-trigger-submit `
+  -DocumentConfigKey redsoil_read_count `
+  -ReportDate 2026-06-05
 ```
 
 ### 2.2 一次性 document 工作流

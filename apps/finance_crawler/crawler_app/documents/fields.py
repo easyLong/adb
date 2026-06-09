@@ -80,6 +80,7 @@ DEFAULT_BUSINESS_FIELDS: tuple[BusinessField, ...] = (
         aliases=(
             "\u9605\u8bfb\u6570",
             "\u9605\u8bfb\u91cf",
+            "\u9605\u8bfb",
             "\u6d4f\u89c8\u6570",
             "\u6d4f\u89c8\u91cf",
         ),
@@ -125,4 +126,3 @@ DEFAULT_BUSINESS_FIELDS: tuple[BusinessField, ...] = (
 
 def default_field_by_name() -> dict[str, BusinessField]:
     return {field.name: field for field in DEFAULT_BUSINESS_FIELDS}
-

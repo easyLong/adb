@@ -39,6 +39,7 @@ OK_KEYWORDS = (
     "去查看明细",
     "腾讯理财通",
 )
+UNKNOWN_PAGE_STATUS_ERROR = "page status is unknown or too few controls were found"
 
 
 def records_to_texts(records: list[dict[str, Any]], *, min_length: int = 2) -> list[str]:
@@ -62,4 +63,4 @@ def detect_page_status_from_texts(texts: list[str]) -> tuple[str, str | None]:
             return "error", keyword
     if any(keyword in joined for keyword in OK_KEYWORDS):
         return "success", None
-    return "error", "page status is unknown or too few controls were found"
+    return "error", UNKNOWN_PAGE_STATUS_ERROR

@@ -1642,6 +1642,17 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         uniform.assert_called_once_with(2.0, 4.5)
         sleep.assert_called_once_with(3.0)
 
+        with (
+            patch.object(Config, "READ_COUNT_POST_DELAY_MIN", 20.0),
+            patch.object(Config, "READ_COUNT_POST_DELAY_MAX", 45.0),
+            patch("apps.finance_crawler.crawler_app.workflows.execution.random.uniform", return_value=30.0) as uniform,
+            patch("apps.finance_crawler.crawler_app.workflows.execution.time.sleep") as sleep,
+        ):
+            _sleep_between_submissions(READ_COUNT)
+
+        uniform.assert_called_once_with(20.0, 45.0)
+        sleep.assert_called_once_with(30.0)
+
     def test_adb_transport_classification(self) -> None:
         self.assertEqual(classify_adb_transport("192.168.1.10:5555"), "wifi")
         self.assertEqual(classify_adb_transport("ABC123", "product:x model:y transport_id:1"), "usb")
@@ -1660,6 +1671,89 @@ class CrawlerAppDocumentTests(unittest.TestCase):
             repository._submission_status_after_execution("not_found", attempts=1, max_attempts=3),
             "not_found",
         )
+
+    def test_start_task_execution_uses_submission_attempts_for_retry_budget(self) -> None:
+        class FakeCursor:
+            def __init__(self) -> None:
+                self.insert_params = None
+                self.update_params = None
+                self.lastrowid = 99
+                self._result = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def execute(self, sql, params=None):
+                statement = str(sql)
+                if "FROM task_submissions" in statement and "FOR UPDATE" in statement:
+                    self._result = {"id": 7, "attempts": 1, "max_attempts": 3, "status": "pending"}
+                elif "MAX(attempt_no)" in statement:
+                    self._result = {"max_attempt_no": 3}
+                elif "INSERT INTO task_executions" in statement:
+                    self.insert_params = params
+                elif "UPDATE task_submissions" in statement:
+                    self.update_params = params
+
+            def fetchone(self):
+                return self._result
+
+        class FakeConn:
+            def __init__(self) -> None:
+                self.cursor_obj = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_obj
+
+        conn = FakeConn()
+
+        execution_id = repository.start_task_execution(conn, 7)
+
+        self.assertEqual(execution_id, 99)
+        self.assertEqual(conn.cursor_obj.insert_params, (7, 4))
+        self.assertEqual(conn.cursor_obj.update_params, (2, 99, 7))
+
+    def test_start_task_execution_skips_exhausted_submission(self) -> None:
+        class FakeCursor:
+            def __init__(self) -> None:
+                self._result = None
+                self.insert_called = False
+                self.update_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def execute(self, sql, params=None):
+                statement = str(sql)
+                if "FROM task_submissions" in statement and "FOR UPDATE" in statement:
+                    self._result = {"id": 7, "attempts": 3, "max_attempts": 3, "status": "retry"}
+                elif "INSERT INTO task_executions" in statement:
+                    self.insert_called = True
+                elif "UPDATE task_submissions" in statement:
+                    self.update_called = True
+
+            def fetchone(self):
+                return self._result
+
+        class FakeConn:
+            def __init__(self) -> None:
+                self.cursor_obj = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_obj
+
+        conn = FakeConn()
+
+        execution_id = repository.start_task_execution(conn, 7)
+
+        self.assertIsNone(execution_id)
+        self.assertFalse(conn.cursor_obj.insert_called)
+        self.assertFalse(conn.cursor_obj.update_called)
 
     def test_document_task_config_defaults_fields_by_task(self) -> None:
         self.assertEqual(default_fields_for_task(INITIAL_CHECK), (ACCOUNT_NAME,))
@@ -2161,7 +2255,7 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         mark_corrections.assert_called_once_with(ANY, [], status="success")
         self.assertEqual(summary["success"], 1)
 
-    def test_writeback_uses_screenshot_fallback_requests_when_upload_fails(self) -> None:
+    def test_writeback_marks_screenshot_upload_failure_instead_of_writing_path(self) -> None:
         plans = [
             {
                 "id": 14,
@@ -2179,8 +2273,8 @@ class CrawlerAppDocumentTests(unittest.TestCase):
 
         with (
             patch.object(repository, "get_pending_writeback_plans", return_value=plans),
-            patch.object(repository, "mark_writeback_plans"),
-            patch.object(repository, "mark_corrections"),
+            patch.object(repository, "mark_writeback_plans") as mark_plans,
+            patch.object(repository, "mark_corrections") as mark_corrections,
             patch.object(tencent_docs_client, "post_batch_update") as post_batch,
             patch(
                 "apps.finance_crawler.crawler_app.writeback.executor.post_screenshot_images",
@@ -2200,10 +2294,16 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         ):
             summary = apply_pending_writebacks(object())
 
-        self.assertEqual(post_batch.call_count, 2)
-        self.assertEqual(post_batch.call_args_list[1].args[0], [fallback_request])
-        self.assertEqual(post_batch.call_args_list[1].args[1], "crawler_app_screenshot_fallback")
-        self.assertEqual(summary["success"], 1)
+        post_batch.assert_called_once()
+        mark_plans.assert_called_once_with(
+            ANY,
+            [14],
+            status="error",
+            error="screenshot image writeback failed for 1 cells; local path fallback is disabled",
+        )
+        mark_corrections.assert_called_once_with(ANY, [], status="error")
+        self.assertEqual(summary["success"], 0)
+        self.assertEqual(summary["failed"], 1)
 
 
 if __name__ == "__main__":

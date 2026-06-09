@@ -23,7 +23,11 @@ from apps.finance_crawler.mobile.device_session import (
     reset_device_session,
     resolve_short_url,
 )
-from apps.finance_crawler.mobile.page_status import detect_page_status_from_texts, records_to_texts
+from apps.finance_crawler.mobile.page_status import (
+    UNKNOWN_PAGE_STATUS_ERROR,
+    detect_page_status_from_texts,
+    records_to_texts,
+)
 from apps.finance_crawler.mobile.record_capture import capture_record_pages
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.utils.logger import get_logger
@@ -57,17 +61,71 @@ def detect_page_status() -> tuple[str, str | None]:
     return detect_page_status_from_texts(read_texts_from_screen())
 
 
+def is_unknown_page_status(status: str, error: str | None) -> bool:
+    return status == "error" and str(error or "") == UNKNOWN_PAGE_STATUS_ERROR
+
+
+def wait_for_page_status_ready(
+    *,
+    timeout: float | None = None,
+    interval: float | None = None,
+) -> tuple[str, str | None, dict[str, Any]]:
+    """Wait while the app page is still rendering and exposes too few controls."""
+
+    ready_timeout = Config.PAGE_STATUS_READY_TIMEOUT if timeout is None else max(0.0, timeout)
+    ready_interval = Config.PAGE_STATUS_READY_INTERVAL if interval is None else max(0.1, interval)
+    started = time.monotonic()
+    attempts = 0
+    status = "error"
+    error_msg: str | None = UNKNOWN_PAGE_STATUS_ERROR
+
+    while True:
+        attempts += 1
+        status, error_msg = detect_page_status()
+        elapsed = time.monotonic() - started
+        if not is_unknown_page_status(status, error_msg) or elapsed >= ready_timeout:
+            return (
+                status,
+                error_msg,
+                {
+                    "page_status_wait_attempts": attempts,
+                    "page_status_wait_elapsed": round(elapsed, 3),
+                    "page_status_wait_timed_out": is_unknown_page_status(status, error_msg)
+                    and elapsed >= ready_timeout,
+                },
+            )
+        logger.info(
+            "page status not ready yet; waiting %.1fs before recapture attempt=%s elapsed=%.1fs",
+            ready_interval,
+            attempts,
+            elapsed,
+        )
+        time.sleep(ready_interval)
+
+
 def extract_account_name(texts: list[str]) -> str:
     return community_parsers.extract_account_name(texts)
 
 
 def check_record_exists_and_account(record_id: int) -> dict[str, Any]:
     time.sleep(1.0)
-    status, error_msg = detect_page_status()
+    status, error_msg, readiness = wait_for_page_status_ready()
     if status == "not_found":
-        return {"status": "not_found", "exists": False, "account_name": None, "error": error_msg}
+        return {
+            "status": "not_found",
+            "exists": False,
+            "account_name": None,
+            "error": error_msg,
+            "app_metrics": readiness,
+        }
     if status == "error":
-        return {"status": "error", "exists": False, "account_name": None, "error": error_msg}
+        return {
+            "status": "error",
+            "exists": False,
+            "account_name": None,
+            "error": error_msg,
+            "app_metrics": readiness,
+        }
 
     texts = read_texts_from_screen(min_length=1)
     account_name = extract_account_name(texts)
@@ -77,8 +135,15 @@ def check_record_exists_and_account(record_id: int) -> dict[str, Any]:
             "exists": False,
             "account_name": None,
             "error": "account name was not detected",
+            "app_metrics": readiness,
         }
-    return {"status": "success", "exists": True, "account_name": account_name, "error": None}
+    return {
+        "status": "success",
+        "exists": True,
+        "account_name": account_name,
+        "error": None,
+        "app_metrics": readiness,
+    }
 
 
 def is_transient_open_failure(result: dict[str, Any]) -> bool:
@@ -222,12 +287,12 @@ def scrape_record_content(record_id: int, source_app: str | None = None) -> dict
         "error": None,
     }
 
-    status, error_msg = detect_page_status()
+    status, error_msg, readiness = wait_for_page_status_ready()
     if status == "not_found":
-        result.update({"status": "deleted", "error": error_msg})
+        result.update({"status": "deleted", "error": error_msg, "app_metrics": readiness})
         return result
     if status == "error":
-        result.update({"status": "error", "error": error_msg})
+        result.update({"status": "error", "error": error_msg, "app_metrics": readiness})
         return result
 
     app_adapter = get_app_adapter(source_app)
@@ -272,6 +337,7 @@ def scrape_record_content(record_id: int, source_app: str | None = None) -> dict
             {
                 "status": "error",
                 "error": "post content was not detected; page may be blank or not the target post",
+                "app_metrics": readiness,
                 "capture_pages": summary["pages_captured"],
                 "read_found": summary["read_found"],
                 "comment_found": summary["comment_found"],
@@ -302,4 +368,5 @@ def scrape_record_content(record_id: int, source_app: str | None = None) -> dict
             **app_result_fields,
         }
     )
+    result["app_metrics"] = {**readiness, **(result.get("app_metrics") or {})}
     return result

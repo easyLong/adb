@@ -933,7 +933,7 @@ def get_pending_task_submissions(conn, *, task_type: str, limit: int | None = No
     return [_decode_submission(row) for row in rows]
 
 
-def start_task_execution(conn, submission_id: int, *, worker_id: str = "crawler_app") -> int:
+def start_task_execution(conn, submission_id: int, *, worker_id: str = "crawler_app") -> int | None:
     with conn.cursor() as cursor:
         cursor.execute(
             """
@@ -948,6 +948,10 @@ def start_task_execution(conn, submission_id: int, *, worker_id: str = "crawler_
         if not row:
             raise ValueError(f"task submission not found: {submission_id}")
         attempts = int(row["attempts"] or 0)
+        max_attempts = int(row["max_attempts"] or 0)
+        status = str(row["status"] or "")
+        if status not in {"pending", "retry"} or attempts >= max_attempts:
+            return None
         cursor.execute(
             """
             SELECT COALESCE(MAX(attempt_no), 0) AS max_attempt_no
@@ -957,11 +961,7 @@ def start_task_execution(conn, submission_id: int, *, worker_id: str = "crawler_
             (submission_id,),
         )
         max_attempt_no = int((cursor.fetchone() or {}).get("max_attempt_no") or 0)
-        attempts = max(attempts, max_attempt_no)
-        max_attempts = int(row["max_attempts"] or 0)
-        if attempts >= max_attempts:
-            raise ValueError(f"task submission exceeded attempts: {submission_id}")
-        attempt_no = attempts + 1
+        attempt_no = max_attempt_no + 1
         cursor.execute(
             """
             INSERT INTO task_executions (
@@ -981,7 +981,7 @@ def start_task_execution(conn, submission_id: int, *, worker_id: str = "crawler_
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (attempt_no, execution_id, submission_id),
+            (attempts + 1, execution_id, submission_id),
         )
         return execution_id
 

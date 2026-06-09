@@ -61,8 +61,36 @@ reset_app
 | `antfortune` | `initial_check` | `account_name` | `antfortune + initial_check + account_name` | 打开链接；UI 控件读取昵称；截图留证 | 回填账号昵称；找不到页面写 `N` |
 | `alipay` | `detail` | `account_name,read_count,screenshot` | `alipay + detail` | 打开链接；UI 控件读取账号和阅读数；上传截图到腾讯文档 | 账号、阅读数、截图、备注写回 |
 | `antfortune` | `detail` | `account_name,read_count,screenshot` | `antfortune + detail` | 打开链接；UI 控件读取账号和阅读数；上传截图到腾讯文档 | 账号、阅读数、截图、备注写回 |
+| `antfortune` | `read_count` | `read_count` | `antfortune + read_count` | 默认直接打开帖子；等待页面渲染；UI 控件读取阅读数；遇到“网络不给力/稍后再试”时 force-stop、打开首页预热、滑动一屏、再打开帖子 | 成功读取 `read_count`；可重试风控页记录恢复证据；最终失败写备注 |
 | `tenpay` | `read_count` | `read_count` | `tenpay + read_count` | 打开链接；UI + OCR 读取阅读数；必要时截图辅助解析 | 阅读数写回 |
 | `tenpay` | `detail` | `trade_details` | `tenpay + detail` | 打开链接；截图；OCR；滚动；点击详情区域 | 详情字段写入执行结果 |
+
+### Ant Fortune 阅读数已验证动作
+
+日常不要每条都先打开首页预热，太慢，也容易把链路变复杂。当前建议：
+
+```text
+open_post_direct
+  -> wait_page_status_ready
+  -> capture_ui_controls
+  -> parse_read_count
+  -> if retryable_page:
+       force_stop_app
+       open_antfortune_home
+       wait
+       swipe_one_screen
+       wait
+       reopen_post
+       capture_ui_controls
+       parse_read_count
+```
+
+关键经验：
+
+- “网络不给力”“稍后再试”“重试”“加载失败”属于可重试页面，不应立刻把帖子判成永久失败。
+- 常规路径直接打开帖子；只有遇到可重试页面才执行重启 + 首页预热 + 滑动一屏 + 重开帖子。
+- “内容不见了”“页面明确不存在”这类不可恢复状态应写失败/备注，不需要无限重试。
+- 阅读数任务之间需要随机停顿，配置项是 `READ_COUNT_POST_DELAY_MIN/MAX`。
 
 ## 4. 技术手段分层
 

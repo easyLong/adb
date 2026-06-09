@@ -6,8 +6,10 @@ from unittest.mock import patch
 
 from apps.finance_crawler.mobile.capture_engine import _is_input_injection_permission_error
 from apps.finance_crawler.mobile.page_status import detect_page_status_from_texts
-from apps.finance_crawler.mobile.crawler import is_transient_open_failure
+from apps.finance_crawler.mobile.crawler import is_transient_open_failure, wait_for_page_status_ready
+from apps.finance_crawler.mobile.action_plan import ACTION_OPEN_LINK, ACTION_SCREENSHOT, ACTION_UI_CONTROLS, FieldCapturePlan
 from apps.finance_crawler.mobile.parsers import extract_account_name, extract_profile_fans_count
+from apps.finance_crawler.mobile.read_count_crawler import ReadCountTarget, crawl_read_count_target
 from apps.finance_crawler.workflows.article_details import (
     extract_tenpay_bottom_counts_from_ocr,
     extract_tenpay_title_from_ocr,
@@ -412,6 +414,147 @@ class DocLinkReadParserTests(unittest.TestCase):
 
         self.assertEqual(extract_doc_link_read_count_from_records(records), 6)
 
+    def test_retryable_page_cools_down_without_immediate_reopen(self) -> None:
+        with (
+            patch("apps.finance_crawler.mobile.read_count_crawler.resolve_short_url", return_value="afwealth://post"),
+            patch("apps.finance_crawler.mobile.read_count_crawler.open_url") as open_url,
+            patch("apps.finance_crawler.mobile.read_count_crawler.session_device", return_value=object()),
+            patch("apps.finance_crawler.mobile.read_count_crawler.current_serial", return_value="device-1"),
+            patch("apps.finance_crawler.mobile.read_count_crawler.capture_pages", return_value={}),
+            patch(
+                "apps.finance_crawler.mobile.read_count_crawler.read_capture_records",
+                return_value=[{"text": "\u7f51\u7edc\u4e0d\u7ed9\u529b"}],
+            ),
+            patch("apps.finance_crawler.mobile.read_count_crawler.time.sleep") as sleep,
+            patch("apps.finance_crawler.config.Config.DOC_LINK_READS_OPEN_RETRIES", 2),
+            patch("apps.finance_crawler.config.Config.DOC_LINK_READS_RETRYABLE_COOLDOWN_SECONDS", 12.0),
+        ):
+            result = crawl_read_count_target(ReadCountTarget(row_index=2, link="https://example.invalid/post"))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"], "retryable_error_page")
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(result["cooldown_seconds"], 12.0)
+        open_url.assert_called_once()
+        sleep.assert_called_once_with(12.0)
+
+    def test_antfortune_read_count_warmup_launches_and_swipes_before_post(self) -> None:
+        plan = FieldCapturePlan(
+            task_type="read_count",
+            app_type="antfortune",
+            fields=("read_count",),
+            actions=(ACTION_OPEN_LINK, ACTION_UI_CONTROLS, ACTION_SCREENSHOT),
+            open_retries=0,
+        )
+        with (
+            patch("apps.finance_crawler.mobile.read_count_crawler.resolve_short_url", return_value="afwealth://post"),
+            patch("apps.finance_crawler.mobile.read_count_crawler.assert_device_ready", return_value="device-1"),
+            patch(
+                "apps.finance_crawler.mobile.read_count_crawler.run_adb",
+                side_effect=[
+                    "com.antfortune.wealth/com.alipay.mobile.quinox.LauncherActivity.alias.LauncherNewYear",
+                    "",
+                    "",
+                ],
+            ) as run_adb,
+            patch("apps.finance_crawler.mobile.read_count_crawler.open_url") as open_url,
+            patch("apps.finance_crawler.mobile.read_count_crawler.session_device", return_value=object()),
+            patch("apps.finance_crawler.mobile.read_count_crawler.current_serial", return_value="device-1"),
+            patch("apps.finance_crawler.mobile.read_count_crawler.capture_pages", return_value={}),
+            patch(
+                "apps.finance_crawler.mobile.read_count_crawler.read_capture_records",
+                return_value=[{"text": "18\u9605\u8bfb"}],
+            ),
+            patch("apps.finance_crawler.mobile.read_count_crawler.time.sleep"),
+            patch("apps.finance_crawler.config.Config.ANTFORTUNE_READ_COUNT_WARMUP_ENABLED", True),
+            patch("apps.finance_crawler.config.Config.ANTFORTUNE_READ_COUNT_WARMUP_BEFORE_OPEN", True),
+            patch("apps.finance_crawler.config.Config.ANTFORTUNE_READ_COUNT_WARMUP_SWIPE_COUNT", 1),
+        ):
+            result = crawl_read_count_target(
+                ReadCountTarget(row_index=2, link="https://example.invalid/post", capture_plan=plan)
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["read_count"], 18)
+        self.assertEqual(result["warmup"]["status"], "success")
+        self.assertEqual(result["warmup"]["swipes"], 1)
+        self.assertEqual(run_adb.call_args_list[0].args[0], ["shell", "cmd", "package", "resolve-activity", "--brief", "com.antfortune.wealth"])
+        self.assertEqual(
+            run_adb.call_args_list[1].args[0],
+            [
+                "shell",
+                "am",
+                "start",
+                "-n",
+                "com.antfortune.wealth/com.alipay.mobile.quinox.LauncherActivity.alias.LauncherNewYear",
+            ],
+        )
+        self.assertEqual(
+            run_adb.call_args_list[2].args[0],
+            ["shell", "input", "swipe", "540", "1700", "540", "700", "650"],
+        )
+        open_url.assert_called_once_with("afwealth://post")
+
+    def test_antfortune_retryable_page_restarts_app_and_reopens_post(self) -> None:
+        plan = FieldCapturePlan(
+            task_type="read_count",
+            app_type="antfortune",
+            fields=("read_count",),
+            actions=(ACTION_OPEN_LINK, ACTION_UI_CONTROLS, ACTION_SCREENSHOT),
+            open_retries=0,
+        )
+        with (
+            patch("apps.finance_crawler.mobile.read_count_crawler.resolve_short_url", return_value="afwealth://post"),
+            patch("apps.finance_crawler.mobile.read_count_crawler.assert_device_ready", return_value="device-1"),
+            patch(
+                "apps.finance_crawler.mobile.read_count_crawler.run_adb",
+                side_effect=[
+                    "",
+                    "com.antfortune.wealth/com.alipay.mobile.quinox.LauncherActivity.alias.LauncherNewYear",
+                    "",
+                    "",
+                ],
+            ) as run_adb,
+            patch("apps.finance_crawler.mobile.read_count_crawler.open_url") as open_url,
+            patch("apps.finance_crawler.mobile.read_count_crawler.session_device", return_value=object()),
+            patch("apps.finance_crawler.mobile.read_count_crawler.current_serial", return_value="device-1"),
+            patch("apps.finance_crawler.mobile.read_count_crawler.capture_pages", side_effect=[{}, {}]),
+            patch(
+                "apps.finance_crawler.mobile.read_count_crawler.read_capture_records",
+                side_effect=[
+                    [{"text": "\u7f51\u7edc\u4e0d\u7ed9\u529b"}],
+                    [{"text": "21\u9605\u8bfb"}],
+                ],
+            ),
+            patch("apps.finance_crawler.mobile.read_count_crawler.time.sleep"),
+            patch("apps.finance_crawler.config.Config.ANTFORTUNE_READ_COUNT_WARMUP_ENABLED", True),
+            patch("apps.finance_crawler.config.Config.ANTFORTUNE_READ_COUNT_WARMUP_BEFORE_OPEN", False),
+            patch("apps.finance_crawler.config.Config.ANTFORTUNE_READ_COUNT_RECOVER_ON_RETRYABLE", True),
+            patch("apps.finance_crawler.config.Config.ANTFORTUNE_READ_COUNT_WARMUP_SWIPE_COUNT", 1),
+        ):
+            result = crawl_read_count_target(
+                ReadCountTarget(row_index=3, link="https://example.invalid/post", capture_plan=plan)
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["read_count"], 21)
+        self.assertTrue(result["used_app_recovery"])
+        self.assertEqual(result["warmup"]["status"], "success")
+        self.assertEqual(open_url.call_args_list[0].args[0], "afwealth://post")
+        self.assertEqual(open_url.call_args_list[1].args[0], "afwealth://post")
+        self.assertEqual(
+            run_adb.call_args_list[0].args[0],
+            ["shell", "am", "force-stop", "com.antfortune.wealth"],
+        )
+        self.assertEqual(
+            run_adb.call_args_list[1].args[0],
+            ["shell", "cmd", "package", "resolve-activity", "--brief", "com.antfortune.wealth"],
+        )
+        self.assertEqual(
+            run_adb.call_args_list[3].args[0],
+            ["shell", "input", "swipe", "540", "1700", "540", "700", "650"],
+        )
+
 
 class TenpayArticleParserTests(unittest.TestCase):
     def test_extract_title_from_first_screen_ocr_lines(self) -> None:
@@ -442,6 +585,26 @@ class TenpayArticleParserTests(unittest.TestCase):
 
 
 class RecoveryClassifierTests(unittest.TestCase):
+    def test_page_status_ready_wait_recaptures_unknown_state(self) -> None:
+        with (
+            patch(
+                "apps.finance_crawler.mobile.crawler.detect_page_status",
+                side_effect=[
+                    ("error", "page status is unknown or too few controls were found"),
+                    ("success", None),
+                ],
+            ) as detect,
+            patch("apps.finance_crawler.mobile.crawler.time.sleep") as sleep,
+        ):
+            status, error, metrics = wait_for_page_status_ready(timeout=5.0, interval=0.5)
+
+        self.assertEqual(status, "success")
+        self.assertIsNone(error)
+        self.assertEqual(detect.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+        self.assertEqual(metrics["page_status_wait_attempts"], 2)
+        self.assertFalse(metrics["page_status_wait_timed_out"])
+
     def test_unknown_page_error_can_trigger_app_restart(self) -> None:
         self.assertTrue(
             is_transient_open_failure(

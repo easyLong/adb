@@ -121,13 +121,12 @@ def apply_pending_writebacks(
                     requests,
                     "crawler_app_writeback",
                     doc=doc,
-                )
+            )
             fallback_requests = post_screenshot_images(screenshot_rows_by_doc[(file_id, sheet_id)], doc=doc)
             if fallback_requests:
-                client.post_batch_update(
-                    fallback_requests,
-                    "crawler_app_screenshot_fallback",
-                    doc=doc,
+                raise RuntimeError(
+                    f"screenshot image writeback failed for {len(fallback_requests)} cells; "
+                    "local path fallback is disabled"
                 )
             repository.mark_writeback_plans(conn, plan_ids, status="success")
             repository.mark_corrections(conn, correction_ids, status="success")

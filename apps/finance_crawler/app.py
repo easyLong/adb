@@ -855,7 +855,7 @@ def main() -> int:
         load_runtime_config()
         target_date = _parse_optional_date(args.report_date)
         if args.once == "v2-trigger-list":
-            print(list_document_triggers())
+            print(list_document_triggers(include_disabled=True))
             return 0
         if args.once == "v2-submit-worker-once":
             print(submit_due_document_triggers())

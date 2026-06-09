@@ -108,6 +108,7 @@ submit_worker
 
 v2_crawl_worker
   -> 扫 task_submissions
+  -> 只启动 status=pending/retry 且 attempts < max_attempts 的任务
   -> 根据 task_type 选择 handler
   -> 根据 app_type + fields 选择 capture_action_profiles
   -> ADB 打开 App 页面并采集
@@ -116,6 +117,8 @@ v2_crawl_worker
 
 v2_writeback_worker
   -> 扫 writeback_plans
+  -> 重新读取当前 sheet
+  -> 按 URL 定位当前行
   -> 腾讯文档 batchUpdate
   -> 更新 writeback 状态
 ```
@@ -129,6 +132,16 @@ v2_writeback_worker
 | `read_count` | 只回填阅读数 |
 
 字段靠表头识别，列偏移不是问题；但表头必须能匹配业务字段。
+
+队列安全规则：
+
+| 规则 | 目的 |
+| --- | --- |
+| `attempts < max_attempts` 才能启动采集 | 超限旧任务不再卡住整轮 worker |
+| 任务间隔由 `READ_COUNT_POST_DELAY_MIN/MAX`、`DETAIL_POST_DELAY_MIN/MAX` 等控制 | 降低 App 风控和页面未渲染风险 |
+| 截图必须上传后再写回 | 避免把本地路径写进腾讯文档 |
+| 回填按 URL 重新定位当前行 | 避免人工插行、删行后写错位置 |
+| URL 重复时只写第一个，后续标记重复 | 避免同一个链接多行被误写 |
 
 ## 4. profile 链路
 

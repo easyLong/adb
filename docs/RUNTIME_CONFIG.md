@@ -169,7 +169,17 @@ alipay + detail + account_name,read_count,screenshot
 | `APP_OPEN_RECOVERY_RETRIES` | 页面异常时 App 恢复重试次数 |
 | `APP_RESTART_WAIT` | force-stop 后等待时间 |
 | `PAGE_LOAD_WAIT` | 打开页面后的基础等待 |
+| `PAGE_STATUS_READY_TIMEOUT` | 打开帖子后等待页面进入可判断状态的最长时间 |
+| `PAGE_STATUS_READY_INTERVAL` | 页面状态轮询间隔 |
 | `DETAIL_SCROLL_WAIT` | 滑动后的等待 |
+| `READ_COUNT_POST_DELAY_MIN` / `READ_COUNT_POST_DELAY_MAX` | 阅读数任务之间的随机停顿 |
+| `DOC_LINK_READS_RETRYABLE_COOLDOWN_SECONDS` | 遇到稍后再试、网络不给力等可重试页面后的冷却时间 |
+| `ANTFORTUNE_READ_COUNT_RECOVER_ON_RETRYABLE` | 蚂蚁财富阅读数遇到可重试页面时是否重启 App 并重新打开帖子 |
+| `ANTFORTUNE_READ_COUNT_WARMUP_ENABLED` | 蚂蚁财富阅读数恢复流程是否启用首页预热 |
+| `ANTFORTUNE_READ_COUNT_WARMUP_BEFORE_OPEN` | 是否每次打开帖子前都预热；日常建议 `false`，只在风控时恢复 |
+| `ANTFORTUNE_READ_COUNT_WARMUP_WAIT_SECONDS` | 蚂蚁财富首页预热等待时间 |
+| `ANTFORTUNE_READ_COUNT_WARMUP_SWIPE_COUNT` | 蚂蚁财富首页预热滑动次数 |
+| `ANTFORTUNE_READ_COUNT_WARMUP_AFTER_SWIPE_SECONDS` | 预热滑动后的等待时间 |
 
 项目只抽象执行设备，不抽象桌面或浏览器。执行设备统一是 ADB 手机，只是连接方式可能是 USB、WiFi 或后续其他 ADB 适配方式。
 

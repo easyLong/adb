@@ -167,6 +167,34 @@ document_trigger_bindings  配这个 trigger 要提交哪些任务和字段
   -DocumentFields "account_name,read_count,screenshot,remark"
 ```
 
+如果某个文档只需要回填阅读数，单独建 `read_count` trigger，不要复用 `detail`：
+
+```powershell
+.\scripts\run.ps1 -Task v2-trigger-set `
+  -DocumentConfigKey "redsoil_read_count" `
+  -TencentDocUrl "https://docs.qq.com/sheet/DV1ZuSnBjdGpVY1Fi" `
+  -DocumentSheetMode "date_sheet" `
+  -SubmitTargetDateOffsetDays -1 `
+  -SubmitScanIntervalSeconds 600 `
+  -DocumentDescription "红土阅读数-only，每天处理昨日日期sheet"
+
+.\scripts\run.ps1 -Task v2-trigger-bind `
+  -DocumentConfigKey "redsoil_read_count" `
+  -DocumentTaskType "read_count" `
+  -DocumentFields "read_count"
+```
+
+`redsoil_read_count` 如果因为周末或缺少日期 sheet 被停用/报错，重新执行上面的 `v2-trigger-set` 会把 trigger 更新为 active。再手动提交指定日期：
+
+```powershell
+.\scripts\run.ps1 -Task v2-trigger-list
+.\scripts\run.ps1 -Task v2-trigger-submit `
+  -DocumentConfigKey "redsoil_read_count" `
+  -ReportDate 2026-06-08
+```
+
+历史日期只需要把 `-ReportDate` 换成要处理的日期；例如 0605 用 `2026-06-05`，0608 用 `2026-06-08`。
+
 `date_sheet` 可以匹配同一天多个 sheet。例如同一个文档里有 `0605-A` 和 `0605-B`，一次 submit 会把两个 sheet 都提交。`submit_runs.summary_json.sheets` 会记录每个 sheet 的提交明细。
 
 ### 场景 B：同一个基础 URL，不同固定 sheet 做不同任务
@@ -248,6 +276,8 @@ schedule_time: 08:00
 ```powershell
 .\scripts\run.ps1 -Task v2-trigger-list
 ```
+
+`v2-trigger-list` 会显示 active 和 disabled 的触发器。看到 `status=disabled` 或 `scan_status=error` 时，先看 `last_error`；如果是缺少日期 sheet，通常不是代码问题，只是对应日期没有人工建表。
 
 手动提交某一天：
 
@@ -392,3 +422,21 @@ Get-ChildItem apps\finance_crawler\logs |
 .\scripts\run.ps1 -Task v2-crawl-worker-once
 .\scripts\run.ps1 -Task v2-writeback-worker-once
 ```
+
+如果 `pending` 一直不动，按这个顺序排查：
+
+```powershell
+.\scripts\run.ps1 -Task workers-status
+adb devices -l
+Get-Content apps\finance_crawler\logs\queue_workers\crawl.err.log -Tail 120
+```
+
+常见原因：
+
+| 现象 | 处理 |
+| --- | --- |
+| `crawl` worker stopped | `.\scripts\run.ps1 -Task workers-start` |
+| `adb devices -l` 为空 | 先恢复手机连接；worker 会在下一轮继续扫 |
+| `task submission exceeded attempts` | 超过 `max_attempts` 的旧任务不应再卡队列；拉取最新代码并重启 worker |
+| `read_count_not_found` | 页面确实没有阅读数或内容不可见，达到次数后会失败并写备注 |
+| 腾讯文档截图显示本地路径 | 拉取最新代码并重启 writeback；新逻辑不再把本地路径当图片写回 |
