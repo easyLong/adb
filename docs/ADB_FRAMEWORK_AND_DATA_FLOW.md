@@ -394,11 +394,13 @@ Excel 写回：
 ```text
 detail job 结束
   -> generate_report()
-  -> 查询 crawl_task_submissions / crawl_task_executions
-  -> 汇总总量、成功、失败、阅读量
+  -> 按报告日期读取腾讯文档当前 date sheet 数据
+  -> 以 sheet 现有帖子链接/阅读数字段汇总总量、成功、失败、阅读量
   -> 保存本地 report 文件
   -> 写入腾讯文档日报 sheet
 ```
+
+日报统计以线上 sheet 当前内容为准，不再依赖数据库里的提交任务或历史采集结果。数据库保留最全采集记录，但如果业务表被人工删改，报告会按删改后的 sheet 重新计算。
 
 相关配置：
 

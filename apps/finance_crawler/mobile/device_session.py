@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,35 @@ def open_url(url: str) -> None:
     serial = assert_device_ready()
     _prepare_device_if_needed(serial)
     open_app_link(url, serial=serial)
+    time.sleep(Config.PAGE_LOAD_WAIT)
+    _open_browser_landing_app_button_if_needed(serial)
+
+
+def _open_browser_landing_app_button_if_needed(serial: str) -> None:
+    try:
+        focused = run_adb(["shell", "dumpsys", "window"], serial=serial, timeout=10)
+    except Exception as exc:
+        logger.warning("browser landing focus check skipped: %s", exc)
+        return
+    if "com.huawei.browser" not in focused and "com.android.browser" not in focused:
+        return
+
+    try:
+        current_device = device()
+        xml_text = current_device.dump_hierarchy(compressed=False)
+    except Exception as exc:
+        logger.warning("browser landing hierarchy check skipped: %s", exc)
+        return
+
+    button_match = re.search(r'text="打开支付宝"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml_text)
+    if not button_match:
+        return
+
+    left, top, right, bottom = (int(value) for value in button_match.groups())
+    x = (left + right) // 2
+    y = (top + bottom) // 2
+    logger.info("detected browser landing page; tapping open Alipay button at %s,%s", x, y)
+    run_adb(["shell", "input", "tap", str(x), str(y)], serial=serial, timeout=5)
     time.sleep(Config.PAGE_LOAD_WAIT)
 
 
