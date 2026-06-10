@@ -23,13 +23,9 @@
 8. [init.sql](init.sql)
    数据库初始化 SQL。
 
-架构图：
+架构图见 [ARCHITECTURE.md](ARCHITECTURE.md)，完整源图见 [assets/adb-crawler-architecture.mmd](assets/adb-crawler-architecture.mmd)。
 
-![ADB App 爬虫架构](assets/adb-crawler-architecture.png)
-
-源图：[assets/adb-crawler-architecture.mmd](assets/adb-crawler-architecture.mmd)
-
-当前架构有两条主线：
+当前架构有三条主线：
 
 ```text
 帖子/链接型任务
@@ -41,6 +37,11 @@
   -> profile_trigger
   -> profile_metric_sources / profile_metric_runs
   -> profile_metric_writebacks
+
+内部数据报告
+  -> 读取线上日期 sheet 当前数据
+  -> 按产品统计
+  -> 写回日报 sheet
 ```
 
 常驻入口：
