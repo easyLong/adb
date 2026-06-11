@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from apps.finance_crawler.storage.device_pool_schema import ensure_device_pool_tables
+
 
 def ensure_crawler_app_tables(cursor) -> None:
     _rename_table_if_needed(cursor, "crawl_tasks", "task_submissions")
@@ -196,6 +198,7 @@ def ensure_crawler_app_tables(cursor) -> None:
     )
     _insert_default_profile_action_profiles(cursor)
     _ensure_profile_metric_tables(cursor)
+    ensure_device_pool_tables(cursor)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS column_mappings (

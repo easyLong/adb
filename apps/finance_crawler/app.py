@@ -355,6 +355,8 @@ def main() -> int:
         choices=[
             "db",
             "crawler-app-db",
+            "device-pool-status",
+            "device-pool-refresh",
             "config",
             "fetch",
             "check",
@@ -458,6 +460,27 @@ def main() -> int:
 
         init_crawler_app_db()
         print(f"crawler_app database initialized: {Config.CRAWLER_APP_DB_NAME}")
+        return 0
+    if args.once in {"device-pool-status", "device-pool-refresh"}:
+        from apps.finance_crawler.storage.device_pool import device_pool_status, refresh_adb_devices
+
+        init_db()
+        load_runtime_config()
+        if args.once == "device-pool-refresh":
+            devices = refresh_adb_devices()
+            print(
+                [
+                    {
+                        "serial": item.serial,
+                        "state": item.state,
+                        "transport": item.transport,
+                        "model": item.model,
+                    }
+                    for item in devices
+                ]
+            )
+            return 0
+        print(device_pool_status())
         return 0
     if args.once == "config":
         init_db()

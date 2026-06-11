@@ -44,6 +44,7 @@ from apps.finance_crawler.mobile.capture_records import read_capture_records as 
 from apps.finance_crawler.mobile.device_session import device as session_device
 from apps.finance_crawler.mobile.device_session import reset_device_session
 from apps.finance_crawler.mobile.parsers import extract_profile_fans_count, parse_count_token
+from apps.finance_crawler.storage.device_pool import release_device_lease, start_device_lease
 from apps.finance_crawler.storage.db import log_task
 from apps.finance_crawler.crawler_app.storage.profile_metrics import (
     create_daily_profile_metric_sources,
@@ -204,12 +205,6 @@ def crawl_pending_profile_metrics(
         logger.info("profile metric crawl skipped: no pending records")
         return []
 
-    try:
-        assert_device_ready()
-    except DeviceUnavailable:
-        reset_device_session()
-        raise
-
     results: list[dict[str, Any]] = []
     consecutive_device_errors = 0
     max_device_errors = _max_consecutive_device_errors()
@@ -221,7 +216,33 @@ def crawl_pending_profile_metrics(
             record.get("source_locator", {}).get("row_index"),
             record.get("account_name"),
         )
-        result = _crawl_profile(record)
+        result: dict[str, Any] = {}
+        lease = start_device_lease(
+            app_type=str(record.get("app_type") or "unknown"),
+            task_scope="profile:daily_metrics",
+            task_id=record.get("metric_source_id") or record.get("target_id") or index,
+            worker_id="profile_metrics",
+        )
+        try:
+            result = _crawl_profile(record)
+        except Exception as exc:
+            result = {
+                "target_id": record.get("target_id"),
+                "account_name": record.get("account_name"),
+                "metric_date": record.get("metric_date"),
+                "status": "error",
+                "fans_count": None,
+                "error": str(exc),
+                "error_type": classify_crawl_error(exc).kind,
+            }
+        finally:
+            success = result.get("status") == "success"
+            release_device_lease(
+                lease,
+                status="success" if success else "failed",
+                error=None if success else str(result.get("error") or "profile metric crawl failed"),
+                error_type=None if success else str(result.get("error_type") or ""),
+            )
         results.append(result)
         if _is_device_unavailable_error(result.get("error")):
             consecutive_device_errors += 1
@@ -367,7 +388,9 @@ def _crawl_profile(record: dict[str, Any]) -> dict[str, Any]:
         fans_count = fans_result.get("fans_count")
         texts = [str(item.get("text") or "").strip() for item in action_run.records if str(item.get("text") or "").strip()]
         blocked_error = None if fans_count is not None else _blocked_profile_page_error(texts)
-        status = "success" if fans_count is not None else ("blocked" if blocked_error else "error")
+        # Runtime blocked pages are device/app-session conditions and should remain retryable on
+        # another device. Known terminal URLs are handled above as "blocked".
+        status = "success" if fans_count is not None else "error"
         error = None if fans_count is not None else (blocked_error or fans_result.get("quality_error") or "profile fans count was not detected")
         error_type = None if error is None else classify_crawl_error(
             error,

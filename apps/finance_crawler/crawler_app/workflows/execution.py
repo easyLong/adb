@@ -16,6 +16,7 @@ from apps.finance_crawler.crawler_app.documents.fields import REMARK
 from apps.finance_crawler.crawler_app.storage.db import get_conn
 from apps.finance_crawler.crawler_app.tasks.handlers import TaskHandler
 from apps.finance_crawler.mobile.device_session import reset_device_session
+from apps.finance_crawler.storage.device_pool import release_device_lease, start_device_lease
 from apps.finance_crawler.utils.device_health import AdbDevice, DeviceUnavailable
 from apps.finance_crawler.utils.logger import get_logger
 
@@ -30,28 +31,49 @@ def crawl_pending_tasks(handler: TaskHandler, *, limit: int | None = None) -> di
         if not submissions:
             return execution_summary(handler.task_type, submissions, results)
 
-        execution_device = handler.runtime.prepare()
+        execution_device: AdbDevice | None = None
         total = len(submissions)
         for index, submission in enumerate(submissions, start=1):
             _attach_capture_action_profile(conn, handler, submission)
-            execution_id = repository.start_task_execution(
-                conn,
-                int(submission["id"]),
+            lease = start_device_lease(
+                app_type=str(submission.get("app_type") or "unknown"),
+                task_scope=f"document:{handler.task_type}",
+                task_id=int(submission["id"]),
                 worker_id=handler.worker_id,
             )
-            if execution_id is None:
-                conn.commit()
-                logger.info(
-                    "crawler_app skipped stale submission task_type=%s submission=%s status=%s attempts=%s/%s",
-                    handler.task_type,
-                    submission.get("id"),
-                    submission.get("status"),
-                    submission.get("attempts"),
-                    submission.get("max_attempts"),
+            execution_device = AdbDevice(
+                serial=lease.adb_serial,
+                state="device",
+                transport="unknown",
+            )
+            try:
+                execution_id = repository.start_task_execution(
+                    conn,
+                    int(submission["id"]),
+                    worker_id=handler.worker_id,
                 )
-                continue
-            conn.commit()
-            result = _crawl_submission(handler, submission)
+                if execution_id is None:
+                    conn.commit()
+                    release_device_lease(lease, status="success")
+                    logger.info(
+                        "crawler_app skipped stale submission task_type=%s submission=%s status=%s attempts=%s/%s",
+                        handler.task_type,
+                        submission.get("id"),
+                        submission.get("status"),
+                        submission.get("attempts"),
+                        submission.get("max_attempts"),
+                    )
+                    continue
+                conn.commit()
+            except Exception as exc:
+                release_device_lease(lease, status="failed", error=str(exc), error_type=classify_crawl_error(exc).kind)
+                raise
+            result: dict[str, Any] = {}
+            try:
+                execution_device = handler.runtime.prepare()
+                result = _crawl_submission(handler, submission)
+            except Exception as exc:
+                result = {"status": "error", "error": str(exc), "error_type": classify_crawl_error(exc).kind}
             status = str(result.get("status") or "error")
             error = None if status == "success" else str(result.get("error") or status)
             if error and not result.get("error_type"):
@@ -60,6 +82,12 @@ def crawl_pending_tasks(handler: TaskHandler, *, limit: int | None = None) -> di
                     status=status,
                     page_state=str(result.get("page_state") or ""),
                 ).kind
+            release_device_lease(
+                lease,
+                status="success" if status in {"success", "not_found"} else "failed",
+                error=error,
+                error_type=str(result.get("error_type") or "") or None,
+            )
 
             final_submission_status = repository.finish_task_execution(
                 conn,
