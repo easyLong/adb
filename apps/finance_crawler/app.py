@@ -35,6 +35,7 @@ from apps.finance_crawler.workflows.article_details import (
 )
 from apps.finance_crawler.workflows.docs_link_reads import run_docs_link_reads
 from apps.finance_crawler.workflows.local_excel_detail import run_local_excel_detail
+from apps.finance_crawler.workflows.kol_tenpay_external_reads import run_kol_tenpay_external_reads
 from apps.finance_crawler.workflows.profile_metrics import (
     crawl_pending_profile_metrics,
     create_daily_profile_metric_tasks,
@@ -110,6 +111,10 @@ def run_kol_daily_crawl_job(target_date: date | None = None) -> dict[str, Any]:
     )
 
     return run_default_kol_daily_profile_trigger(target_date=target_date or date.today(), trigger_type="scheduled")
+
+
+def run_kol_tenpay_external_reads_job(target_date: date | None = None) -> dict[str, Any]:
+    return run_kol_tenpay_external_reads(target_date=target_date)
 
 
 def _reload_runtime_config_for_task(task_name: str) -> None:
@@ -247,6 +252,21 @@ def _register_jobs() -> None:
             Config.KOL_DAILY_CRAWL_TIME,
         )
 
+    if (
+        _scheduler_role_enabled("profile", "kol_tenpay_external_reads")
+        and Config.KOL_TENPAY_EXTERNAL_READS_TIME
+        and Config.KOL_TENPAY_EXTERNAL_READS_TARGET_DOC_URL
+    ):
+        schedule.every().day.at(Config.KOL_TENPAY_EXTERNAL_READS_TIME).do(
+            safe_run,
+            run_kol_tenpay_external_reads_job,
+            "kol_tenpay_external_reads",
+        )
+        logger.info(
+            "registered KOL Tenpay external reads at %s",
+            Config.KOL_TENPAY_EXTERNAL_READS_TIME,
+        )
+
     if _scheduler_role_enabled("heartbeat") and Config.HEARTBEAT_INTERVAL_MINUTES > 0:
         schedule.every(Config.HEARTBEAT_INTERVAL_MINUTES).minutes.do(
             safe_run, heartbeat, "heartbeat"
@@ -352,6 +372,7 @@ def main() -> int:
             "kol-daily-snapshot",
             "kol-daily-writeback",
             "kol-daily-crawl",
+            "kol-tenpay-external-reads",
             "profile-trigger-list",
             "profile-trigger-run",
             "article-sync",
@@ -588,6 +609,22 @@ def main() -> int:
                 "kol_daily_snapshot_once",
             ) or {}
         print(f"KOL daily summary: {summary}")
+        return 0
+    if args.once == "kol-tenpay-external-reads":
+        init_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        summary = safe_run(
+            lambda: run_kol_tenpay_external_reads(
+                target_date=target_date,
+                target_doc_url=args.tencent_doc_url or None,
+            ),
+            "kol_tenpay_external_reads_once",
+        ) or {}
+        print(f"KOL Tenpay external reads summary: {summary}")
         return 0
     if args.once in {"profile-trigger-list", "profile-trigger-run"}:
         from apps.finance_crawler.workflows.profile_triggers import (
