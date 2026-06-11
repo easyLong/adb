@@ -905,6 +905,17 @@ class ProfileFansCountExtractor:
                 quality_error="abbreviated fans count requires exact detail page",
             )
 
+        if action_template.config.get("require_account_anchor") and not account_verified:
+            return FieldExtraction(
+                field_name=self.field_name,
+                value=None,
+                source=None,
+                page_state=page_state.name,
+                confidence=0.0,
+                evidence=evidence,
+                quality_error="profile account anchor did not match expected account",
+            )
+
         if evidence.get("home_fans_count") is not None:
             return FieldExtraction(
                 field_name=self.field_name,
