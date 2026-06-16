@@ -11,6 +11,8 @@
 2. [PROJECT_FLOW.md](PROJECT_FLOW.md)  
    日常数据流转。说明业务给在线文档后，系统如何提交、采集、回填。
 3. [SCRIPTS.md](SCRIPTS.md)  
+   今日详情定时提交见 [REDSOIL_DETAIL_SCHEDULE.md](REDSOIL_DETAIL_SCHEDULE.md)，
+   用于每天 16:00 自动提交当天 `redsoil_detail`。
    命令手册。说明 `scripts/run.ps1` 支持的任务和常用跑法。
 4. [RUNTIME_CONFIG.md](RUNTIME_CONFIG.md)  
    运行配置。说明 MySQL 配置、腾讯文档 OpenAPI、定时任务和采集行为配置。

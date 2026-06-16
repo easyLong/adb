@@ -268,3 +268,59 @@ Get-Content apps\finance_crawler\logs\<date>.log -Tail 120
 ```powershell
 git status --short
 ```
+
+## 8. 今日详情定时提交脚本
+
+`scripts/submit_redsoil_detail_today.ps1` 是一个单入口脚本，用于把当天
+`redsoil_detail` 任务提交到 `task_submissions` 队列。它只负责提交任务，
+后续仍然由常驻的 `crawl` 和 `writeback` worker 采集、回填。
+
+默认行为：
+
+- 目标日期：今天
+- 定时提交时间：每天 16:00
+- 提交范围：`redsoil_detail` 匹配到的当天日期 sheet
+- 默认限制：每个匹配 sheet 最多 15 条，不是所有 sheet 合计 15 条
+- 日志目录：`apps\finance_crawler\logs\scheduled_tasks`
+
+注册每天 16:00 自动提交：
+
+```powershell
+.\scripts\submit_redsoil_detail_today.ps1 -Action install
+```
+
+查看计划任务状态：
+
+```powershell
+.\scripts\submit_redsoil_detail_today.ps1 -Action status
+```
+
+立即执行一次提交：
+
+```powershell
+.\scripts\submit_redsoil_detail_today.ps1 -Action run
+```
+
+手动触发已注册的计划任务：
+
+```powershell
+.\scripts\submit_redsoil_detail_today.ps1 -Action start
+```
+
+删除计划任务：
+
+```powershell
+.\scripts\submit_redsoil_detail_today.ps1 -Action uninstall
+```
+
+修改每日触发时间，例如改成 16:30：
+
+```powershell
+.\scripts\submit_redsoil_detail_today.ps1 -Action install -Time "16:30"
+```
+
+如果要提交全部当天详情任务，使用 `-Limit 0`：
+
+```powershell
+.\scripts\submit_redsoil_detail_today.ps1 -Action install -Limit 0
+```
