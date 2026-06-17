@@ -199,6 +199,7 @@ def ensure_crawler_app_tables(cursor) -> None:
     _insert_default_profile_action_profiles(cursor)
     _ensure_profile_metric_tables(cursor)
     ensure_device_pool_tables(cursor)
+    _ensure_wechat_demand_intake_tables(cursor)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS column_mappings (
@@ -577,9 +578,206 @@ def _add_unique_index_if_missing(cursor, table_name: str, index_name: str, colum
     cursor.execute(f"ALTER TABLE `{table_name}` ADD UNIQUE KEY `{index_name}` ({columns})")
 
 
+def _add_index_if_missing(cursor, table_name: str, index_name: str, columns: str) -> None:
+    if _index_exists(cursor, table_name, index_name):
+        return
+    cursor.execute(f"ALTER TABLE `{table_name}` ADD INDEX `{index_name}` ({columns})")
+
+
 def _index_exists(cursor, table_name: str, index_name: str) -> bool:
     cursor.execute(f"SHOW INDEX FROM `{table_name}` WHERE Key_name = %s", (index_name,))
     return cursor.fetchone() is not None
+
+
+def _ensure_wechat_demand_intake_tables(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wechat_chats (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            chat_key CHAR(64) NOT NULL,
+            chat_name VARCHAR(255) NOT NULL,
+            chat_type VARCHAR(32) NOT NULL DEFAULT 'group',
+            external_chat_id VARCHAR(128) NULL,
+            customer_name VARCHAR(255) NULL,
+            owner_name VARCHAR(255) NULL,
+            business_platform VARCHAR(128) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_wechat_chat_key (chat_key),
+            INDEX idx_wechat_chat_name (chat_name),
+            INDEX idx_wechat_chat_customer (customer_name),
+            INDEX idx_wechat_chat_owner (owner_name),
+            INDEX idx_wechat_chat_platform (business_platform),
+            INDEX idx_wechat_chat_status (status),
+            INDEX idx_wechat_chat_seen (last_seen_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _add_column_if_missing(cursor, "wechat_chats", "customer_name", "VARCHAR(255) NULL")
+    _add_column_if_missing(cursor, "wechat_chats", "owner_name", "VARCHAR(255) NULL")
+    _add_column_if_missing(cursor, "wechat_chats", "business_platform", "VARCHAR(128) NULL")
+    _add_index_if_missing(cursor, "wechat_chats", "idx_wechat_chat_customer", "customer_name")
+    _add_index_if_missing(cursor, "wechat_chats", "idx_wechat_chat_owner", "owner_name")
+    _add_index_if_missing(cursor, "wechat_chats", "idx_wechat_chat_platform", "business_platform")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wechat_capture_runs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            run_key CHAR(64) NULL,
+            chat_id BIGINT UNSIGNED NOT NULL,
+            capture_mode VARCHAR(32) NOT NULL DEFAULT 'unread',
+            target_date DATE NULL,
+            device_serial VARCHAR(128) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'running',
+            screenshot_dir VARCHAR(700) NULL,
+            screenshot_count INT NOT NULL DEFAULT 0,
+            message_count INT NOT NULL DEFAULT 0,
+            error TEXT NULL,
+            meta_json LONGTEXT NULL,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_wechat_capture_run_key (run_key),
+            INDEX idx_wechat_capture_chat (chat_id),
+            INDEX idx_wechat_capture_status (status),
+            INDEX idx_wechat_capture_mode (capture_mode),
+            INDEX idx_wechat_capture_target_date (target_date),
+            INDEX idx_wechat_capture_started (started_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _add_column_if_missing(cursor, "wechat_capture_runs", "run_key", "CHAR(64) NULL")
+    _add_unique_index_if_missing(cursor, "wechat_capture_runs", "uk_wechat_capture_run_key", "run_key")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wechat_message_observations (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            run_id BIGINT UNSIGNED NOT NULL,
+            chat_id BIGINT UNSIGNED NOT NULL,
+            screen_index INT NOT NULL DEFAULT 0,
+            bubble_index INT NOT NULL DEFAULT 0,
+            message_date DATE NULL,
+            display_time_text VARCHAR(64) NULL,
+            inferred_message_time DATETIME NULL,
+            sender_name VARCHAR(255) NULL,
+            message_type VARCHAR(32) NOT NULL DEFAULT 'text',
+            message_text LONGTEXT NULL,
+            attachment_name VARCHAR(255) NULL,
+            attachment_size_text VARCHAR(64) NULL,
+            screenshot_path VARCHAR(700) NULL,
+            bbox_json LONGTEXT NULL,
+            raw_json LONGTEXT NULL,
+            confidence DECIMAL(5,4) NULL,
+            observation_key CHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_wechat_observation_key (observation_key),
+            INDEX idx_wechat_obs_chat_time (chat_id, inferred_message_time),
+            INDEX idx_wechat_obs_chat_date (chat_id, message_date),
+            INDEX idx_wechat_obs_run_order (run_id, screen_index, bubble_index),
+            INDEX idx_wechat_obs_status (status),
+            INDEX idx_wechat_obs_sender (sender_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS demand_intake_runs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            run_key CHAR(64) NULL,
+            chat_id BIGINT UNSIGNED NOT NULL,
+            source_type VARCHAR(32) NOT NULL DEFAULT 'wechat',
+            source_capture_run_id BIGINT UNSIGNED NULL,
+            from_observation_id BIGINT UNSIGNED NULL,
+            to_observation_id BIGINT UNSIGNED NULL,
+            model_name VARCHAR(128) NULL,
+            prompt_version VARCHAR(64) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'running',
+            message_count INT NOT NULL DEFAULT 0,
+            candidate_count INT NOT NULL DEFAULT 0,
+            error TEXT NULL,
+            meta_json LONGTEXT NULL,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_demand_intake_run_key (run_key),
+            INDEX idx_demand_intake_chat (chat_id),
+            INDEX idx_demand_intake_capture (source_capture_run_id),
+            INDEX idx_demand_intake_status (status),
+            INDEX idx_demand_intake_started (started_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _add_column_if_missing(cursor, "demand_intake_runs", "run_key", "CHAR(64) NULL")
+    _add_unique_index_if_missing(cursor, "demand_intake_runs", "uk_demand_intake_run_key", "run_key")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS demand_intake_candidates (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            candidate_key CHAR(64) NOT NULL,
+            intake_run_id BIGINT UNSIGNED NOT NULL,
+            source_chat_id BIGINT UNSIGNED NOT NULL,
+            business_category VARCHAR(64) NULL,
+            secondary_category VARCHAR(128) NULL,
+            tertiary_category VARCHAR(255) NULL,
+            start_time DATETIME NULL,
+            deadline DATETIME NULL,
+            business_name VARCHAR(255) NULL,
+            demand_title VARCHAR(500) NULL,
+            demand_content LONGTEXT NULL,
+            confidence DECIMAL(5,4) NULL,
+            match_suggestion VARCHAR(64) NULL,
+            matched_demand_id BIGINT UNSIGNED NULL,
+            approved_demand_id BIGINT UNSIGNED NULL,
+            ai_reason LONGTEXT NULL,
+            missing_fields_json LONGTEXT NULL,
+            risk_notes_json LONGTEXT NULL,
+            raw_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            reviewed_by VARCHAR(128) NULL,
+            reviewed_at DATETIME NULL,
+            review_note TEXT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_demand_candidate_key (candidate_key),
+            INDEX idx_demand_candidate_run (intake_run_id),
+            INDEX idx_demand_candidate_chat (source_chat_id),
+            INDEX idx_demand_candidate_status (status),
+            INDEX idx_demand_candidate_category (business_category, secondary_category),
+            INDEX idx_demand_candidate_deadline (deadline),
+            INDEX idx_demand_candidate_match (matched_demand_id),
+            INDEX idx_demand_candidate_approved (approved_demand_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS demand_candidate_evidence (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            candidate_id BIGINT UNSIGNED NOT NULL,
+            evidence_order INT NOT NULL DEFAULT 0,
+            message_observation_id BIGINT UNSIGNED NOT NULL,
+            message_time DATETIME NULL,
+            display_time_text VARCHAR(64) NULL,
+            sender_name VARCHAR(255) NULL,
+            message_text LONGTEXT NULL,
+            screenshot_path VARCHAR(700) NULL,
+            evidence_reason VARCHAR(500) NULL,
+            raw_json LONGTEXT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_demand_evidence_message (candidate_id, message_observation_id),
+            INDEX idx_demand_evidence_candidate (candidate_id, evidence_order),
+            INDEX idx_demand_evidence_message (message_observation_id),
+            INDEX idx_demand_evidence_time (message_time),
+            INDEX idx_demand_evidence_sender (sender_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
 
 
 def _ensure_profile_metric_tables(cursor) -> None:

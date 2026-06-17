@@ -13,4 +13,5 @@ apps/*/.alipay_scheme_cache.json
 apps/*/.qq_token_cache.json
 
 archive/
+exports/
 platform-tools/
