@@ -355,6 +355,9 @@ def main() -> int:
         choices=[
             "db",
             "crawler-app-db",
+            "ops-platform-db",
+            "wechat-groups-list",
+            "wechat-groups-capture",
             "device-pool-status",
             "device-pool-refresh",
             "config",
@@ -442,6 +445,13 @@ def main() -> int:
     parser.add_argument("--correction-value", default="", help="v2 correction new value")
     parser.add_argument("--correction-reason", default="", help="v2 correction reason")
     parser.add_argument("--correction-operator", default="cli", help="v2 correction operator name")
+    parser.add_argument("--wechat-pages", type=int, default=12, help="WeChat screenshots to capture after first screen")
+    parser.add_argument("--wechat-out-dir", default="exports/wechat", help="WeChat capture output directory")
+    parser.add_argument("--wechat-serial", default="", help="ADB serial for WeChat capture")
+    parser.add_argument("--wechat-limit", type=int, default=0, help="limit WeChat configured groups for a test run")
+    parser.add_argument("--wechat-no-search", action="store_true", help="assume the target WeChat group is already open")
+    parser.add_argument("--wechat-skip-navigation", action="store_true", help="capture current WeChat screen without navigation")
+    parser.add_argument("--wechat-keep-on-device", action="store_true", help="keep WeChat screenshots on Android device")
     parser.add_argument(
         "--supervise",
         action="store_true",
@@ -460,6 +470,39 @@ def main() -> int:
 
         init_crawler_app_db()
         print(f"crawler_app database initialized: {Config.CRAWLER_APP_DB_NAME}")
+        return 0
+    if args.once == "ops-platform-db":
+        from apps.finance_crawler.crawler_app.storage.ops_platform import init_ops_platform_intake_tables
+
+        init_ops_platform_intake_tables()
+        print(f"ops_platform demand intake tables initialized: {Config.OPS_PLATFORM_DB_NAME}")
+        return 0
+    if args.once in {"wechat-groups-list", "wechat-groups-capture"}:
+        from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
+        from apps.finance_crawler.crawler_app.storage.ops_platform import init_ops_platform_intake_tables
+        from apps.finance_crawler.crawler_app.workflows.wechat_demand_intake import (
+            list_wechat_demand_groups,
+            run_wechat_group_capture,
+        )
+
+        init_ops_platform_intake_tables()
+        init_crawler_app_db()
+        if args.once == "wechat-groups-list":
+            print(list_wechat_demand_groups())
+            return 0
+        target_date = _parse_optional_date(args.report_date) or date.today()
+        print(
+            run_wechat_group_capture(
+                target_date=target_date,
+                pages=args.wechat_pages,
+                out_dir=args.wechat_out_dir,
+                serial=args.wechat_serial or None,
+                limit=args.wechat_limit,
+                no_search=args.wechat_no_search,
+                skip_navigation=args.wechat_skip_navigation,
+                keep_on_device=args.wechat_keep_on_device,
+            )
+        )
         return 0
     if args.once in {"device-pool-status", "device-pool-refresh"}:
         from apps.finance_crawler.storage.device_pool import device_pool_status, refresh_adb_devices

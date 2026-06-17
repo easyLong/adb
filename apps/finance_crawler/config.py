@@ -76,6 +76,7 @@ class Config:
     DB_PASSWORD = _env("MYSQL_PASSWORD", "")
     DB_NAME = _env("MYSQL_DATABASE", _env("MYSQL_APP_DATABASE", _env("CRAWLER_APP_DATABASE", "crawler_app")))
     CRAWLER_APP_DB_NAME = _env("MYSQL_APP_DATABASE", _env("CRAWLER_APP_DATABASE", DB_NAME))
+    OPS_PLATFORM_DB_NAME = _env("MYSQL_OPS_DATABASE", _env("OPS_PLATFORM_DATABASE", "ops_platform"))
     DB_CONNECT_TIMEOUT = _env_int("MYSQL_CONNECT_TIMEOUT", 10)
 
     # Tencent Docs OpenAPI

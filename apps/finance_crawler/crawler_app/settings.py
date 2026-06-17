@@ -27,3 +27,14 @@ def crawler_app_database_settings() -> DatabaseSettings:
         connect_timeout=Config.DB_CONNECT_TIMEOUT,
     )
 
+
+def ops_platform_database_settings() -> DatabaseSettings:
+    return DatabaseSettings(
+        host=Config.DB_HOST,
+        port=Config.DB_PORT,
+        user=Config.DB_USER,
+        password=Config.DB_PASSWORD,
+        database=Config.OPS_PLATFORM_DB_NAME,
+        connect_timeout=Config.DB_CONNECT_TIMEOUT,
+    )
+

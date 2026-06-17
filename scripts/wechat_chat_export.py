@@ -18,8 +18,10 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -191,7 +193,10 @@ def take_screenshot(serial: str | None, local_path: Path, remote_name: str, *, k
     remote_path = f"{SCREENSHOT_REMOTE_DIR}/{remote_name}"
     shell(serial, f"mkdir -p {SCREENSHOT_REMOTE_DIR}", timeout=10)
     shell(serial, f"screencap -p {remote_path}", timeout=15)
-    adb(serial, "pull", remote_path, str(local_path), timeout=20)
+    with tempfile.TemporaryDirectory(prefix="wechat_adb_pull_") as temp_dir:
+        temp_path = Path(temp_dir) / remote_name
+        adb(serial, "pull", remote_path, str(temp_path), timeout=20)
+        shutil.copyfile(temp_path, local_path)
     if not keep_remote:
         shell(serial, f"rm -f {remote_path}", timeout=10, check=False)
 

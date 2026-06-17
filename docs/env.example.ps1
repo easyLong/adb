@@ -6,6 +6,7 @@ $env:MYSQL_PORT = "3306"
 $env:MYSQL_USER = "root"
 $env:MYSQL_PASSWORD = "your-mysql-password"
 $env:MYSQL_DATABASE = "crawler_app"
+$env:MYSQL_OPS_DATABASE = "ops_platform"
 
 # Tencent Docs OpenAPI credentials are stored in MySQL app_config, not here:
 # .\scripts\run.ps1 -Task config -ConfigSet "TENCENT_DOC_ACCESS_TOKEN=..."

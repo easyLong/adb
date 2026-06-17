@@ -174,6 +174,108 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertIs(crawler_profile_metrics.get_conn, crawler_app_db.get_conn)
         self.assertIs(legacy_profile_metrics.get_conn, crawler_app_db.get_conn)
 
+    def test_ops_platform_intake_upsert_preserves_reviewed_status(self) -> None:
+        from apps.finance_crawler.crawler_app.storage.ops_platform import (
+            OpsDemandCandidate,
+            OpsDemandEvidence,
+            OpsSourceContactContext,
+            OpsWechatGroupConfig,
+            candidate_with_source_context,
+            candidate_with_wechat_group_config,
+            upsert_ops_demand_candidate,
+        )
+
+        class FakeCursor:
+            def __init__(self) -> None:
+                self.executed = []
+
+            def execute(self, sql, params=None):
+                self.executed.append((str(sql), params))
+
+            def fetchone(self):
+                return {"id": "ops-candidate-id"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeConn:
+            def __init__(self) -> None:
+                self.cursor_obj = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_obj
+
+        conn = FakeConn()
+
+        candidate = candidate_with_source_context(
+            OpsDemandCandidate(
+                external_candidate_id="crawler:candidate:1",
+                external_capture_run_id="run:1",
+                demand_title="活动 banner 设计",
+                demand_content="需要一张活动 banner。",
+                evidences=[
+                    OpsDemandEvidence(
+                        external_evidence_id="message:1",
+                        message_text="帮忙做一版活动 banner",
+                    )
+                ],
+            ),
+            OpsSourceContactContext(
+                id="source-context-id",
+                source_app="crawler",
+                source_type="wechat_group",
+                source_key="source-key",
+                source_name="创金设计需求响应群",
+                contact_context_config_id="contact-context-id",
+                customer_id="customer-id",
+                contact_name="Diana",
+                business_platform="微信",
+            ),
+        )
+
+        candidate_id = upsert_ops_demand_candidate(conn, candidate)
+
+        self.assertEqual(candidate_id, "ops-candidate-id")
+        self.assertEqual(candidate.matched_customer_id, "customer-id")
+        self.assertEqual(candidate.matched_contact_context_id, "contact-context-id")
+        sql = "\n".join(item[0] for item in conn.cursor_obj.executed)
+        self.assertIn("external_capture_run_id", sql)
+        self.assertIn("external_source_key", sql)
+        self.assertIn("matched_customer_id", sql)
+        self.assertIn("demand_content", sql)
+        self.assertIn("status = IF(status IN ('confirmed', 'rejected'), status, VALUES(status))", sql)
+        self.assertIn(
+            "matched_customer_id = IF(status IN ('confirmed', 'rejected'), matched_customer_id, VALUES(matched_customer_id))",
+            sql,
+        )
+        self.assertIn("deleted_at = IF(status IN ('confirmed', 'rejected'), deleted_at, NULL)", sql)
+        self.assertIn("external_evidence_id", sql)
+
+        group_candidate = candidate_with_wechat_group_config(
+            OpsDemandCandidate(external_candidate_id="crawler:candidate:2"),
+            OpsWechatGroupConfig(
+                id="group-config-id",
+                group_id="wechat-group-id",
+                group_name="创金设计需求响应群",
+                source_key="wechat-group-source-key",
+                customer_id="customer-id",
+                customer_name="创金",
+                contact_context_config_id="contact-context-id",
+                contact_name="Diana",
+                business_platform="招行",
+            ),
+        )
+
+        self.assertEqual(group_candidate.external_source_key, "wechat-group-source-key")
+        self.assertEqual(group_candidate.external_chat_id, "wechat-group-id")
+        self.assertEqual(group_candidate.source_chat_name, "创金设计需求响应群")
+        self.assertEqual(group_candidate.raw_customer_name, "创金")
+        self.assertEqual(group_candidate.raw_owner_name, "Diana")
+        self.assertEqual(group_candidate.matched_customer_id, "customer-id")
+
     def test_profile_metric_observation_rows_extract_field_evidence(self) -> None:
         rows = build_profile_metric_observations(
             metric_id=12,

@@ -560,6 +560,21 @@ def _add_column_if_missing(cursor, table_name: str, column_name: str, column_def
     cursor.execute(f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {column_definition}")
 
 
+def _modify_column(cursor, table_name: str, column_name: str, column_definition: str) -> None:
+    cursor.execute(f"SHOW COLUMNS FROM `{table_name}` LIKE %s", (column_name,))
+    column = cursor.fetchone()
+    if column is None:
+        return
+    current_definition = f"{column.get('Type', '')} {'NULL' if column.get('Null') == 'YES' else 'NOT NULL'}"
+    if _normalize_column_definition(current_definition) == _normalize_column_definition(column_definition):
+        return
+    cursor.execute(f"ALTER TABLE `{table_name}` MODIFY COLUMN `{column_name}` {column_definition}")
+
+
+def _normalize_column_definition(definition: str) -> str:
+    return " ".join(definition.strip().lower().split())
+
+
 def _drop_column_if_exists(cursor, table_name: str, column_name: str) -> None:
     if not _column_exists(cursor, table_name, column_name):
         return
@@ -627,7 +642,13 @@ def _ensure_wechat_demand_intake_tables(cursor) -> None:
         CREATE TABLE IF NOT EXISTS wechat_capture_runs (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             run_key CHAR(64) NULL,
-            chat_id BIGINT UNSIGNED NOT NULL,
+            chat_id BIGINT UNSIGNED NULL,
+            source_app VARCHAR(32) NOT NULL DEFAULT 'crawler',
+            source_type VARCHAR(32) NOT NULL DEFAULT 'wechat_group',
+            source_key CHAR(64) NULL,
+            source_name VARCHAR(255) NULL,
+            external_source_id VARCHAR(128) NULL,
+            ops_source_context_id CHAR(36) NULL,
             capture_mode VARCHAR(32) NOT NULL DEFAULT 'unread',
             target_date DATE NULL,
             device_serial VARCHAR(128) NULL,
@@ -643,6 +664,8 @@ def _ensure_wechat_demand_intake_tables(cursor) -> None:
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_wechat_capture_run_key (run_key),
             INDEX idx_wechat_capture_chat (chat_id),
+            INDEX idx_wechat_capture_source (source_app, source_type, source_key),
+            INDEX idx_wechat_capture_ops_source (ops_source_context_id),
             INDEX idx_wechat_capture_status (status),
             INDEX idx_wechat_capture_mode (capture_mode),
             INDEX idx_wechat_capture_target_date (target_date),
@@ -651,13 +674,22 @@ def _ensure_wechat_demand_intake_tables(cursor) -> None:
         """
     )
     _add_column_if_missing(cursor, "wechat_capture_runs", "run_key", "CHAR(64) NULL")
+    _modify_column(cursor, "wechat_capture_runs", "chat_id", "BIGINT UNSIGNED NULL")
+    _add_column_if_missing(cursor, "wechat_capture_runs", "source_app", "VARCHAR(32) NOT NULL DEFAULT 'crawler'")
+    _add_column_if_missing(cursor, "wechat_capture_runs", "source_type", "VARCHAR(32) NOT NULL DEFAULT 'wechat_group'")
+    _add_column_if_missing(cursor, "wechat_capture_runs", "source_key", "CHAR(64) NULL")
+    _add_column_if_missing(cursor, "wechat_capture_runs", "source_name", "VARCHAR(255) NULL")
+    _add_column_if_missing(cursor, "wechat_capture_runs", "external_source_id", "VARCHAR(128) NULL")
+    _add_column_if_missing(cursor, "wechat_capture_runs", "ops_source_context_id", "CHAR(36) NULL")
     _add_unique_index_if_missing(cursor, "wechat_capture_runs", "uk_wechat_capture_run_key", "run_key")
+    _add_index_if_missing(cursor, "wechat_capture_runs", "idx_wechat_capture_source", "source_app, source_type, source_key")
+    _add_index_if_missing(cursor, "wechat_capture_runs", "idx_wechat_capture_ops_source", "ops_source_context_id")
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS wechat_message_observations (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             run_id BIGINT UNSIGNED NOT NULL,
-            chat_id BIGINT UNSIGNED NOT NULL,
+            chat_id BIGINT UNSIGNED NULL,
             screen_index INT NOT NULL DEFAULT 0,
             bubble_index INT NOT NULL DEFAULT 0,
             message_date DATE NULL,
@@ -684,13 +716,18 @@ def _ensure_wechat_demand_intake_tables(cursor) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    _modify_column(cursor, "wechat_message_observations", "chat_id", "BIGINT UNSIGNED NULL")
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS demand_intake_runs (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             run_key CHAR(64) NULL,
-            chat_id BIGINT UNSIGNED NOT NULL,
-            source_type VARCHAR(32) NOT NULL DEFAULT 'wechat',
+            chat_id BIGINT UNSIGNED NULL,
+            source_app VARCHAR(32) NOT NULL DEFAULT 'crawler',
+            source_type VARCHAR(32) NOT NULL DEFAULT 'wechat_group',
+            source_key CHAR(64) NULL,
+            source_name VARCHAR(255) NULL,
+            ops_source_context_id CHAR(36) NULL,
             source_capture_run_id BIGINT UNSIGNED NULL,
             from_observation_id BIGINT UNSIGNED NULL,
             to_observation_id BIGINT UNSIGNED NULL,
@@ -707,6 +744,8 @@ def _ensure_wechat_demand_intake_tables(cursor) -> None:
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_demand_intake_run_key (run_key),
             INDEX idx_demand_intake_chat (chat_id),
+            INDEX idx_demand_intake_source (source_app, source_type, source_key),
+            INDEX idx_demand_intake_ops_source (ops_source_context_id),
             INDEX idx_demand_intake_capture (source_capture_run_id),
             INDEX idx_demand_intake_status (status),
             INDEX idx_demand_intake_started (started_at)
@@ -714,7 +753,14 @@ def _ensure_wechat_demand_intake_tables(cursor) -> None:
         """
     )
     _add_column_if_missing(cursor, "demand_intake_runs", "run_key", "CHAR(64) NULL")
+    _modify_column(cursor, "demand_intake_runs", "chat_id", "BIGINT UNSIGNED NULL")
+    _add_column_if_missing(cursor, "demand_intake_runs", "source_app", "VARCHAR(32) NOT NULL DEFAULT 'crawler'")
+    _add_column_if_missing(cursor, "demand_intake_runs", "source_key", "CHAR(64) NULL")
+    _add_column_if_missing(cursor, "demand_intake_runs", "source_name", "VARCHAR(255) NULL")
+    _add_column_if_missing(cursor, "demand_intake_runs", "ops_source_context_id", "CHAR(36) NULL")
     _add_unique_index_if_missing(cursor, "demand_intake_runs", "uk_demand_intake_run_key", "run_key")
+    _add_index_if_missing(cursor, "demand_intake_runs", "idx_demand_intake_source", "source_app, source_type, source_key")
+    _add_index_if_missing(cursor, "demand_intake_runs", "idx_demand_intake_ops_source", "ops_source_context_id")
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS demand_intake_candidates (
