@@ -14,6 +14,7 @@ from apps.finance_crawler.integrations.tencent_docs import columns as tencent_do
 from apps.finance_crawler.integrations.tencent_docs.write_requests import cell_request
 from apps.finance_crawler.mobile import read_count_crawler
 from apps.finance_crawler.mobile.device_session import reset_device_session
+from apps.finance_crawler.storage.device_pool import acquire_device
 from apps.finance_crawler.storage.db import log_task
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.logger import get_logger
@@ -48,37 +49,43 @@ def run_docs_link_reads(
         log_task("docs_link_reads", "success", json.dumps(summary), time.time() - started)
         return summary
 
-    try:
-        assert_device_ready()
-    except DeviceUnavailable:
-        reset_device_session()
-        raise
+    with acquire_device(
+        app_type="read_count",
+        task_scope="docs_link_reads",
+        task_id=f"{doc.file_id}:{doc.sheet_id}:{target_date.isoformat() if target_date else 'all'}",
+        worker_id="docs_link_reads",
+    ):
+        try:
+            assert_device_ready()
+        except DeviceUnavailable:
+            reset_device_session()
+            raise
 
-    for index, target in enumerate(targets, start=1):
-        logger.info(
-            "doc link read crawl %s/%s row=%s account=%s",
-            index,
-            len(targets),
-            target.row_index,
-            target.account_name,
-        )
-        result = _crawl_target(target)
-        results.append(result)
-        read_value: Any = result["read_count"] if result.get("status") == "success" else "N"
-        requests_payload.append(
-            cell_request(
+        for index, target in enumerate(targets, start=1):
+            logger.info(
+                "doc link read crawl %s/%s row=%s account=%s",
+                index,
+                len(targets),
                 target.row_index,
-                columns["read_count"],
-                read_value,
-                doc=doc,
+                target.account_name,
             )
-        )
-        if result.get("status") != "success":
-            result["writeback_value"] = "N"
-        if len(requests_payload) >= Config.QQ_BATCH_UPDATE_SIZE:
-            client.post_batch_update(requests_payload, "docs_link_reads_partial", doc=doc)
-            written_count += len(requests_payload)
-            requests_payload.clear()
+            result = _crawl_target(target)
+            results.append(result)
+            read_value: Any = result["read_count"] if result.get("status") == "success" else "N"
+            requests_payload.append(
+                cell_request(
+                    target.row_index,
+                    columns["read_count"],
+                    read_value,
+                    doc=doc,
+                )
+            )
+            if result.get("status") != "success":
+                result["writeback_value"] = "N"
+            if len(requests_payload) >= Config.QQ_BATCH_UPDATE_SIZE:
+                client.post_batch_update(requests_payload, "docs_link_reads_partial", doc=doc)
+                written_count += len(requests_payload)
+                requests_payload.clear()
 
     if requests_payload:
         client.post_batch_update(requests_payload, "docs_link_reads", doc=doc)

@@ -30,6 +30,7 @@ from apps.finance_crawler.crawler_app.storage.ops_platform import (
 )
 from apps.finance_crawler.crawler_app.storage.db import get_conn as get_crawler_app_conn
 from apps.finance_crawler.mobile.capture_engine import try_ocr
+from apps.finance_crawler.storage.device_pool import acquire_device
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,19 +104,27 @@ def run_wechat_group_capture(
     batch_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[WechatGroupCaptureResult] = []
-    for group in groups:
-        result = _capture_one_group(
-            script=script,
-            group=group,
-            target_date=target_date,
-            pages=pages,
-            output_root=output_root,
-            serial=serial,
-            no_search=no_search,
-            skip_navigation=skip_navigation,
-            keep_on_device=keep_on_device,
-        )
-        results.append(result)
+    with acquire_device(
+        app_type="wechat",
+        task_scope="wechat:group_capture",
+        task_id=f"{target_date.isoformat()}:{limit or 'all'}",
+        worker_id="wechat",
+        adb_serial=serial,
+    ) as lease:
+        resolved_serial = serial or lease.adb_serial
+        for group in groups:
+            result = _capture_one_group(
+                script=script,
+                group=group,
+                target_date=target_date,
+                pages=pages,
+                output_root=output_root,
+                serial=resolved_serial,
+                no_search=no_search,
+                skip_navigation=skip_navigation,
+                keep_on_device=keep_on_device,
+            )
+            results.append(result)
 
     summary = {
         "target_date": target_date.isoformat(),
@@ -212,6 +221,79 @@ def run_wechat_messages_parse(
         "skipped": sum(1 for item in results if item.status == "skipped"),
         "failed": sum(1 for item in results if item.status == "error"),
         "results": [asdict(item) for item in results],
+    }
+
+
+def run_wechat_hourly_sync(
+    *,
+    target_date: date | None = None,
+    pages: int | None = None,
+    out_dir: str | None = None,
+    serial: str | None = None,
+    limit: int | None = None,
+    parse_mode: str | None = None,
+    context_size: int | None = None,
+    no_search: bool = False,
+    skip_navigation: bool = False,
+    keep_on_device: bool = False,
+) -> dict[str, Any]:
+    """Run the production WeChat pipeline: capture, parse, then incremental intake."""
+
+    target_date = target_date or date.today()
+    pages = Config.WECHAT_SYNC_PAGES if pages is None else pages
+    out_dir = out_dir or Config.WECHAT_SYNC_OUT_DIR
+    serial = serial or Config.WECHAT_DEVICE_SERIAL or None
+    limit = Config.WECHAT_SYNC_LIMIT if limit is None else limit
+    parse_mode = (parse_mode or Config.WECHAT_SYNC_PARSE_MODE or "ocr").strip().lower()
+    context_size = Config.WECHAT_SYNC_CONTEXT_SIZE if context_size is None else context_size
+
+    capture_summary = run_wechat_group_capture(
+        target_date=target_date,
+        pages=pages,
+        out_dir=out_dir,
+        serial=serial,
+        limit=limit or 0,
+        no_search=no_search,
+        skip_navigation=skip_navigation,
+        keep_on_device=keep_on_device,
+    )
+    capture_run_ids = [
+        int(item["capture_run_id"])
+        for item in capture_summary.get("results", [])
+        if item.get("status") == "success" and item.get("capture_run_id")
+    ]
+
+    parse_results: list[dict[str, Any]] = []
+    for capture_run_id in capture_run_ids:
+        parse_results.append(
+            run_wechat_messages_parse(
+                capture_run_id=capture_run_id,
+                parse_mode=parse_mode,
+            )
+        )
+
+    intake_summary = run_wechat_demand_intake(
+        limit=limit or 0,
+        intake_mode="incremental",
+        context_size=context_size,
+    )
+    parse_success = sum(int(item.get("success") or 0) for item in parse_results)
+    parse_failed = sum(int(item.get("failed") or 0) for item in parse_results)
+    return {
+        "target_date": target_date.isoformat(),
+        "serial": serial,
+        "pages": pages,
+        "limit": limit or 0,
+        "parse_mode": parse_mode,
+        "context_size": context_size,
+        "capture": capture_summary,
+        "parse": {
+            "total_capture_runs": len(capture_run_ids),
+            "success": parse_success,
+            "failed": parse_failed,
+            "results": parse_results,
+        },
+        "intake": intake_summary,
     }
 
 

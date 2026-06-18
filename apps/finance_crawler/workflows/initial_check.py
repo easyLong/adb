@@ -30,6 +30,7 @@ from apps.finance_crawler.storage.framework_db import (
     start_task_execution,
     update_task_execution_writeback,
 )
+from apps.finance_crawler.storage.device_pool import acquire_device
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.link_source import resolve_source_app
 from apps.finance_crawler.utils.logger import get_logger
@@ -94,135 +95,146 @@ def run_initial_check() -> list[dict]:
 
     budget.check()
 
-    try:
-        assert_device_ready()
-    except DeviceUnavailable as exc:
-        reset_device_session()
-        send_alert("ADB device unavailable", str(exc), dedupe_key="device_unavailable")
-        log_task("check", "error", str(exc), time.time() - start_time)
-        raise
-
     writeback_service.load_snapshot()
 
     deep_links = resolve_urls(records, resolve_short_url, logger)
     results: list[dict] = []
     stop_reason: str | None = None
 
-    for idx, record in enumerate(records, start=1):
+    with acquire_device(
+        app_type="initial_check",
+        task_scope="legacy:initial_check",
+        task_id=f"batch:{int(start_time)}",
+        worker_id="legacy_check",
+    ):
         try:
-            budget.check()
-        except TaskBudgetExceeded as exc:
-            stop_reason = str(exc)
-            logger.warning("initial check stopped by runtime budget: %s", stop_reason)
-            break
-
-        record_id = workflow_record_id(record)
-        url = workflow_record_url(record)
-        source_app = resolve_source_app(record.get("source_app"), url)
-        execution_id = _start_execution_for_record(record)
-        if execution_id is None:
-            logger.info("initial check skipped by task submission state id=%s", record_id)
-            continue
-        logger.info("[%s/%s] initial check source=%s id=%s", idx, total, source_app, record_id)
-
-        try:
-            result = _open_and_check_with_app_recovery(
-                opened_url=deep_links.get(record_id, url),
-                record_id=record_id,
-                source_app=source_app,
-            )
+            assert_device_ready()
         except DeviceUnavailable as exc:
             reset_device_session()
-            _finish_execution(
-                execution_id,
-                result={
+            send_alert("ADB device unavailable", str(exc), dedupe_key="device_unavailable")
+            log_task("check", "error", str(exc), time.time() - start_time)
+            raise
+
+        for idx, record in enumerate(records, start=1):
+            try:
+                budget.check()
+            except TaskBudgetExceeded as exc:
+                stop_reason = str(exc)
+                logger.warning("initial check stopped by runtime budget: %s", stop_reason)
+                break
+
+            record_id = workflow_record_id(record)
+            url = workflow_record_url(record)
+            source_app = resolve_source_app(record.get("source_app"), url)
+            execution_id = _start_execution_for_record(record)
+            if execution_id is None:
+                logger.info("initial check skipped by task submission state id=%s", record_id)
+                continue
+            logger.info("[%s/%s] initial check source=%s id=%s", idx, total, source_app, record_id)
+
+            try:
+                result = _open_and_check_with_app_recovery(
+                    opened_url=deep_links.get(record_id, url),
+                    record_id=record_id,
+                    source_app=source_app,
+                )
+            except DeviceUnavailable as exc:
+                reset_device_session()
+                _finish_execution(
+                    execution_id,
+                    result={
+                        "status": "error",
+                        "exists": False,
+                        "account_name": None,
+                        "error": str(exc),
+                    },
+                    metrics={"exists": False},
+                    writeback_status="skipped",
+                    writeback_error=str(exc),
+                )
+                raise
+            except Exception as exc:
+                logger.exception("initial check failed id=%s", record_id)
+                result = {
                     "status": "error",
                     "exists": False,
                     "account_name": None,
                     "error": str(exc),
+                }
+
+            budget.record_status(result["status"])
+
+            writeback_plan = writeback_service.prepare_initial_check(record=record, result=result)
+            row_index = writeback_plan.row_index
+
+            task_id, result_id = record_crawl_result(
+                record=record,
+                workflow="initial_check",
+                status=result["status"],
+                account_name=result.get("account_name"),
+                metrics={
+                    "exists": result.get("exists"),
+                    "row_index": row_index,
+                    "app_restart_attempts": result.get("app_restart_attempts"),
                 },
-                metrics={"exists": False},
-                writeback_status="skipped",
-                writeback_error=str(exc),
+                error=result.get("error"),
             )
-            raise
-        except Exception as exc:
-            logger.exception("initial check failed id=%s", record_id)
-            result = {
-                "status": "error",
-                "exists": False,
-                "account_name": None,
-                "error": str(exc),
-            }
 
-        budget.record_status(result["status"])
-
-        writeback_plan = writeback_service.prepare_initial_check(record=record, result=result)
-        row_index = writeback_plan.row_index
-
-        task_id, result_id = record_crawl_result(
-            record=record,
-            workflow="initial_check",
-            status=result["status"],
-            account_name=result.get("account_name"),
-            metrics={
-                "exists": result.get("exists"),
-                "row_index": row_index,
-                "app_restart_attempts": result.get("app_restart_attempts"),
-            },
-            error=result.get("error"),
-        )
-
-        if writeback_plan.can_write and row_index:
-            writeback_status, writeback_error = _write_single_initial_check_result(
-                writeback_service=writeback_service,
-                writeback_plan=writeback_plan,
-                pending_writeback=PendingWriteback(
+            if writeback_plan.can_write and row_index:
+                writeback_status, writeback_error = _write_single_initial_check_result(
+                    writeback_service=writeback_service,
+                    writeback_plan=writeback_plan,
+                    pending_writeback=PendingWriteback(
+                        record_id=record_id,
+                        task_id=task_id,
+                        result_id=result_id,
+                        row_index=row_index,
+                    ),
+                )
+            else:
+                logger.warning(
+                    "skipped %s writeback id=%s: %s",
+                    writeback_plan.sink_type,
+                    record_id,
+                    writeback_plan.skip_reason,
+                )
+                record_sink_writeback(
                     record_id=record_id,
+                    sink_type=writeback_plan.sink_type,
+                    status="skipped",
                     task_id=task_id,
                     result_id=result_id,
-                    row_index=row_index,
-                ),
-            )
-        else:
-            logger.warning("skipped %s writeback id=%s: %s", writeback_plan.sink_type, record_id, writeback_plan.skip_reason)
-            record_sink_writeback(
-                record_id=record_id,
-                sink_type=writeback_plan.sink_type,
-                status="skipped",
-                task_id=task_id,
-                result_id=result_id,
-                error=writeback_plan.skip_reason,
-            )
-            writeback_status = "skipped"
-            writeback_error = writeback_plan.skip_reason
+                    error=writeback_plan.skip_reason,
+                )
+                writeback_status = "skipped"
+                writeback_error = writeback_plan.skip_reason
 
-        _finish_execution(
-            execution_id,
-            result=result,
-            metrics={
-                "exists": result.get("exists"),
-                "row_index": row_index,
-                "app_restart_attempts": result.get("app_restart_attempts"),
-            },
-            writeback_status=writeback_status,
-            writeback_locator=writeback_plan.locator,
-            writeback_error=writeback_error,
-        )
-        if writeback_status == "error":
-            _update_execution_writeback(
+            _finish_execution(
                 execution_id,
-                writeback_status="error",
+                result=result,
+                metrics={
+                    "exists": result.get("exists"),
+                    "row_index": row_index,
+                    "app_restart_attempts": result.get("app_restart_attempts"),
+                },
+                writeback_status=writeback_status,
                 writeback_locator=writeback_plan.locator,
                 writeback_error=writeback_error,
             )
+            if writeback_status == "error":
+                _update_execution_writeback(
+                    execution_id,
+                    writeback_status="error",
+                    writeback_locator=writeback_plan.locator,
+                    writeback_error=writeback_error,
+                )
 
-        result_with_record = dict(result)
-        result_with_record.update(
-            {"record_id": record_id, "url": url, "source_app": source_app, "row_index": row_index}
-        )
-        results.append(result_with_record)
-        budget.sleep()
+            result_with_record = dict(result)
+            result_with_record.update(
+                {"record_id": record_id, "url": url, "source_app": source_app, "row_index": row_index}
+            )
+            results.append(result_with_record)
+            budget.sleep()
 
     success_count, not_found_count, error_count = _status_counts(results)
     duration = time.time() - start_time

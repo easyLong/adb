@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -158,8 +159,15 @@ def acquire_device(
     task_scope: str,
     task_id: str | int,
     worker_id: str | None = None,
+    adb_serial: str | None = None,
 ) -> Iterator[DeviceLease]:
-    lease = start_device_lease(app_type=app_type, task_scope=task_scope, task_id=task_id, worker_id=worker_id)
+    lease = start_device_lease(
+        app_type=app_type,
+        task_scope=task_scope,
+        task_id=task_id,
+        worker_id=worker_id,
+        adb_serial=adb_serial,
+    )
     try:
         yield lease
         release_device_lease(lease, status="success")
@@ -174,8 +182,36 @@ def start_device_lease(
     task_scope: str,
     task_id: str | int,
     worker_id: str | None = None,
+    adb_serial: str | None = None,
 ) -> DeviceLease:
-    lease = _acquire_device(app_type=app_type, task_scope=task_scope, task_id=str(task_id), worker_id=worker_id)
+    wait_seconds = max(int(Config.DEVICE_LOCK_WAIT_SECONDS or 0), 0)
+    poll_seconds = max(float(Config.DEVICE_LOCK_POLL_SECONDS or 1.0), 0.5)
+    deadline = time.monotonic() + wait_seconds
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            lease = _acquire_device(
+                app_type=app_type,
+                task_scope=task_scope,
+                task_id=str(task_id),
+                worker_id=worker_id,
+                adb_serial=adb_serial,
+            )
+            break
+        except DeviceUnavailable as exc:
+            if not _is_lock_wait_error(exc) or time.monotonic() >= deadline:
+                raise
+            if attempts == 1:
+                logger.info(
+                    "waiting for adb device lock app=%s scope=%s task=%s serial=%s max_wait=%ss",
+                    app_type,
+                    task_scope,
+                    task_id,
+                    adb_serial or Config.DEVICE_SERIAL or "any",
+                    wait_seconds,
+                )
+            time.sleep(min(poll_seconds, max(0.1, deadline - time.monotonic())))
     _activate_lease_serial(lease)
     return lease
 
@@ -193,8 +229,22 @@ def release_device_lease(
         _restore_lease_serial(lease)
 
 
-def _acquire_device(*, app_type: str, task_scope: str, task_id: str, worker_id: str | None) -> DeviceLease:
+def _acquire_device(
+    *,
+    app_type: str,
+    task_scope: str,
+    task_id: str,
+    worker_id: str | None,
+    adb_serial: str | None,
+) -> DeviceLease:
+    preferred_serial = (adb_serial or Config.DEVICE_SERIAL or "").strip()
+    previous_env_serial = os.environ.get("DEVICE_SERIAL")
+    previous_config_serial = str(Config.DEVICE_SERIAL or "")
     if not Config.DEVICE_POOL_ENABLED:
+        if preferred_serial:
+            os.environ["DEVICE_SERIAL"] = preferred_serial
+            Config.DEVICE_SERIAL = preferred_serial
+            reset_device_session()
         device = prepare_adb_device()
         return DeviceLease(
             lease_id=None,
@@ -204,20 +254,29 @@ def _acquire_device(*, app_type: str, task_scope: str, task_id: str, worker_id: 
             app_type=app_type or "unknown",
             task_scope=task_scope,
             task_id=task_id,
-            previous_env_serial=os.environ.get("DEVICE_SERIAL"),
-            previous_config_serial=str(Config.DEVICE_SERIAL or ""),
+            previous_env_serial=previous_env_serial,
+            previous_config_serial=previous_config_serial,
         )
 
     refresh_adb_devices()
     worker = worker_id or _default_worker_id()
     lease_token = str(uuid.uuid4())
-    lease_seconds = max(int(Config.DEVICE_LEASE_SECONDS or 600), 60)
+    lease_seconds = max(
+        int(Config.DEVICE_LEASE_SECONDS or 600),
+        int(Config.DEVICE_LOCK_WAIT_SECONDS or 0),
+        60,
+    )
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
             ensure_device_pool_tables(cursor)
+            serial_clause = ""
+            params: list[Any] = [app_type or "unknown"]
+            if preferred_serial:
+                serial_clause = "AND d.adb_serial = %s"
+                params.append(preferred_serial)
             cursor.execute(
-                """
+                f"""
                 SELECT d.*
                 FROM adb_devices d
                 LEFT JOIN adb_device_app_sessions s
@@ -229,6 +288,7 @@ def _acquire_device(*, app_type: str, task_scope: str, task_id: str, worker_id: 
                   AND (s.cooldown_until IS NULL OR s.cooldown_until <= NOW())
                   AND COALESCE(s.risk_status, 'ok') NOT IN ('blocked', 'disabled')
                   AND COALESCE(s.login_status, 'unknown') NOT IN ('login_required', 'disabled')
+                  {serial_clause}
                 ORDER BY COALESCE(s.failure_count, 0) ASC,
                          COALESCE(s.success_count, 0) DESC,
                          d.last_seen_at DESC,
@@ -236,11 +296,14 @@ def _acquire_device(*, app_type: str, task_scope: str, task_id: str, worker_id: 
                 LIMIT 1
                 FOR UPDATE
                 """,
-                (app_type or "unknown",),
+                params,
             )
             row = cursor.fetchone()
             if not row:
-                raise DeviceUnavailable(f"no available adb device for app_type={app_type or 'unknown'}")
+                serial_text = preferred_serial or "any"
+                raise DeviceUnavailable(
+                    f"no available adb device lock for app_type={app_type or 'unknown'} serial={serial_text}"
+                )
             device_id = int(row["id"])
             adb_serial = str(row["adb_serial"])
             leased_until = datetime.now() + timedelta(seconds=lease_seconds)
@@ -289,8 +352,8 @@ def _acquire_device(*, app_type: str, task_scope: str, task_id: str, worker_id: 
             app_type=app_type or "unknown",
             task_scope=task_scope,
             task_id=task_id,
-            previous_env_serial=os.environ.get("DEVICE_SERIAL"),
-            previous_config_serial=str(Config.DEVICE_SERIAL or ""),
+            previous_env_serial=previous_env_serial,
+            previous_config_serial=previous_config_serial,
         )
     except Exception:
         conn.rollback()
@@ -449,6 +512,11 @@ def _error_type(error: Exception) -> str:
     if _is_risk_error(text):
         return "risk_control"
     return "unknown_error"
+
+
+def _is_lock_wait_error(error: Exception) -> bool:
+    text = str(error or "").lower()
+    return "no available adb device lock" in text or "no available adb device" in text
 
 
 def _is_login_error(error: Any) -> bool:

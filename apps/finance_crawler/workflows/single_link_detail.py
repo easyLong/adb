@@ -26,6 +26,7 @@ from apps.finance_crawler.storage.framework_db import (
     start_task_execution,
     upsert_task_submission,
 )
+from apps.finance_crawler.storage.device_pool import acquire_device
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.link_source import resolve_source_app
 from apps.finance_crawler.utils.logger import get_logger
@@ -57,10 +58,16 @@ def run_single_link_detail(url: str | None = None) -> dict[str, Any] | None:
     opened_url = link
 
     try:
-        assert_device_ready()
-        opened_url = resolve_short_url(link)
-        open_url(opened_url)
-        result = scrape_record_content(record_id, source_app=source_app)
+        with acquire_device(
+            app_type=source_app,
+            task_scope="single_link:detail",
+            task_id=submission_id,
+            worker_id="single_link_detail",
+        ):
+            assert_device_ready()
+            opened_url = resolve_short_url(link)
+            open_url(opened_url)
+            result = scrape_record_content(record_id, source_app=source_app)
     except DeviceUnavailable as exc:
         reset_device_session()
         result = _error_result(str(exc))

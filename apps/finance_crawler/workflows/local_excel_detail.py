@@ -34,6 +34,7 @@ from apps.finance_crawler.storage.framework_db import (
     update_task_execution_writeback,
     upsert_excel_row_submission,
 )
+from apps.finance_crawler.storage.device_pool import acquire_device
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.link_source import detect_link_source
 from apps.finance_crawler.utils.logger import get_logger
@@ -82,41 +83,47 @@ def run_local_excel_detail() -> list[dict[str, Any]]:
         if not targets:
             return []
 
-        assert_device_ready()
+        with acquire_device(
+            app_type="detail",
+            task_scope="excel:detail",
+            task_id=str(input_path.resolve()),
+            worker_id="excel_detail",
+        ):
+            assert_device_ready()
 
-        buffered_writebacks: list[tuple[int, dict[str, Any]]] = []
-        for index, target in enumerate(targets, start=1):
-            execution_id = _start_execution_for_target(input_path, output_path, worksheet.title, target)
-            if execution_id is None:
-                logger.info("Excel detail skipped by task submission state row=%s", target.row_index)
-                continue
-            try:
-                item = _crawl_target(index, len(targets), target)
-            except DeviceUnavailable as exc:
+            buffered_writebacks: list[tuple[int, dict[str, Any]]] = []
+            for index, target in enumerate(targets, start=1):
+                execution_id = _start_execution_for_target(input_path, output_path, worksheet.title, target)
+                if execution_id is None:
+                    logger.info("Excel detail skipped by task submission state row=%s", target.row_index)
+                    continue
+                try:
+                    item = _crawl_target(index, len(targets), target)
+                except DeviceUnavailable as exc:
+                    _finish_excel_execution(
+                        execution_id,
+                        item=_error_item(target, str(exc)),
+                        writeback_status="skipped",
+                        writeback_locator={"path": str(output_path.resolve()), "row_index": target.row_index},
+                    )
+                    raise
+                results.append(item)
+                _write_result(worksheet, item)
+                _append_jsonl(result_jsonl_path, item)
+                writeback_locator = {"path": str(output_path.resolve()), "row_index": target.row_index}
+                if _should_save(index):
+                    workbook.save(output_path)
+                    writeback_status = "success"
+                else:
+                    writeback_status = "buffered"
+                    buffered_writebacks.append((execution_id, writeback_locator))
                 _finish_excel_execution(
                     execution_id,
-                    item=_error_item(target, str(exc)),
-                    writeback_status="skipped",
-                    writeback_locator={"path": str(output_path.resolve()), "row_index": target.row_index},
+                    item=item,
+                    writeback_status=writeback_status,
+                    writeback_locator=writeback_locator,
                 )
-                raise
-            results.append(item)
-            _write_result(worksheet, item)
-            _append_jsonl(result_jsonl_path, item)
-            writeback_locator = {"path": str(output_path.resolve()), "row_index": target.row_index}
-            if _should_save(index):
-                workbook.save(output_path)
-                writeback_status = "success"
-            else:
-                writeback_status = "buffered"
-                buffered_writebacks.append((execution_id, writeback_locator))
-            _finish_excel_execution(
-                execution_id,
-                item=item,
-                writeback_status=writeback_status,
-                writeback_locator=writeback_locator,
-            )
-            print(json.dumps(item, ensure_ascii=True), flush=True)
+                print(json.dumps(item, ensure_ascii=True), flush=True)
 
         workbook.save(output_path)
         for execution_id, writeback_locator in buffered_writebacks:

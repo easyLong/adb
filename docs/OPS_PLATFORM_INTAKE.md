@@ -240,6 +240,26 @@ status                 pending
 .\scripts\run.ps1 -Task wechat-demand-intake -WechatIntakeMode incremental
 ```
 
+生产小时级同步入口：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-hourly-sync
+```
+
+指定固定华为手机：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-hourly-sync -WechatSerial APH0219701010623
+```
+
+`wechat-hourly-sync` 会串联执行：
+
+```text
+wechat-groups-capture
+-> wechat-messages-parse
+-> wechat-demand-intake -WechatIntakeMode incremental
+```
+
 测试时只处理前 1 个群，并带 20 条历史上下文：
 
 ```powershell
@@ -251,6 +271,59 @@ status                 pending
 ```powershell
 .\scripts\run.ps1 -Task wechat-demand-intake -WechatCaptureRunId 21
 ```
+
+## 小时级调度
+
+建议生产配置：
+
+```text
+DEVICE_POOL_ENABLED=true
+DEVICE_LOCK_WAIT_SECONDS=3600
+DEVICE_LOCK_POLL_SECONDS=5
+WECHAT_DEVICE_SERIAL=APH0219701010623
+WECHAT_SYNC_PAGES=12
+WECHAT_SYNC_PARSE_MODE=ocr
+WECHAT_SYNC_CONTEXT_SIZE=30
+WECHAT_SCHEDULER_ENABLED=true
+WECHAT_SCHEDULER_START_TIME=08:00
+WECHAT_SCHEDULER_END_TIME=19:00
+WECHAT_SCHEDULER_INTERVAL_MINUTES=60
+WECHAT_SCHEDULER_WORKDAYS=1,2,3,4,5
+```
+
+通过运行时配置启用：
+
+```powershell
+.\scripts\run.ps1 -Task config `
+  -ConfigSet WECHAT_DEVICE_SERIAL=APH0219701010623 `
+  -ConfigSet WECHAT_SCHEDULER_ENABLED=true `
+  -ConfigSet WECHAT_SCHEDULER_START_TIME=08:00 `
+  -ConfigSet WECHAT_SCHEDULER_END_TIME=19:00 `
+  -ConfigSet WECHAT_SCHEDULER_INTERVAL_MINUTES=60 `
+  -ConfigSet WECHAT_SCHEDULER_WORKDAYS=1,2,3,4,5
+```
+
+单独启动微信采集调度进程：
+
+```powershell
+.\scripts\run.ps1 -Task scheduler -SchedulerRoles wechat
+```
+
+也可以用队列 worker 一键启动，`workers-start` 会额外启动一个 `wechat` 角色进程：
+
+```powershell
+.\scripts\run.ps1 -Task workers-start
+.\scripts\run.ps1 -Task workers-status
+```
+
+调度时间窗是闭区间。以上配置会在工作日执行：
+
+```text
+08:00, 09:00, 10:00, 11:00, 12:00, 13:00,
+14:00, 15:00, 16:00, 17:00, 18:00, 19:00
+```
+
+微信群采集会先获取全局设备锁。若同一台手机正在被 v2 crawl、profile 或其他 ADB 采集任务占用，`wechat-hourly-sync` 会等待锁释放后再操作手机，避免不同任务同时点击、滑动、截图导致数据污染。
 
 ## 增量识别逻辑
 

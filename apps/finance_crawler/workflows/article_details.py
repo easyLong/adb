@@ -30,6 +30,7 @@ from apps.finance_crawler.storage.article_details import (
     record_article_detail_run,
     upsert_article_source,
 )
+from apps.finance_crawler.storage.device_pool import acquire_device
 from apps.finance_crawler.storage.db import log_task
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.link_source import detect_link_source
@@ -93,6 +94,16 @@ def sync_article_sources_from_tencent_docs(doc_url: str | None = None) -> int:
 
 
 def crawl_pending_article_details(limit: int | None = None) -> list[dict[str, Any]]:
+    with acquire_device(
+        app_type="article_detail",
+        task_scope="article:detail",
+        task_id=f"batch:{int(time.time())}",
+        worker_id="article_details",
+    ):
+        return _crawl_pending_article_details_unlocked(limit)
+
+
+def _crawl_pending_article_details_unlocked(limit: int | None = None) -> list[dict[str, Any]]:
     resolved_limit = limit if limit is not None else Config.ARTICLE_DETAILS_CRAWL_LIMIT
     records = get_pending_article_sources(limit=resolved_limit or None)
     if not records:

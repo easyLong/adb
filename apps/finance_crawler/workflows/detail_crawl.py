@@ -32,6 +32,7 @@ from apps.finance_crawler.storage.framework_db import (
     start_task_execution,
     update_task_execution_writeback,
 )
+from apps.finance_crawler.storage.device_pool import acquire_device
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.link_source import resolve_source_app
 from apps.finance_crawler.utils.logger import get_logger
@@ -100,6 +101,16 @@ def _open_and_scrape_with_blank_retry(
 
 
 def run_detail_crawl(limit: int | None = None) -> list[dict]:
+    with acquire_device(
+        app_type="detail",
+        task_scope="legacy:detail",
+        task_id=f"batch:{int(time.time())}",
+        worker_id="legacy_detail",
+    ):
+        return _run_detail_crawl_unlocked(limit)
+
+
+def _run_detail_crawl_unlocked(limit: int | None = None) -> list[dict]:
     start_time = time.time()
     budget = OperationBudget("detail_crawl")
     writeback_service = default_writeback_service()

@@ -10,7 +10,7 @@ import sys
 import time
 import traceback
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from typing import Any
 
 import schedule
@@ -118,6 +118,16 @@ def run_kol_tenpay_external_reads_job(target_date: date | None = None) -> dict[s
     return run_kol_tenpay_external_reads(target_date=target_date)
 
 
+def run_wechat_hourly_sync_job(target_date: date | None = None) -> dict[str, Any]:
+    from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
+    from apps.finance_crawler.crawler_app.storage.ops_platform import init_ops_platform_intake_tables
+    from apps.finance_crawler.crawler_app.workflows.wechat_demand_intake import run_wechat_hourly_sync
+
+    init_ops_platform_intake_tables()
+    init_crawler_app_db()
+    return run_wechat_hourly_sync(target_date=target_date or date.today())
+
+
 def _reload_runtime_config_for_task(task_name: str) -> None:
     if task_name == "heartbeat":
         return
@@ -150,6 +160,59 @@ def _configured_scheduler_roles() -> set[str]:
 def _scheduler_role_enabled(*roles: str) -> bool:
     configured = _configured_scheduler_roles()
     return "all" in configured or any(role in configured for role in roles)
+
+
+def _parse_hhmm(value: str, *, default: str) -> dt_time:
+    raw = (value or default).strip()
+    try:
+        parsed = datetime.strptime(raw, "%H:%M")
+    except ValueError:
+        logger.warning("invalid HH:MM time %r; fallback to %s", value, default)
+        parsed = datetime.strptime(default, "%H:%M")
+    return parsed.time()
+
+
+def _parse_scheduler_workdays(value: str) -> set[int]:
+    days: set[int] = set()
+    for item in re.split(r"[,;\s]+", value or ""):
+        if not item:
+            continue
+        try:
+            day = int(item)
+        except ValueError:
+            continue
+        if 1 <= day <= 7:
+            days.add(day)
+    return days or {1, 2, 3, 4, 5}
+
+
+def _wechat_schedule_times() -> list[str]:
+    start = _parse_hhmm(Config.WECHAT_SCHEDULER_START_TIME, default="08:00")
+    end = _parse_hhmm(Config.WECHAT_SCHEDULER_END_TIME, default="19:00")
+    interval = max(int(Config.WECHAT_SCHEDULER_INTERVAL_MINUTES or 0), 1)
+    start_minutes = start.hour * 60 + start.minute
+    end_minutes = end.hour * 60 + end.minute
+    if end_minutes < start_minutes:
+        logger.warning("WECHAT_SCHEDULER_END_TIME is before start time; fallback to start only")
+        end_minutes = start_minutes
+    values: list[str] = []
+    minute = start_minutes
+    while minute <= end_minutes:
+        values.append(f"{minute // 60:02d}:{minute % 60:02d}")
+        minute += interval
+    return values
+
+
+def _run_scheduled_wechat_hourly_sync() -> dict[str, Any] | None:
+    if not Config.WECHAT_SCHEDULER_ENABLED:
+        logger.info("skip wechat hourly sync because WECHAT_SCHEDULER_ENABLED=false")
+        return None
+    workdays = _parse_scheduler_workdays(Config.WECHAT_SCHEDULER_WORKDAYS)
+    today = datetime.now().isoweekday()
+    if today not in workdays:
+        logger.info("skip wechat hourly sync on non-workday: %s", today)
+        return {"status": "skipped", "reason": "non_workday", "weekday": today}
+    return run_wechat_hourly_sync_job(date.today())
 
 
 def _register_jobs() -> None:
@@ -268,6 +331,19 @@ def _register_jobs() -> None:
             Config.KOL_TENPAY_EXTERNAL_READS_TIME,
         )
 
+    if _scheduler_role_enabled("wechat") and Config.WECHAT_SCHEDULER_ENABLED:
+        for schedule_time in _wechat_schedule_times():
+            schedule.every().day.at(schedule_time).do(
+                safe_run,
+                _run_scheduled_wechat_hourly_sync,
+                "wechat_hourly_sync",
+            )
+        logger.info(
+            "registered WeChat hourly sync at %s on workdays %s",
+            ",".join(_wechat_schedule_times()),
+            Config.WECHAT_SCHEDULER_WORKDAYS,
+        )
+
     if _scheduler_role_enabled("heartbeat") and Config.HEARTBEAT_INTERVAL_MINUTES > 0:
         schedule.every(Config.HEARTBEAT_INTERVAL_MINUTES).minutes.do(
             safe_run, heartbeat, "heartbeat"
@@ -361,6 +437,7 @@ def main() -> int:
             "wechat-groups-capture",
             "wechat-messages-parse",
             "wechat-demand-intake",
+            "wechat-hourly-sync",
             "device-pool-status",
             "device-pool-refresh",
             "config",
@@ -484,13 +561,14 @@ def main() -> int:
         init_ops_platform_intake_tables()
         print(f"ops_platform demand intake tables initialized: {Config.OPS_PLATFORM_DB_NAME}")
         return 0
-    if args.once in {"wechat-groups-list", "wechat-groups-capture", "wechat-messages-parse", "wechat-demand-intake"}:
+    if args.once in {"wechat-groups-list", "wechat-groups-capture", "wechat-messages-parse", "wechat-demand-intake", "wechat-hourly-sync"}:
         from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
         from apps.finance_crawler.crawler_app.storage.ops_platform import init_ops_platform_intake_tables
         from apps.finance_crawler.crawler_app.workflows.wechat_demand_intake import (
             list_wechat_demand_groups,
             run_wechat_demand_intake,
             run_wechat_group_capture,
+            run_wechat_hourly_sync,
             run_wechat_messages_parse,
         )
 
@@ -516,6 +594,21 @@ def main() -> int:
                 limit=args.wechat_limit,
                 intake_mode=args.wechat_intake_mode,
                 context_size=args.wechat_context_size,
+            )
+            print(json.dumps(summary, ensure_ascii=True, indent=2))
+            return 0
+        if args.once == "wechat-hourly-sync":
+            summary = run_wechat_hourly_sync(
+                target_date=target_date,
+                pages=args.wechat_pages,
+                out_dir=args.wechat_out_dir,
+                serial=args.wechat_serial or None,
+                limit=args.wechat_limit,
+                parse_mode=args.wechat_parse_mode,
+                context_size=args.wechat_context_size,
+                no_search=args.wechat_no_search,
+                skip_navigation=args.wechat_skip_navigation,
+                keep_on_device=args.wechat_keep_on_device,
             )
             print(json.dumps(summary, ensure_ascii=True, indent=2))
             return 0

@@ -76,9 +76,12 @@ MYSQL_APP_DATABASE=crawler_app
 | `SUBMIT_WORKER_INTERVAL_SECONDS` | `300` | document submit worker 唤醒间隔，建议 5 分钟 |
 | `V2_CRAWL_WORKER_INTERVAL_SECONDS` | `30` | document crawl worker 唤醒间隔 |
 | `V2_WRITEBACK_WORKER_INTERVAL_SECONDS` | `30` | document writeback worker 唤醒间隔 |
-| `SCHEDULER_ROLES` | `all` | scheduler 注册哪些角色；可用 `submit,crawl,writeback,profile,heartbeat` 拆成多个常驻进程 |
+| `SCHEDULER_ROLES` | `all` | scheduler 注册哪些角色；可用 `submit,crawl,writeback,profile,wechat,heartbeat` 拆成多个常驻进程 |
 | `HEARTBEAT_INTERVAL_MINUTES` | `30` | scheduler 心跳 |
 | `TASK_RUNNING_TIMEOUT_MINUTES` | `360` | running 任务超时回收 |
+| `DEVICE_POOL_ENABLED` | `true` | 启用设备池和全局设备锁 |
+| `DEVICE_LOCK_WAIT_SECONDS` | `3600` | 手机被占用时最多等待多久 |
+| `DEVICE_LOCK_POLL_SECONDS` | `5` | 等待锁时多久检查一次 |
 
 每个 document trigger 还有自己的 `scan_interval_seconds`，用于控制同一个在线文档多久真正扫描一次。当前建议 trigger 级别设置为 `600` 秒。
 
@@ -92,17 +95,81 @@ MYSQL_APP_DATABASE=crawler_app
 .\scripts\run.ps1 -Task workers-stop
 ```
 
-`workers-start` 会启动 4 个隐藏常驻进程：
+`workers-start` 会启动 5 个隐藏常驻进程：
 ```text
 submit-heartbeat -> SCHEDULER_ROLES=submit,heartbeat
 crawl            -> SCHEDULER_ROLES=crawl
 writeback        -> SCHEDULER_ROLES=writeback
 profile          -> SCHEDULER_ROLES=profile
+wechat           -> SCHEDULER_ROLES=wechat
 ```
 
 PID 和 stdout/stderr 日志在 `apps/finance_crawler/logs/queue_workers/`。
 
-这是队列隔离，不是多线程。`submit` 和 `writeback` 不会被采集任务阻塞；`crawl` 负责 document 采集队列；`profile` 负责 KOL/profile 队列。
+这是队列隔离，不是多线程。`submit` 和 `writeback` 不会被采集任务阻塞；`crawl` 负责 document 采集队列；`profile` 负责 KOL/profile 队列；`wechat` 负责微信群小时级采集和需求识别。
+
+## 全局设备锁
+
+所有需要操作手机屏幕的采集任务都应先获取设备锁。锁按 `adb_serial` 串行化，同一台手机同一时间只允许一个任务操作。
+
+当前覆盖的入口：
+
+```text
+v2 initial_check / detail / read_count
+legacy check / detail
+excel-detail
+link-detail
+doc-link-reads
+article-crawl / article-details
+profile-crawl / profile-metrics / profile-post-reads / profile-trigger-run / kol-daily-crawl
+wechat-groups-capture / wechat-hourly-sync
+```
+
+锁状态可通过设备池查看：
+
+```powershell
+.\scripts\run.ps1 -Task device-pool-status
+```
+
+`running_leases` 中有数据时，说明手机正在被某个采集任务占用。后续任务会等待：
+
+```text
+DEVICE_LOCK_WAIT_SECONDS
+```
+
+如果等待超时，会失败并保留错误信息；不会并发抢同一台手机。
+
+## 微信群小时级采集
+
+| Key | 当前建议 | 说明 |
+| --- | --- | --- |
+| `WECHAT_DEVICE_SERIAL` | `APH0219701010623` | 固定用于微信群采集的 ADB 设备 |
+| `WECHAT_SYNC_PAGES` | `12` | 每个群每次采集截图页数 |
+| `WECHAT_SYNC_OUT_DIR` | `exports/wechat` | 截图输出目录 |
+| `WECHAT_SYNC_LIMIT` | `0` | 每次最多跑几个群；0 表示不限制 |
+| `WECHAT_SYNC_PARSE_MODE` | `ocr` | 消息解析方式，默认 OCR |
+| `WECHAT_SYNC_CONTEXT_SIZE` | `30` | 增量需求识别带入的历史上下文消息数 |
+| `WECHAT_SCHEDULER_ENABLED` | `false` | 是否启用 scheduler 自动跑微信群同步 |
+| `WECHAT_SCHEDULER_START_TIME` | `08:00` | 工作日开始时间 |
+| `WECHAT_SCHEDULER_END_TIME` | `19:00` | 工作日结束时间，包含这一轮 |
+| `WECHAT_SCHEDULER_INTERVAL_MINUTES` | `60` | 时间窗内触发间隔 |
+| `WECHAT_SCHEDULER_WORKDAYS` | `1,2,3,4,5` | ISO 周几，1=周一，7=周日 |
+
+手动跑完整链路：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-hourly-sync
+```
+
+启用工作日 08:00~19:00 每小时调度：
+
+```powershell
+.\scripts\run.ps1 -Task config `
+  -ConfigSet WECHAT_SCHEDULER_ENABLED=true `
+  -ConfigSet WECHAT_DEVICE_SERIAL=APH0219701010623
+
+.\scripts\run.ps1 -Task scheduler -SchedulerRoles wechat
+```
 
 ## KOL 每日生成和主页采集
 

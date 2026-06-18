@@ -24,6 +24,7 @@ from apps.finance_crawler.crawler_app.storage.profile_metrics import (
     get_profile_targets_for_post_reads,
     update_profile_post_read_metric,
 )
+from apps.finance_crawler.storage.device_pool import acquire_device
 from apps.finance_crawler.utils.device_health import DeviceUnavailable, assert_device_ready
 from apps.finance_crawler.utils.logger import get_logger
 from apps.finance_crawler.workflows.profile_metrics import (
@@ -52,36 +53,42 @@ def crawl_profile_post_reads(
         logger.info("profile post read crawl skipped: no profile targets date=%s", metric_date)
         return []
 
-    try:
-        serial = assert_device_ready()
-    except DeviceUnavailable:
-        reset_device_session()
-        raise
-
     results = []
     consecutive_device_errors = 0
     max_device_errors = _max_consecutive_device_errors()
-    for index, record in enumerate(records, start=1):
-        logger.info(
-            "profile post read crawl %s/%s row=%s account=%s date=%s",
-            index,
-            len(records),
-            record.get("source_locator", {}).get("row_index"),
-            record.get("account_name"),
-            metric_date,
-        )
-        result = _crawl_one_profile(record, metric_date=metric_date, serial=serial)
-        results.append(result)
-        if _is_device_unavailable_error(result.get("error")):
-            consecutive_device_errors += 1
-            if consecutive_device_errors >= max_device_errors:
-                reset_device_session()
-                raise DeviceUnavailable(
-                    "profile post read crawl stopped after %s consecutive device errors: %s"
-                    % (consecutive_device_errors, result.get("error"))
-                )
-        else:
-            consecutive_device_errors = 0
+    with acquire_device(
+        app_type="profile",
+        task_scope="profile:post_reads",
+        task_id=f"{metric_date.isoformat()}:{source_name or 'all'}",
+        worker_id="profile_post_reads",
+    ) as lease:
+        try:
+            serial = assert_device_ready() or lease.adb_serial
+        except DeviceUnavailable:
+            reset_device_session()
+            raise
+
+        for index, record in enumerate(records, start=1):
+            logger.info(
+                "profile post read crawl %s/%s row=%s account=%s date=%s",
+                index,
+                len(records),
+                record.get("source_locator", {}).get("row_index"),
+                record.get("account_name"),
+                metric_date,
+            )
+            result = _crawl_one_profile(record, metric_date=metric_date, serial=serial)
+            results.append(result)
+            if _is_device_unavailable_error(result.get("error")):
+                consecutive_device_errors += 1
+                if consecutive_device_errors >= max_device_errors:
+                    reset_device_session()
+                    raise DeviceUnavailable(
+                        "profile post read crawl stopped after %s consecutive device errors: %s"
+                        % (consecutive_device_errors, result.get("error"))
+                    )
+            else:
+                consecutive_device_errors = 0
     return results
 
 
