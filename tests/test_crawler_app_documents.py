@@ -261,6 +261,7 @@ class CrawlerAppDocumentTests(unittest.TestCase):
                 group_id="wechat-group-id",
                 group_name="创金设计需求响应群",
                 source_key="wechat-group-source-key",
+                customer_code="Chuangjin Hexin",
                 customer_id="customer-id",
                 customer_name="创金",
                 contact_context_config_id="contact-context-id",
@@ -274,7 +275,60 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertEqual(group_candidate.source_chat_name, "创金设计需求响应群")
         self.assertEqual(group_candidate.raw_customer_name, "创金")
         self.assertEqual(group_candidate.raw_owner_name, "Diana")
+        self.assertEqual(group_candidate.matched_customer_code, "Chuangjin Hexin")
         self.assertEqual(group_candidate.matched_customer_id, "customer-id")
+
+    def test_wechat_demand_signal_ignores_group_title_and_mentions(self) -> None:
+        from apps.finance_crawler.crawler_app.workflows.wechat_demand_intake import _extract_demand_signal
+
+        signal = _extract_demand_signal(
+            [
+                "创金设计需求响应群(18)",
+                "Diana",
+                "@崖崖乐",
+                "搜素图上午能出不",
+                "崖崖乐",
+                "可以的",
+            ]
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal["demand_title"], "搜素图上午能出不")
+        self.assertEqual(signal["business_category"], "设计")
+        self.assertEqual(signal["secondary_category"], "配图拓展")
+
+    def test_wechat_ocr_rows_are_split_into_message_evidence(self) -> None:
+        from pathlib import Path
+
+        from apps.finance_crawler.crawler_app.workflows.wechat_demand_intake import _extract_message_evidences
+
+        rows = [
+            {"text": "创金设计需求响应群(18)", "bounds": {"left": 288, "top": 145}},
+            {"text": "昨天上午9:09", "bounds": {"left": 441, "top": 302}},
+            {"text": "Diana", "bounds": {"left": 172, "top": 409}},
+            {"text": "@崖崖乐", "bounds": {"left": 205, "top": 482}},
+            {"text": "搜素图上午能出不", "bounds": {"left": 411, "top": 484}},
+            {"text": "昨天上午9:29", "bounds": {"left": 441, "top": 643}},
+            {"text": "崖崖乐", "bounds": {"left": 175, "top": 748}},
+            {"text": "可以的", "bounds": {"left": 202, "top": 820}},
+        ]
+
+        evidences = _extract_message_evidences(
+            rows,
+            screenshot_path=Path("001.png"),
+            target_date_text="2026-06-17",
+            observation_key="obs-key",
+            screen_index=0,
+        )
+
+        self.assertEqual(len(evidences), 2)
+        self.assertEqual(evidences[0].display_time_text, "09:09")
+        self.assertEqual(evidences[0].sender_name, "Diana")
+        self.assertEqual(evidences[0].message_text, "@崖崖乐\n搜素图上午能出不")
+        self.assertEqual(evidences[1].display_time_text, "09:29")
+        self.assertEqual(evidences[1].sender_name, "崖崖乐")
+        self.assertEqual(evidences[1].message_text, "可以的")
 
     def test_profile_metric_observation_rows_extract_field_evidence(self) -> None:
         rows = build_profile_metric_observations(

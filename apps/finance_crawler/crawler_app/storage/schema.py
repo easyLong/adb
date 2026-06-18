@@ -688,16 +688,21 @@ def _ensure_wechat_demand_intake_tables(cursor) -> None:
         """
         CREATE TABLE IF NOT EXISTS wechat_message_observations (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            message_fingerprint CHAR(64) NULL,
             run_id BIGINT UNSIGNED NOT NULL,
             chat_id BIGINT UNSIGNED NULL,
+            source_key CHAR(64) NULL,
+            source_name VARCHAR(255) NULL,
             screen_index INT NOT NULL DEFAULT 0,
             bubble_index INT NOT NULL DEFAULT 0,
+            message_order INT NOT NULL DEFAULT 0,
             message_date DATE NULL,
             display_time_text VARCHAR(64) NULL,
             inferred_message_time DATETIME NULL,
             sender_name VARCHAR(255) NULL,
             message_type VARCHAR(32) NOT NULL DEFAULT 'text',
             message_text LONGTEXT NULL,
+            normalized_message_text VARCHAR(700) NULL,
             attachment_name VARCHAR(255) NULL,
             attachment_size_text VARCHAR(64) NULL,
             screenshot_path VARCHAR(700) NULL,
@@ -705,9 +710,17 @@ def _ensure_wechat_demand_intake_tables(cursor) -> None:
             raw_json LONGTEXT NULL,
             confidence DECIMAL(5,4) NULL,
             observation_key CHAR(64) NOT NULL,
+            parser_type VARCHAR(32) NULL,
+            parse_run_id BIGINT UNSIGNED NULL,
+            first_seen_run_id BIGINT UNSIGNED NULL,
+            latest_seen_run_id BIGINT UNSIGNED NULL,
             status VARCHAR(32) NOT NULL DEFAULT 'active',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_wechat_observation_key (observation_key),
+            UNIQUE KEY uk_wechat_message_fingerprint (message_fingerprint),
+            INDEX idx_wechat_obs_source_date_status (source_key, message_date, status, inferred_message_time),
+            INDEX idx_wechat_obs_source_name_date_status (source_name, message_date, status, inferred_message_time),
             INDEX idx_wechat_obs_chat_time (chat_id, inferred_message_time),
             INDEX idx_wechat_obs_chat_date (chat_id, message_date),
             INDEX idx_wechat_obs_run_order (run_id, screen_index, bubble_index),
@@ -717,6 +730,120 @@ def _ensure_wechat_demand_intake_tables(cursor) -> None:
         """
     )
     _modify_column(cursor, "wechat_message_observations", "chat_id", "BIGINT UNSIGNED NULL")
+    _add_column_if_missing(cursor, "wechat_message_observations", "message_fingerprint", "CHAR(64) NULL")
+    _add_column_if_missing(cursor, "wechat_message_observations", "source_key", "CHAR(64) NULL")
+    _add_column_if_missing(cursor, "wechat_message_observations", "source_name", "VARCHAR(255) NULL")
+    _add_column_if_missing(cursor, "wechat_message_observations", "message_order", "INT NOT NULL DEFAULT 0")
+    _add_column_if_missing(cursor, "wechat_message_observations", "normalized_message_text", "VARCHAR(700) NULL")
+    _add_column_if_missing(cursor, "wechat_message_observations", "parser_type", "VARCHAR(32) NULL")
+    _add_column_if_missing(cursor, "wechat_message_observations", "parse_run_id", "BIGINT UNSIGNED NULL")
+    _add_column_if_missing(cursor, "wechat_message_observations", "first_seen_run_id", "BIGINT UNSIGNED NULL")
+    _add_column_if_missing(cursor, "wechat_message_observations", "latest_seen_run_id", "BIGINT UNSIGNED NULL")
+    _add_column_if_missing(
+        cursor,
+        "wechat_message_observations",
+        "updated_at",
+        "DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+    )
+    _add_unique_index_if_missing(
+        cursor,
+        "wechat_message_observations",
+        "uk_wechat_message_fingerprint",
+        "message_fingerprint",
+    )
+    _add_index_if_missing(
+        cursor,
+        "wechat_message_observations",
+        "idx_wechat_obs_source_date_status",
+        "source_key, message_date, status, inferred_message_time",
+    )
+    _add_index_if_missing(
+        cursor,
+        "wechat_message_observations",
+        "idx_wechat_obs_source_name_date_status",
+        "source_name, message_date, status, inferred_message_time",
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wechat_ocr_observations (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            run_id BIGINT UNSIGNED NOT NULL,
+            source_key CHAR(64) NULL,
+            source_name VARCHAR(255) NULL,
+            screen_index INT NOT NULL DEFAULT 0,
+            line_index INT NOT NULL DEFAULT 0,
+            message_date DATE NULL,
+            screenshot_path VARCHAR(700) NULL,
+            ocr_text TEXT NULL,
+            bbox_json LONGTEXT NULL,
+            raw_json LONGTEXT NULL,
+            confidence DECIMAL(5,4) NULL,
+            observation_key CHAR(64) NOT NULL,
+            parser_type VARCHAR(32) NOT NULL DEFAULT 'ocr',
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_wechat_ocr_observation_key (observation_key),
+            INDEX idx_wechat_ocr_run_screen (run_id, screen_index, line_index),
+            INDEX idx_wechat_ocr_source_date (source_key, message_date),
+            INDEX idx_wechat_ocr_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _add_column_if_missing(cursor, "wechat_ocr_observations", "source_key", "CHAR(64) NULL")
+    _add_column_if_missing(cursor, "wechat_ocr_observations", "source_name", "VARCHAR(255) NULL")
+    _add_index_if_missing(cursor, "wechat_ocr_observations", "idx_wechat_ocr_source_date", "source_key, message_date")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wechat_demand_intake_offsets (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            source_key CHAR(64) NOT NULL,
+            source_name VARCHAR(255) NULL,
+            last_observation_id BIGINT UNSIGNED NULL,
+            last_message_time DATETIME NULL,
+            last_intake_run_at DATETIME NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            meta_json LONGTEXT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_wechat_intake_offset_source (source_key),
+            INDEX idx_wechat_intake_offset_status (status),
+            INDEX idx_wechat_intake_offset_seen (last_intake_run_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _add_column_if_missing(cursor, "wechat_demand_intake_offsets", "source_name", "VARCHAR(255) NULL")
+    _add_column_if_missing(cursor, "wechat_demand_intake_offsets", "last_observation_id", "BIGINT UNSIGNED NULL")
+    _add_column_if_missing(cursor, "wechat_demand_intake_offsets", "last_message_time", "DATETIME NULL")
+    _add_column_if_missing(cursor, "wechat_demand_intake_offsets", "last_intake_run_at", "DATETIME NULL")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wechat_demand_intake_runs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            run_key CHAR(64) NOT NULL,
+            source_key CHAR(64) NOT NULL,
+            source_name VARCHAR(255) NULL,
+            from_observation_id BIGINT UNSIGNED NULL,
+            to_observation_id BIGINT UNSIGNED NULL,
+            context_count INT NOT NULL DEFAULT 0,
+            new_message_count INT NOT NULL DEFAULT 0,
+            candidate_count INT NOT NULL DEFAULT 0,
+            model_name VARCHAR(128) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'running',
+            error TEXT NULL,
+            raw_model_json LONGTEXT NULL,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_wechat_intake_run_key (run_key),
+            INDEX idx_wechat_intake_run_source (source_key, started_at),
+            INDEX idx_wechat_intake_run_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _add_column_if_missing(cursor, "wechat_demand_intake_runs", "raw_model_json", "LONGTEXT NULL")
+    _add_index_if_missing(cursor, "wechat_demand_intake_runs", "idx_wechat_intake_run_source", "source_key, started_at")
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS demand_intake_runs (

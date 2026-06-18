@@ -58,6 +58,7 @@ class OpsDemandCandidate:
     confidence: float | None = None
     status: str = "pending"
     match_suggestion: str | None = None
+    matched_customer_code: str | None = None
     matched_customer_id: str | None = None
     matched_contact_context_id: str | None = None
     matched_business_platform: str | None = None
@@ -91,8 +92,9 @@ class OpsWechatGroupConfig:
     group_id: str | None
     group_name: str
     source_key: str
-    customer_id: str
+    customer_code: str
     customer_name: str
+    customer_id: str | None = None
     contact_context_config_id: str | None = None
     contact_name: str | None = None
     business_platform: str | None = None
@@ -157,96 +159,6 @@ def init_ops_platform_intake_tables() -> None:
 def ensure_ops_platform_intake_tables(cursor) -> None:
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS wechat_group_configs (
-            id CHAR(36) NOT NULL,
-            group_id VARCHAR(128) NULL,
-            group_name VARCHAR(255) NOT NULL,
-            source_key CHAR(64) NOT NULL,
-            customer_id CHAR(36) NOT NULL,
-            contact_context_config_id CHAR(36) NULL,
-            business_platform VARCHAR(64) NULL,
-            status VARCHAR(32) NOT NULL DEFAULT 'active',
-            collect_enabled TINYINT(1) NOT NULL DEFAULT 1,
-            sort_order INT NOT NULL DEFAULT 100,
-            remark VARCHAR(255) NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            deleted_at DATETIME NULL,
-            PRIMARY KEY (id),
-            UNIQUE KEY uk_wechat_group_source (source_key),
-            UNIQUE KEY uk_wechat_group_id (group_id),
-            KEY idx_wechat_group_customer (customer_id),
-            KEY idx_wechat_group_contact (contact_context_config_id),
-            KEY idx_wechat_group_status_order (status, collect_enabled, sort_order)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        """
-    )
-    _add_column_if_missing(cursor, "wechat_group_configs", "source_key", "CHAR(64) NULL")
-    _backfill_wechat_group_source_key(cursor)
-    _modify_column(cursor, "wechat_group_configs", "source_key", "CHAR(64) NOT NULL")
-    _add_column_if_missing(cursor, "wechat_group_configs", "collect_enabled", "TINYINT(1) NOT NULL DEFAULT 1")
-    _add_column_if_missing(cursor, "wechat_group_configs", "sort_order", "INT NOT NULL DEFAULT 100")
-    _add_column_if_missing(cursor, "wechat_group_configs", "contact_context_config_id", "CHAR(36) NULL")
-    _add_column_if_missing(cursor, "wechat_group_configs", "business_platform", "VARCHAR(64) NULL")
-    _add_unique_index_if_missing(cursor, "wechat_group_configs", "uk_wechat_group_source", "source_key")
-    _add_unique_index_if_missing(cursor, "wechat_group_configs", "uk_wechat_group_id", "group_id")
-    _add_index_if_missing(cursor, "wechat_group_configs", "idx_wechat_group_customer", "customer_id")
-    _add_index_if_missing(cursor, "wechat_group_configs", "idx_wechat_group_contact", "contact_context_config_id")
-    _add_index_if_missing(
-        cursor,
-        "wechat_group_configs",
-        "idx_wechat_group_status_order",
-        "status, collect_enabled, sort_order",
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS source_contact_contexts (
-            id CHAR(36) NOT NULL,
-            source_app VARCHAR(32) NOT NULL DEFAULT 'crawler',
-            source_type VARCHAR(32) NOT NULL,
-            source_key CHAR(64) NOT NULL,
-            source_name VARCHAR(255) NOT NULL,
-            external_source_id VARCHAR(128) NULL,
-            contact_context_config_id CHAR(36) NOT NULL,
-            status VARCHAR(32) NOT NULL DEFAULT 'active',
-            is_primary TINYINT(1) NOT NULL DEFAULT 1,
-            priority INT NOT NULL DEFAULT 100,
-            match_method VARCHAR(32) NULL,
-            remark VARCHAR(255) NULL,
-            first_seen_at DATETIME NULL,
-            last_seen_at DATETIME NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            deleted_at DATETIME NULL,
-            PRIMARY KEY (id),
-            UNIQUE KEY uk_source_contact_context_config (source_app, source_type, source_key, contact_context_config_id),
-            KEY idx_source_contact_source (source_app, source_type, source_key),
-            KEY idx_source_contact_name (source_name),
-            KEY idx_source_contact_config (contact_context_config_id),
-            KEY idx_source_contact_status (status),
-            KEY idx_source_contact_priority (source_app, source_type, source_key, status, is_primary, priority)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        """
-    )
-    _add_column_if_missing(cursor, "source_contact_contexts", "is_primary", "TINYINT(1) NOT NULL DEFAULT 1")
-    _add_column_if_missing(cursor, "source_contact_contexts", "priority", "INT NOT NULL DEFAULT 100")
-    _drop_index_if_exists(cursor, "source_contact_contexts", "uk_source_contact_context")
-    _add_unique_index_if_missing(
-        cursor,
-        "source_contact_contexts",
-        "uk_source_contact_context_config",
-        "source_app, source_type, source_key, contact_context_config_id",
-    )
-    _add_index_if_missing(cursor, "source_contact_contexts", "idx_source_contact_source", "source_app, source_type, source_key")
-    _add_index_if_missing(
-        cursor,
-        "source_contact_contexts",
-        "idx_source_contact_priority",
-        "source_app, source_type, source_key, status, is_primary, priority",
-    )
-    _migrate_source_contexts_to_wechat_group_configs(cursor)
-    cursor.execute(
-        """
         CREATE TABLE IF NOT EXISTS demand_intake_candidates (
             id CHAR(36) NOT NULL,
             source_app VARCHAR(32) NOT NULL DEFAULT 'crawler',
@@ -269,6 +181,7 @@ def ensure_ops_platform_intake_tables(cursor) -> None:
             confidence DECIMAL(8,4) NULL,
             status VARCHAR(32) NOT NULL DEFAULT 'pending',
             match_suggestion TEXT NULL,
+            matched_customer_code VARCHAR(32) NULL,
             matched_customer_id CHAR(36) NULL,
             matched_contact_context_id CHAR(36) NULL,
             matched_business_platform VARCHAR(64) NULL,
@@ -294,6 +207,7 @@ def ensure_ops_platform_intake_tables(cursor) -> None:
     _add_column_if_missing(cursor, "demand_intake_candidates", "demand_content", "LONGTEXT NULL")
     _add_column_if_missing(cursor, "demand_intake_candidates", "external_capture_run_id", "VARCHAR(64) NULL")
     _add_column_if_missing(cursor, "demand_intake_candidates", "external_source_key", "CHAR(64) NULL")
+    _add_column_if_missing(cursor, "demand_intake_candidates", "matched_customer_code", "VARCHAR(32) NULL")
     _add_index_if_missing(cursor, "demand_intake_candidates", "idx_demand_intake_capture", "source_app, external_capture_run_id")
     _add_index_if_missing(cursor, "demand_intake_candidates", "idx_demand_intake_source_key", "source_app, external_source_key")
     cursor.execute(
@@ -333,7 +247,8 @@ def upsert_ops_demand_candidate(conn, candidate: OpsDemandCandidate) -> str:
 
     with conn.cursor() as cursor:
         candidate_id = _upsert_candidate(cursor, candidate)
-        _upsert_evidences(cursor, candidate_id, candidate.evidences)
+        if not _candidate_review_locked(cursor, candidate_id):
+            _replace_evidences(cursor, candidate_id, candidate.evidences)
     return candidate_id
 
 
@@ -535,29 +450,34 @@ def list_wechat_group_configs(
         cursor.execute(
             """
             SELECT
-                group_config.id,
-                group_config.group_id,
-                group_config.group_name,
-                group_config.source_key,
-                group_config.customer_id,
+                MIN(mapping.id) AS id,
+                mapping.group_key AS group_id,
+                mapping.group_name,
+                mapping.group_key AS source_key,
+                customer.id AS customer_id,
+                mapping.customer_code,
                 customer.customer_name,
-                group_config.contact_context_config_id,
-                context.contact_name,
-                COALESCE(group_config.business_platform, context.business_platform) AS business_platform,
-                group_config.status,
-                group_config.collect_enabled,
-                group_config.sort_order
-            FROM wechat_group_configs group_config
+                MIN(mapping.id) AS contact_context_config_id,
+                GROUP_CONCAT(mapping.contact_name ORDER BY mapping.contact_name SEPARATOR ',') AS contact_name,
+                mapping.business_platform,
+                'active' AS status,
+                1 AS collect_enabled,
+                100 AS sort_order
+            FROM group_contact_mappings mapping
             JOIN customers customer
-              ON customer.id = group_config.customer_id
+              ON customer.customer_code = mapping.customer_code
              AND customer.deleted_at IS NULL
-            LEFT JOIN contact_context_configs context
-              ON context.id = group_config.contact_context_config_id
-             AND context.deleted_at IS NULL
-            WHERE group_config.status = %s
-              AND group_config.collect_enabled = %s
-              AND group_config.deleted_at IS NULL
-            ORDER BY group_config.sort_order ASC, group_config.updated_at DESC
+            WHERE mapping.status = %s
+              AND mapping.collect_enabled = %s
+              AND mapping.deleted_at IS NULL
+            GROUP BY
+                mapping.group_key,
+                mapping.group_name,
+                customer.id,
+                mapping.customer_code,
+                customer.customer_name,
+                mapping.business_platform
+            ORDER BY mapping.group_name ASC, customer.customer_name ASC, mapping.business_platform ASC
             """,
             (status, 1 if collect_enabled else 0),
         )
@@ -587,28 +507,34 @@ def get_wechat_group_config_by_name(
         cursor.execute(
             """
             SELECT
-                group_config.id,
-                group_config.group_id,
-                group_config.group_name,
-                group_config.source_key,
-                group_config.customer_id,
+                MIN(mapping.id) AS id,
+                mapping.group_key AS group_id,
+                mapping.group_name,
+                mapping.group_key AS source_key,
+                customer.id AS customer_id,
+                mapping.customer_code,
                 customer.customer_name,
-                group_config.contact_context_config_id,
-                context.contact_name,
-                COALESCE(group_config.business_platform, context.business_platform) AS business_platform,
-                group_config.status,
-                group_config.collect_enabled,
-                group_config.sort_order
-            FROM wechat_group_configs group_config
+                MIN(mapping.id) AS contact_context_config_id,
+                GROUP_CONCAT(mapping.contact_name ORDER BY mapping.contact_name SEPARATOR ',') AS contact_name,
+                mapping.business_platform,
+                'active' AS status,
+                1 AS collect_enabled,
+                100 AS sort_order
+            FROM group_contact_mappings mapping
             JOIN customers customer
-              ON customer.id = group_config.customer_id
+              ON customer.customer_code = mapping.customer_code
              AND customer.deleted_at IS NULL
-            LEFT JOIN contact_context_configs context
-              ON context.id = group_config.contact_context_config_id
-             AND context.deleted_at IS NULL
-            WHERE group_config.group_name = %s
-              AND group_config.status = %s
-              AND group_config.deleted_at IS NULL
+            WHERE mapping.group_name = %s
+              AND mapping.status = %s
+              AND mapping.collect_enabled = 1
+              AND mapping.deleted_at IS NULL
+            GROUP BY
+                mapping.group_key,
+                mapping.group_name,
+                customer.id,
+                mapping.customer_code,
+                customer.customer_name,
+                mapping.business_platform
             LIMIT 1
             """,
             (group_name, status),
@@ -631,11 +557,12 @@ def candidate_with_wechat_group_config(
         raw_customer_name=candidate.raw_customer_name or group_config.customer_name,
         raw_owner_name=candidate.raw_owner_name or group_config.contact_name,
         raw_business_platform=candidate.raw_business_platform or group_config.business_platform,
+        matched_customer_code=group_config.customer_code,
         matched_customer_id=group_config.customer_id,
         matched_contact_context_id=group_config.contact_context_config_id,
         matched_business_platform=group_config.business_platform,
         match_confidence=candidate.match_confidence if candidate.match_confidence is not None else 1.0,
-        match_reason=candidate.match_reason or "wechat_group_configs metadata",
+        match_reason=candidate.match_reason or "group_contact_mappings metadata",
     )
 
 
@@ -667,7 +594,7 @@ def _upsert_candidate(cursor, candidate: OpsDemandCandidate) -> str:
             source_chat_name, raw_customer_name, raw_owner_name, raw_business_platform,
             business_category, secondary_category, tertiary_category, start_time, deadline,
             business_name, demand_title, demand_content, confidence, status,
-            match_suggestion, matched_customer_id, matched_contact_context_id,
+            match_suggestion, matched_customer_code, matched_customer_id, matched_contact_context_id,
             matched_business_platform, match_confidence, match_reason, created_at
         )
         VALUES (
@@ -676,7 +603,7 @@ def _upsert_candidate(cursor, candidate: OpsDemandCandidate) -> str:
             %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
-            %s, %s, %s,
+            %s, %s, %s, %s,
             %s, %s, %s, COALESCE(%s, NOW())
         )
         ON DUPLICATE KEY UPDATE
@@ -698,6 +625,7 @@ def _upsert_candidate(cursor, candidate: OpsDemandCandidate) -> str:
             confidence = IF(status IN ('confirmed', 'rejected'), confidence, VALUES(confidence)),
             status = IF(status IN ('confirmed', 'rejected'), status, VALUES(status)),
             match_suggestion = IF(status IN ('confirmed', 'rejected'), match_suggestion, VALUES(match_suggestion)),
+            matched_customer_code = IF(status IN ('confirmed', 'rejected'), matched_customer_code, VALUES(matched_customer_code)),
             matched_customer_id = IF(status IN ('confirmed', 'rejected'), matched_customer_id, VALUES(matched_customer_id)),
             matched_contact_context_id = IF(status IN ('confirmed', 'rejected'), matched_contact_context_id, VALUES(matched_contact_context_id)),
             matched_business_platform = IF(status IN ('confirmed', 'rejected'), matched_business_platform, VALUES(matched_business_platform)),
@@ -727,6 +655,7 @@ def _upsert_candidate(cursor, candidate: OpsDemandCandidate) -> str:
             candidate.confidence,
             candidate.status or "pending",
             candidate.match_suggestion,
+            candidate.matched_customer_code,
             candidate.matched_customer_id,
             candidate.matched_contact_context_id,
             candidate.matched_business_platform,
@@ -790,73 +719,32 @@ def _upsert_evidences(cursor, candidate_id: str, evidences: list[OpsDemandEviden
     return count
 
 
+def _replace_evidences(cursor, candidate_id: str, evidences: list[OpsDemandEvidence]) -> int:
+    cursor.execute("DELETE FROM demand_candidate_evidence WHERE candidate_id = %s", (candidate_id,))
+    return _upsert_evidences(cursor, candidate_id, evidences)
+
+
+def _candidate_review_locked(cursor, candidate_id: str) -> bool:
+    cursor.execute("SELECT status FROM demand_intake_candidates WHERE id = %s LIMIT 1", (candidate_id,))
+    row = cursor.fetchone()
+    return str((row or {}).get("status") or "").lower() in {"confirmed", "rejected"}
+
+
 def _wechat_group_config_from_row(row: dict[str, Any]) -> OpsWechatGroupConfig:
     return OpsWechatGroupConfig(
         id=str(row["id"]),
         group_id=row.get("group_id"),
         group_name=str(row["group_name"]),
         source_key=str(row["source_key"]),
-        customer_id=str(row["customer_id"]),
+        customer_code=str(row["customer_code"]),
         customer_name=str(row["customer_name"]),
+        customer_id=str(row["customer_id"]) if row.get("customer_id") else None,
         contact_context_config_id=row.get("contact_context_config_id"),
         contact_name=row.get("contact_name"),
         business_platform=row.get("business_platform"),
         status=str(row.get("status") or "active"),
         collect_enabled=bool(row.get("collect_enabled")),
         sort_order=int(row.get("sort_order") or 100),
-    )
-
-
-def _backfill_wechat_group_source_key(cursor) -> None:
-    cursor.execute(
-        """
-        SELECT id, group_id, group_name
-        FROM wechat_group_configs
-        WHERE source_key IS NULL OR source_key = ''
-        """
-    )
-    for row in cursor.fetchall():
-        source_key = make_source_key("wechat_group", str(row["group_name"]), row.get("group_id"))
-        cursor.execute(
-            """
-            UPDATE wechat_group_configs
-            SET source_key = %s
-            WHERE id = %s
-            """,
-            (source_key, row["id"]),
-        )
-
-
-def _migrate_source_contexts_to_wechat_group_configs(cursor) -> None:
-    if not _table_exists(cursor, "source_contact_contexts"):
-        return
-    cursor.execute(
-        """
-        INSERT IGNORE INTO wechat_group_configs (
-            id, group_id, group_name, source_key, customer_id,
-            contact_context_config_id, business_platform, status,
-            collect_enabled, sort_order, remark
-        )
-        SELECT
-            UUID(),
-            source.external_source_id,
-            source.source_name,
-            source.source_key,
-            context.customer_id,
-            source.contact_context_config_id,
-            context.business_platform,
-            'active',
-            1,
-            COALESCE(source.priority, 100),
-            'migrated from source_contact_contexts'
-        FROM source_contact_contexts source
-        JOIN contact_context_configs context
-          ON context.id = source.contact_context_config_id
-         AND context.deleted_at IS NULL
-        WHERE source.source_type = 'wechat_group'
-          AND source.status = 'active'
-          AND source.deleted_at IS NULL
-        """
     )
 
 
@@ -905,20 +793,6 @@ def _column_exists(cursor, table_name: str, column_name: str) -> bool:
           AND column_name = %s
         """,
         (table_name, column_name),
-    )
-    row: dict[str, Any] | None = cursor.fetchone()
-    return bool(row and int(row.get("count", 0)) > 0)
-
-
-def _table_exists(cursor, table_name: str) -> bool:
-    cursor.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM information_schema.tables
-        WHERE table_schema = DATABASE()
-          AND table_name = %s
-        """,
-        (table_name,),
     )
     row: dict[str, Any] | None = cursor.fetchone()
     return bool(row and int(row.get("count", 0)) > 0)

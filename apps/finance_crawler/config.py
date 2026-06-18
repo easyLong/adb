@@ -16,7 +16,7 @@ _PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 
 def _load_project_dotenv() -> None:
-    """Load only MySQL connection settings from the project root .env file."""
+    """Load project runtime settings from the project root .env file."""
 
     path = _PROJECT_DIR / ".env"
     if not path.exists():
@@ -27,7 +27,7 @@ def _load_project_dotenv() -> None:
             continue
         key, value = line.split("=", 1)
         key = key.strip().lstrip("\ufeff")
-        if not key.startswith("MYSQL_"):
+        if not key.startswith(("MYSQL_", "OPENAI_")):
             continue
         if key in os.environ:
             continue
@@ -78,6 +78,13 @@ class Config:
     CRAWLER_APP_DB_NAME = _env("MYSQL_APP_DATABASE", _env("CRAWLER_APP_DATABASE", DB_NAME))
     OPS_PLATFORM_DB_NAME = _env("MYSQL_OPS_DATABASE", _env("OPS_PLATFORM_DATABASE", "ops_platform"))
     DB_CONNECT_TIMEOUT = _env_int("MYSQL_CONNECT_TIMEOUT", 10)
+
+    # OpenAI-compatible chat/vision endpoint used by model-assisted parsers.
+    OPENAI_API_KEY = _env("OPENAI_API_KEY", "")
+    OPENAI_BASE_URL = _env("OPENAI_BASE_URL", "")
+    OPENAI_MODEL = _env("OPENAI_MODEL", "")
+    OPENAI_TIMEOUT_SECONDS = _env_int("OPENAI_TIMEOUT_SECONDS", 90)
+    OPENAI_MAX_TOKENS = _env_int("OPENAI_MAX_TOKENS", 3000)
 
     # Tencent Docs OpenAPI
     QQ_DOC_URL = _env("TENCENT_DOC_URL")

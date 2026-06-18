@@ -42,7 +42,7 @@ class Point:
 class Coords:
     search_button: Point = Point(900, 170)
     search_input: Point = Point(260, 170)
-    first_search_result: Point = Point(430, 320)
+    first_search_result: Point = Point(430, 430)
     group_more: Point = Point(1000, 170)
     chat_record_search: Point = Point(260, 2035)
     date_filter: Point = Point(540, 515)
@@ -115,17 +115,24 @@ def select_device_serial(requested: str | None) -> str | None:
     if requested:
         return requested
     completed = adb(None, "devices", "-l", timeout=10)
-    lines = [line for line in completed.stdout.splitlines() if "\tdevice" in line]
-    if len(lines) == 1:
-        return lines[0].split()[0]
-    if not lines:
+    devices = []
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            devices.append(parts[0])
+    if len(devices) == 1:
+        return devices[0]
+    if not devices:
         raise StepError("no adb device is ready")
-    raise StepError("multiple adb devices found; pass -Serial. devices=%s" % ", ".join(line.split()[0] for line in lines))
+    raise StepError("multiple adb devices found; pass -Serial. devices=%s" % ", ".join(devices))
 
 
-def ensure_wechat(serial: str | None) -> None:
+def ensure_wechat(serial: str | None, *, reset: bool) -> None:
+    if reset:
+        shell(serial, f"am force-stop {WECHAT_PACKAGE}", timeout=10, check=False)
+        time.sleep(0.8)
     adb(serial, "shell", "monkey", "-p", WECHAT_PACKAGE, "-c", "android.intent.category.LAUNCHER", "1", timeout=10)
-    time.sleep(1.2)
+    time.sleep(3.5 if reset else 1.2)
 
 
 def safe_name(value: str) -> str:
@@ -145,16 +152,21 @@ def connect_u2(serial: str | None):
 def send_text(serial: str | None, text: str) -> None:
     device = connect_u2(serial)
     try:
-        device.set_fastinput_ime(True)
-        time.sleep(0.3)
-        device.send_keys(text, clear=True)
-    except Exception as exc:
-        raise StepError("failed to input text through uiautomator2: %s" % exc) from exc
-    finally:
+        device.set_clipboard(text)
+        time.sleep(0.2)
+        shell(serial, "input keyevent 279", timeout=10)
+    except Exception:
         try:
-            device.set_fastinput_ime(False)
-        except Exception:
-            pass
+            device.set_fastinput_ime(True)
+            time.sleep(0.3)
+            device.send_keys(text, clear=True)
+        except Exception as exc:
+            raise StepError("failed to input text through uiautomator2: %s" % exc) from exc
+        finally:
+            try:
+                device.set_fastinput_ime(False)
+            except Exception:
+                pass
     time.sleep(0.8)
 
 
@@ -201,6 +213,39 @@ def take_screenshot(serial: str | None, local_path: Path, remote_name: str, *, k
         shell(serial, f"rm -f {remote_path}", timeout=10, check=False)
 
 
+def is_probably_date_picker(path: Path) -> bool:
+    try:
+        from PIL import Image  # type: ignore
+    except Exception:
+        return False
+    img = Image.open(path).convert("RGB")
+    width, height = img.size
+    crop = img.crop((0, int(height * 0.085), width, int(height * 0.81)))
+    data = crop.tobytes()
+    total = len(data) // 3
+    if total <= 0:
+        return False
+    white_count = 0
+    dark_count = 0
+    for index in range(0, len(data), 3):
+        r, g, b = data[index], data[index + 1], data[index + 2]
+        if r > 245 and g > 245 and b > 245:
+            white_count += 1
+        if r < 80 and g < 80 and b < 80:
+            dark_count += 1
+    white = white_count / total
+    dark = dark_count / total
+    return white > 0.9 and dark < 0.005
+
+
+def ensure_date_result_opened(serial: str | None, out_dir: Path, *, keep_remote: bool) -> None:
+    check_path = out_dir / "_date_check.png"
+    take_screenshot(serial, check_path, "_date_check.png", keep_remote=keep_remote)
+    if is_probably_date_picker(check_path):
+        raise StepError("selected date did not open chat records; still on date picker")
+    check_path.unlink(missing_ok=True)
+
+
 def capture_pages(serial: str | None, out_dir: Path, pages: int, *, keep_remote: bool) -> list[Path]:
     screenshots: list[Path] = []
     first = out_dir / "000_start.png"
@@ -212,6 +257,13 @@ def capture_pages(serial: str | None, out_dir: Path, pages: int, *, keep_remote:
         take_screenshot(serial, path, f"{index:03d}.png", keep_remote=keep_remote)
         screenshots.append(path)
     return screenshots
+
+
+def prepare_output_dir(out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for pattern in ("*.png", "manifest.json", "timeline.md"):
+        for path in out_dir.glob(pattern):
+            path.unlink(missing_ok=True)
 
 
 def write_manifest(out_dir: Path, args: argparse.Namespace, serial: str | None, screenshots: list[Path]) -> None:
@@ -228,6 +280,36 @@ def write_manifest(out_dir: Path, args: argparse.Namespace, serial: str | None, 
         ],
     }
     (out_dir / "manifest.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_timeline_template(out_dir: Path, args: argparse.Namespace, screenshots: list[Path]) -> None:
+    lines = [
+        f"# 微信聊天记录整理：{args.group_name} / {args.date}",
+        "",
+        "## 截图清单",
+        "",
+    ]
+    lines.extend(f"- `{path.name}`" for path in screenshots)
+    lines.extend(
+        [
+            "",
+            "## 时间线",
+            "",
+            "| 时间 | 人物 | 发言/动作 | 来源截图 |",
+            "| --- | --- | --- | --- |",
+            "|  |  |  |  |",
+            "",
+            "## 摘要",
+            "",
+            "- ",
+            "",
+            "## 使用说明",
+            "",
+            "微信在部分安卓设备上不暴露聊天文本节点，本脚本先稳定采集日期定位后的连续截图。",
+            "后续可以基于这些截图人工整理，或接入 OCR 后自动填充上面的时间线表格。",
+        ]
+    )
+    (out_dir / "timeline.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def write_timeline_template(out_dir: Path, args: argparse.Namespace, screenshots: list[Path]) -> None:
@@ -278,21 +360,24 @@ def main(argv: list[str]) -> int:
     target = date.fromisoformat(args.date)
     serial = select_device_serial(args.serial or None)
     out_dir = Path(args.out_dir) / safe_name(args.group_name) / target.isoformat()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_dir(out_dir)
 
     print(f"device: {serial or '<default>'}")
     print(f"output: {out_dir}")
 
     if not args.skip_navigation:
-        ensure_wechat(serial)
         if not args.no_search:
+            ensure_wechat(serial, reset=True)
             print("search group...")
             search_and_open_group(serial, args.group_name)
+        else:
+            ensure_wechat(serial, reset=False)
         print("open chat record date search...")
         open_date_search(serial)
         print("select visible date...")
         select_visible_date(serial, target)
         time.sleep(1.0)
+        ensure_date_result_opened(serial, out_dir, keep_remote=bool(args.keep_on_device))
     else:
         print("skip navigation; capture current WeChat screen")
 

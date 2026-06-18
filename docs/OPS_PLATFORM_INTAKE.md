@@ -1,156 +1,381 @@
 # ops_platform 需求采集接入链路
 
-## 简化后的生产边界
+本文记录 ADB 项目从微信群持续采集消息、识别需求候选，并写入 `ops_platform` 的当前生产链路。
 
-ops_platform 负责维护业务主数据和 AI 候选结果，ADB 只负责采集与写入候选。
-
-主链路：
-
-1. ADB 从 `ops_platform.wechat_group_configs` 读取启用的微信群配置。
-2. ADB 按 `sort_order` 顺序打开群，采集聊天记录和截图证据。
-3. AI 根据聊天记录识别候选需求，并参考 `business_category_secondary_categories` 做业务大类/二级分类适配。
-4. ADB 将候选需求写入 `ops_platform.demand_intake_candidates`，将原始聊天证据写入 `ops_platform.demand_candidate_evidence`。
-5. 管理端人工确认后，再生成正式 `requirements`、`requirement_items`、`tasks`。
-
-ADB 不直接写正式需求表。
-
-## 元数据表
-
-### `wechat_group_configs`
-
-微信群采集配置表，是 ADB 的入口清单。
-
-核心字段：
+## 当前主链路
 
 ```text
-group_id                   群 ID，可为空
-group_name                 群名称
-source_key                 稳定来源 key，由 group_id 或 group_name 生成
-customer_id                基金/客户 ID，指向 customers.id
-contact_context_config_id  对接人上下文，可为空，指向 contact_context_configs.id
-business_platform          平台，可为空；为空时优先使用 contact_context_configs.business_platform
-status                     active / inactive
-collect_enabled            是否参与自动采集
-sort_order                 采集顺序
+ops_platform 群配置
+-> ADB 打开微信群并按日期/页面采集截图
+-> OCR 原始文本入库
+-> 规则切分为稳定群消息
+-> 增量模型识别新需求
+-> 写入 ops_platform 候选需求和证据链
+-> 管理端人工审核后进入正式需求
 ```
 
-### `customers`
+关键原则：
 
-基金详情表。当前项目里基金主数据复用 `customers`。
-
-### `business_category_secondary_categories`
-
-业务大类与二级分类映射表。AI 识别需求时应优先从这里读取合法分类关系。
-
-## ADB 读取方式
-
-```python
-from apps.finance_crawler.crawler_app.storage.ops_platform import (
-    list_wechat_group_configs_once,
-)
-
-groups = list_wechat_group_configs_once()
-for group in groups:
-    print(group.group_name, group.customer_name, group.contact_name, group.business_platform)
+```text
+截图和 OCR 原始结果尽量保留
+最终群消息用 fingerprint 幂等去重
+需求识别只消费 active 群消息
+增量识别只处理水位后的新消息
+人工 confirmed/rejected 的候选不被自动覆盖
 ```
 
-CLI 查看当前启用群：
+## 元数据来源
+
+ADB 从 `ops_platform` 读取群配置：
+
+```text
+ops_platform.group_contact_mappings
+ops_platform.customers
+```
+
+主要字段：
+
+```text
+group_id           群 ID
+group_name         微信群名称，用于 ADB 搜索并打开群
+customer_code      客户编码，关联 customers
+contact_name       对接人
+business_platform  平台
+collect_enabled    是否启用采集
+status             active / inactive
+```
+
+ADB 会将这些信息带入采集 run、消息和需求候选，作为后续匹配客户、对接人、平台的依据。
+
+## crawler_app 表职责
+
+### `wechat_capture_runs`
+
+记录一次微信群截图采集。
+
+```text
+source_key
+source_name
+target_date
+screenshot_dir
+screenshot_count
+status
+finished_at
+```
+
+常见状态：
+
+```text
+success      成功采集截图
+no_messages  选中日期后没有可跳转的聊天记录
+error        ADB、微信导航或截图异常
+```
+
+### `wechat_ocr_observations`
+
+保存每张截图的原始 OCR 行。
+
+用途：
+
+```text
+追溯 OCR 识别结果
+排查消息切分错误
+重复跑时保持幂等 upsert
+```
+
+这张表不是下游需求识别的直接输入。
+
+### `wechat_message_observations`
+
+保存最终可消费的规范化群消息。
+
+关键字段：
+
+```text
+message_fingerprint    稳定消息指纹
+source_key
+source_name
+message_date
+inferred_message_time
+sender_name
+message_text
+normalized_message_text
+parser_type            ocr / model
+status                 active / superseded
+first_seen_run_id
+latest_seen_run_id
+```
+
+下游统一只读：
+
+```sql
+WHERE message_type = 'text'
+  AND status = 'active'
+```
+
+`message_fingerprint` 用于避免重复跑、跨截图重叠、同一消息多次出现导致重复 active 数据。
+
+### `wechat_demand_intake_offsets`
+
+记录每个群的需求识别水位。
+
+```text
+source_key
+source_name
+last_observation_id
+last_message_time
+last_intake_run_at
+```
+
+增量识别每次只处理：
+
+```sql
+wechat_message_observations.id > last_observation_id
+```
+
+如果模型失败，不推进水位。
+
+### `wechat_demand_intake_runs`
+
+记录一次增量需求识别任务。
+
+```text
+source_key
+source_name
+from_observation_id
+to_observation_id
+context_count
+new_message_count
+candidate_count
+raw_model_json
+status
+finished_at
+```
+
+用于审计“这次模型看了哪些新消息、带了多少上下文、输出了几个候选”。
+
+## ops_platform 写入表
+
+### `demand_intake_candidates`
+
+AI 识别出的待审核需求候选。
+
+新链路的数据特征：
+
+```text
+source_app = crawler
+external_capture_run_id LIKE 'intake:%'
+status = pending
+```
+
+字段来源：
+
+```text
+source_chat_name       群名
+external_source_key    群 source_key
+external_chat_id       群 ID/source_key
+business_category      模型识别
+secondary_category     模型识别
+tertiary_category      模型识别
+business_name          模型识别
+demand_title           模型识别
+demand_content         模型总结
+confidence             模型置信度
+status                 pending
+```
+
+### `demand_candidate_evidence`
+
+候选需求的证据链。
+
+每条证据来自一条 active 群消息：
+
+```json
+{
+  "source": "wechat_message_observations",
+  "observation_id": 99,
+  "source_run_id": 21,
+  "message_fingerprint": "...",
+  "parser_type": "ocr"
+}
+```
+
+同一个候选重跑时，如果候选仍未人工确认或驳回，会替换为本次模型选中的证据集合。
+
+## 运行命令
+
+查看当前启用群：
 
 ```powershell
 .\scripts\run.ps1 -Task wechat-groups-list
 ```
 
-按配置顺序采集指定日期：
+采集指定日期的群截图：
 
 ```powershell
 .\scripts\run.ps1 -Task wechat-groups-capture -ReportDate 2026-06-17
 ```
 
-测试时只跑前 1 个群、每个群只截首屏：
+测试时只跑前 1 个群：
 
 ```powershell
-.\scripts\run.ps1 -Task wechat-groups-capture -ReportDate 2026-06-17 -WechatLimit 1 -WechatPages 0
+.\scripts\run.ps1 -Task wechat-groups-capture -ReportDate 2026-06-17 -WechatLimit 1
 ```
 
-采集输出会写入：
+将截图 OCR 并写入 active 群消息：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-messages-parse -ReportDate 2026-06-17
+```
+
+处理指定采集 run：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-messages-parse -WechatCaptureRunId 21
+```
+
+增量识别新需求：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-demand-intake -WechatIntakeMode incremental
+```
+
+测试时只处理前 1 个群，并带 20 条历史上下文：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-demand-intake -WechatIntakeMode incremental -WechatLimit 1 -WechatContextSize 20
+```
+
+保留的 batch 模式用于人工回放某个 capture run：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-demand-intake -WechatCaptureRunId 21
+```
+
+## 增量识别逻辑
+
+增量识别不是按天重复识别，而是按群持续推进水位：
 
 ```text
-exports/wechat/<群名称>/<日期>/
-exports/wechat/_batches/<日期>/<批次时间>/manifest.json
+读取 offset
+-> 取 offset 后的新 active 消息
+-> 带上前 N 条 active 消息作为上下文
+-> 模型判断新消息中是否出现新需求
+-> 输出候选和 evidence_orders
+-> 写入 ops_platform
+-> 成功后推进 offset
 ```
 
-同时会在 `crawler_app.wechat_capture_runs` 记录采集批次，在 `crawler_app.wechat_message_observations` 为每张截图生成一条 observation。
-
-## 写入候选
-
-采集和识别完成后，用群配置补齐候选需求的基金、对接人和平台：
-
-```python
-from apps.finance_crawler.crawler_app.storage.ops_platform import (
-    OpsDemandCandidate,
-    OpsDemandEvidence,
-    candidate_with_wechat_group_config,
-    upsert_ops_demand_candidate_once,
-)
-
-candidate = candidate_with_wechat_group_config(
-    OpsDemandCandidate(
-        external_candidate_id="crawler:run-1:1",
-        external_capture_run_id="capture:1",
-        business_category="设计",
-        secondary_category="banner新设计",
-        tertiary_category="活动页头图",
-        demand_title="活动 banner 设计",
-        demand_content="需要设计一张活动 banner。",
-        confidence=0.86,
-        evidences=[
-            OpsDemandEvidence(
-                external_evidence_id="obs:1",
-                evidence_order=1,
-                sender_name="李四",
-                message_text="帮忙做一版活动 banner",
-                screenshot_path="exports/wechat/demo.png",
-            )
-        ],
-    ),
-    group_config,
-)
-
-candidate_id = upsert_ops_demand_candidate_once(candidate)
-```
-
-写入后会自动带上：
+模型输入中消息会标记：
 
 ```text
-external_source_key
-external_chat_id
-source_chat_name
-raw_customer_name
-raw_owner_name
-raw_business_platform
-matched_customer_id
-matched_contact_context_id
-matched_business_platform
-match_confidence
-match_reason
+scope = context  历史上下文，只用于判断连续性
+scope = new      水位后的新消息，可触发新需求
 ```
 
-## 幂等规则
+模型输出候选必须至少引用一条 `new` 消息，否则会被丢弃，避免只凭历史上下文重复创建需求。
 
-候选需求：
+## 去重和状态口径
+
+消息去重：
 
 ```text
-source_app + external_candidate_id
+wechat_message_observations.message_fingerprint
 ```
 
-证据链：
+候选去重：
 
 ```text
-candidate_id + external_evidence_id
+external_candidate_id
 ```
 
-重复跑会更新未处理候选；已人工确认或驳回的候选不会被自动识别结果覆盖。
+当前候选 ID 主要基于：
 
-## 兼容说明
+```text
+source_key
+目标日期/识别窗口
+模型选中的证据消息集合
+首条证据消息
+```
 
-`source_contact_contexts` 是上一版来源上下文绑定表，保留用于历史兼容。新的 ADB 采集主链路不再依赖它。
+展示当前 AI 新需求建议时推荐筛选：
+
+```sql
+SELECT *
+FROM ops_platform.demand_intake_candidates
+WHERE source_app = 'crawler'
+  AND status = 'pending'
+  AND external_capture_run_id LIKE 'intake:%'
+ORDER BY updated_at DESC;
+```
+
+旧链路或测试数据通常表现为：
+
+```text
+external_capture_run_id IS NULL
+external_capture_run_id LIKE 'capture:%'
+external_capture_run_id LIKE 'capture:test:%'
+```
+
+这些不应作为当前生产候选展示。
+
+## 常用排查 SQL
+
+查看每个群的识别水位：
+
+```sql
+SELECT source_name, last_observation_id, last_message_time, last_intake_run_at
+FROM crawler_app.wechat_demand_intake_offsets
+ORDER BY updated_at DESC;
+```
+
+查看最近增量识别运行：
+
+```sql
+SELECT id, source_name, from_observation_id, to_observation_id,
+       context_count, new_message_count, candidate_count, status, finished_at
+FROM crawler_app.wechat_demand_intake_runs
+ORDER BY id DESC
+LIMIT 20;
+```
+
+查看 active 群消息数量：
+
+```sql
+SELECT source_name, message_date, COUNT(*) AS cnt,
+       COUNT(DISTINCT message_fingerprint) AS fingerprint_cnt
+FROM crawler_app.wechat_message_observations
+WHERE status = 'active'
+  AND message_type = 'text'
+GROUP BY source_name, message_date
+ORDER BY message_date DESC, source_name;
+```
+
+查看当前 AI 候选：
+
+```sql
+SELECT external_capture_run_id, source_chat_name, demand_title,
+       business_category, secondary_category, confidence, status, updated_at
+FROM ops_platform.demand_intake_candidates
+WHERE source_app = 'crawler'
+  AND status = 'pending'
+  AND external_capture_run_id LIKE 'intake:%'
+ORDER BY updated_at DESC;
+```
+
+查看某个候选的证据链：
+
+```sql
+SELECT evidence_order, message_time, sender_name, message_text, evidence_reason
+FROM ops_platform.demand_candidate_evidence
+WHERE candidate_id = '<candidate_id>'
+ORDER BY evidence_order;
+```
+
+## 当前注意事项
+
+1. `wechat-messages-parse` 默认使用 OCR，不默认使用模型视觉识别。
+2. `wechat-demand-intake` 的增量模式才是持续生产推荐模式。
+3. 第二次立刻跑增量模式没有新消息时会 `skipped`，这是防重复的正常表现。
+4. 如果要回放历史消息，需要重置 `wechat_demand_intake_offsets`，或使用 batch 模式单独测试。
+5. 管理端展示当前 AI 候选时，应过滤 `external_capture_run_id LIKE 'intake:%'`。

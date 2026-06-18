@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -358,6 +359,8 @@ def main() -> int:
             "ops-platform-db",
             "wechat-groups-list",
             "wechat-groups-capture",
+            "wechat-messages-parse",
+            "wechat-demand-intake",
             "device-pool-status",
             "device-pool-refresh",
             "config",
@@ -449,6 +452,10 @@ def main() -> int:
     parser.add_argument("--wechat-out-dir", default="exports/wechat", help="WeChat capture output directory")
     parser.add_argument("--wechat-serial", default="", help="ADB serial for WeChat capture")
     parser.add_argument("--wechat-limit", type=int, default=0, help="limit WeChat configured groups for a test run")
+    parser.add_argument("--wechat-capture-run-id", type=int, default=0, help="specific WeChat capture run id for demand intake")
+    parser.add_argument("--wechat-parse-mode", choices=["ocr", "model"], default="ocr", help="WeChat message parser mode")
+    parser.add_argument("--wechat-intake-mode", choices=["batch", "incremental"], default="batch", help="WeChat demand intake mode")
+    parser.add_argument("--wechat-context-size", type=int, default=30, help="context message count for incremental WeChat demand intake")
     parser.add_argument("--wechat-no-search", action="store_true", help="assume the target WeChat group is already open")
     parser.add_argument("--wechat-skip-navigation", action="store_true", help="capture current WeChat screen without navigation")
     parser.add_argument("--wechat-keep-on-device", action="store_true", help="keep WeChat screenshots on Android device")
@@ -477,12 +484,14 @@ def main() -> int:
         init_ops_platform_intake_tables()
         print(f"ops_platform demand intake tables initialized: {Config.OPS_PLATFORM_DB_NAME}")
         return 0
-    if args.once in {"wechat-groups-list", "wechat-groups-capture"}:
+    if args.once in {"wechat-groups-list", "wechat-groups-capture", "wechat-messages-parse", "wechat-demand-intake"}:
         from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
         from apps.finance_crawler.crawler_app.storage.ops_platform import init_ops_platform_intake_tables
         from apps.finance_crawler.crawler_app.workflows.wechat_demand_intake import (
             list_wechat_demand_groups,
+            run_wechat_demand_intake,
             run_wechat_group_capture,
+            run_wechat_messages_parse,
         )
 
         init_ops_platform_intake_tables()
@@ -491,18 +500,36 @@ def main() -> int:
             print(list_wechat_demand_groups())
             return 0
         target_date = _parse_optional_date(args.report_date) or date.today()
-        print(
-            run_wechat_group_capture(
-                target_date=target_date,
-                pages=args.wechat_pages,
-                out_dir=args.wechat_out_dir,
-                serial=args.wechat_serial or None,
+        if args.once == "wechat-messages-parse":
+            summary = run_wechat_messages_parse(
+                target_date=target_date if not args.wechat_capture_run_id else None,
+                capture_run_id=args.wechat_capture_run_id,
                 limit=args.wechat_limit,
-                no_search=args.wechat_no_search,
-                skip_navigation=args.wechat_skip_navigation,
-                keep_on_device=args.wechat_keep_on_device,
+                parse_mode=args.wechat_parse_mode,
             )
+            print(json.dumps(summary, ensure_ascii=True, indent=2))
+            return 0
+        if args.once == "wechat-demand-intake":
+            summary = run_wechat_demand_intake(
+                target_date=target_date if not args.wechat_capture_run_id else None,
+                capture_run_id=args.wechat_capture_run_id,
+                limit=args.wechat_limit,
+                intake_mode=args.wechat_intake_mode,
+                context_size=args.wechat_context_size,
+            )
+            print(json.dumps(summary, ensure_ascii=True, indent=2))
+            return 0
+        summary = run_wechat_group_capture(
+            target_date=target_date,
+            pages=args.wechat_pages,
+            out_dir=args.wechat_out_dir,
+            serial=args.wechat_serial or None,
+            limit=args.wechat_limit,
+            no_search=args.wechat_no_search,
+            skip_navigation=args.wechat_skip_navigation,
+            keep_on_device=args.wechat_keep_on_device,
         )
+        print(json.dumps(summary, ensure_ascii=True, indent=2))
         return 0
     if args.once in {"device-pool-status", "device-pool-refresh"}:
         from apps.finance_crawler.storage.device_pool import device_pool_status, refresh_adb_devices
