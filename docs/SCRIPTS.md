@@ -166,29 +166,65 @@ profile_metric_writebacks
 .\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
 ```
 
-## 4. KOL 每日表命令
+## 4. KOL 每日数据库主链路和兼容命令
+
+日常优先使用 `kol-daily-db-pipeline`。这条链路以 `kol_daily_metrics` 为主结果表，串行执行：
+
+```text
+每日初始化 kol_daily_metrics
+  -> 理财通外部阅读数 T-1 到 T-5 入库
+  -> 今日主页粉丝数 / 增粉数 ADB 采集入库
+```
 
 | Task | 作用 |
 | --- | --- |
+| `kol-daily-db-pipeline` | 串行执行 KOL 每日数据库主链路 |
+| `kol-metrics-web` | 启动 KOL 数据查看页面，支持筛选、排序和下载 Excel |
+| `kol-tenpay-external-reads` | 兼容命令。旧链路从外部文档读取理财通阅读数并写回目标腾讯文档；新主链路只更新数据库 |
 | `kol-daily-snapshot` | 同步 KOL 基础数据，生成指定日期快照，并写入目标表 |
 | `kol-daily-writeback` | 只把 `kol_daily_snapshots` 写回目标表 |
 | `kol-daily-crawl` | 跑当天或指定日期主页采集，兼容入口 |
 
-每天 22:00 默认跑 `kol-daily-snapshot`，生成明日行。
+`kol-daily-snapshot` / `kol-daily-writeback` / `kol-daily-crawl` 是兼容旧入口；新主链路日常不依赖腾讯文档作为主结果表。
 
-每天 08:00 默认跑 `kol-daily-crawl`，实际走：
+启动常驻 worker 后，`profile` 角色会按 `KOL_DAILY_CRAWL_TIME` 注册：
 
 ```text
-profile_trigger_configs.kol_daily_metrics_wpvy0d
+kol_daily_db_pipeline
 ```
 
-手动生成某天行：
+手动跑今天：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-daily-snapshot -ReportDate 2026-06-07
+.\scripts\run.ps1 -Task kol-daily-db-pipeline
 ```
 
-手动采集某天主页指标：
+手动跑指定日期：
+
+```powershell
+.\scripts\run.ps1 -Task kol-daily-db-pipeline -ReportDate 2026-06-22
+```
+
+快捷脚本：
+
+```powershell
+.\scripts\kol-daily-db-pipeline.ps1
+.\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22 -StartWeb
+```
+
+只打开 KOL 数据页面：
+
+```powershell
+.\scripts\run.ps1 -Task kol-metrics-web -WebPort 8091
+```
+
+调整阅读数回看天数：
+
+```powershell
+.\scripts\run.ps1 -Task config -ConfigSet KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS=5
+```
+
+旧 profile trigger 手动采集某天主页指标：
 
 ```powershell
 .\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06

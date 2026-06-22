@@ -447,6 +447,20 @@ def record_profile_metric(
                 observed_at=crawled_at,
             )
             if status == "success":
+                _upsert_kol_daily_metric_from_profile_run_tx(
+                    cursor,
+                    metric_id=metric_id,
+                    target_id=target_id,
+                    metric_date=metric_date,
+                    app_type=app_type or "unknown",
+                    homepage_url=homepage_url,
+                    status=status,
+                    fans_count=fans_count,
+                    growth_count=growth_count,
+                    read_count=read_count,
+                    error=error,
+                )
+            if status == "success":
                 cursor.execute(
                     """
                     UPDATE profile_metric_sources
@@ -775,6 +789,174 @@ def update_profile_post_read_metric(
         raise
     finally:
         conn.close()
+
+
+def sync_kol_daily_metrics_from_profile_runs(metric_date: date | None = None) -> int:
+    """Backfill KOL daily metric rows from successful homepage metric runs."""
+
+    params: list[Any] = []
+    date_clause = ""
+    if metric_date:
+        date_clause = "AND m.metric_date = %s"
+        params.append(metric_date)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    m.id AS metric_id,
+                    m.target_id,
+                    m.metric_date,
+                    m.app_type,
+                    m.homepage_url,
+                    m.status,
+                    m.fans_count,
+                    m.growth_count,
+                    m.read_count,
+                    m.error
+                FROM profile_metric_runs m
+                JOIN profile_targets t ON t.id = m.target_id
+                WHERE m.status = 'success'
+                  AND (m.fans_count IS NOT NULL OR m.growth_count IS NOT NULL)
+                  {date_clause}
+                ORDER BY m.metric_date ASC, m.id ASC
+                """,
+                params,
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                _upsert_kol_daily_metric_from_profile_run_tx(
+                    cursor,
+                    metric_id=int(row["metric_id"]),
+                    target_id=int(row["target_id"]),
+                    metric_date=row["metric_date"],
+                    app_type=str(row.get("app_type") or "unknown"),
+                    homepage_url=str(row.get("homepage_url") or ""),
+                    status=str(row.get("status") or "success"),
+                    fans_count=row.get("fans_count"),
+                    growth_count=row.get("growth_count"),
+                    read_count=row.get("read_count"),
+                    error=row.get("error"),
+                )
+        conn.commit()
+        return len(rows)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _upsert_kol_daily_metric_from_profile_run_tx(
+    cursor,
+    *,
+    metric_id: int,
+    target_id: int,
+    metric_date: date,
+    app_type: str,
+    homepage_url: str,
+    status: str,
+    fans_count: int | None,
+    growth_count: int | None,
+    read_count: int | None,
+    error: str | None,
+) -> None:
+    cursor.execute(
+        """
+        SELECT
+            t.account_name,
+            t.platform,
+            t.source_json,
+            s.id AS metric_source_id,
+            s.source_name,
+            s.source_locator_json
+        FROM profile_targets t
+        LEFT JOIN profile_metric_sources s
+          ON s.target_id = t.id
+         AND s.metric_date = %s
+         AND s.status = 'active'
+        WHERE t.id = %s
+        ORDER BY s.id DESC
+        LIMIT 1
+        """,
+        (metric_date, target_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return
+
+    kol_name = str(row.get("account_name") or "").strip()
+    platform = str(row.get("platform") or "").strip()
+    if not kol_name or not platform:
+        return
+
+    source = _json_loads(row.get("source_json")) or {}
+    locator = _json_loads(row.get("source_locator_json")) or {}
+    source_payload = {
+        "workflow": "profile_metrics",
+        "metric_id": metric_id,
+        "metric_source_id": row.get("metric_source_id"),
+        "source_name": row.get("source_name"),
+        "app_type": app_type,
+        "homepage_url": homepage_url,
+        "status": status,
+        "error": error,
+    }
+    cursor.execute(
+        """
+        INSERT INTO kol_daily_metrics (
+            metric_date, kol_name, platform,
+            fans_count, growth_count, read_count,
+            fans_source, growth_source, read_source,
+            source_doc_url, source_row_index, source_payload_json,
+            target_doc_url, target_sheet_id, target_row_index,
+            writeback_status, writeback_error
+        )
+        VALUES (
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s
+        )
+        ON DUPLICATE KEY UPDATE
+            fans_count = COALESCE(VALUES(fans_count), fans_count),
+            growth_count = COALESCE(VALUES(growth_count), growth_count),
+            read_count = COALESCE(VALUES(read_count), read_count),
+            fans_source = COALESCE(NULLIF(VALUES(fans_source), ''), fans_source),
+            growth_source = COALESCE(NULLIF(VALUES(growth_source), ''), growth_source),
+            read_source = COALESCE(NULLIF(VALUES(read_source), ''), read_source),
+            source_doc_url = COALESCE(NULLIF(VALUES(source_doc_url), ''), source_doc_url),
+            source_row_index = COALESCE(VALUES(source_row_index), source_row_index),
+            source_payload_json = COALESCE(NULLIF(VALUES(source_payload_json), '{}'), source_payload_json),
+            target_doc_url = COALESCE(NULLIF(VALUES(target_doc_url), ''), target_doc_url),
+            target_sheet_id = COALESCE(NULLIF(VALUES(target_sheet_id), ''), target_sheet_id),
+            target_row_index = COALESCE(VALUES(target_row_index), target_row_index),
+            writeback_error = COALESCE(VALUES(writeback_error), writeback_error),
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            metric_date,
+            kol_name,
+            platform,
+            fans_count,
+            growth_count,
+            read_count,
+            "profile_metrics" if fans_count is not None else "",
+            "previous_day_fans_count" if growth_count is not None else "",
+            "profile_post_reads" if read_count is not None else "",
+            str(source.get("doc_url") or ""),
+            int(locator["row_index"]) if locator.get("row_index") else None,
+            _json_dumps(source_payload),
+            str(source.get("doc_url") or ""),
+            str(locator.get("sheet_id") or ""),
+            int(locator["row_index"]) if locator.get("row_index") else None,
+            "synced_from_profile",
+            error,
+        ),
+    )
 
 
 def _upsert_profile_metric_observations_tx(

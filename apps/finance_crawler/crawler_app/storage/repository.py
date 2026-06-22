@@ -218,6 +218,185 @@ def list_kol_daily_snapshots(conn, *, snapshot_date: date) -> list[dict[str, Any
         return [dict(row) for row in cursor.fetchall()]
 
 
+def upsert_kol_daily_metric(
+    conn,
+    *,
+    metric_date: date,
+    kol_name: str,
+    platform: str,
+    fans_count: int | None = None,
+    growth_count: int | None = None,
+    read_count: int | None = None,
+    post_count_24h: int | None = None,
+    fans_source: str | None = None,
+    growth_source: str | None = None,
+    read_source: str | None = None,
+    post_count_source: str | None = None,
+    source_doc_url: str | None = None,
+    source_row_index: int | None = None,
+    source_payload: dict[str, Any] | None = None,
+    target_doc_url: str | None = None,
+    target_sheet_id: str | None = None,
+    target_row_index: int | None = None,
+    writeback_status: str = "pending",
+    writeback_error: str | None = None,
+) -> int:
+    source_payload_json = json_dumps(source_payload or {})
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO kol_daily_metrics (
+                metric_date, kol_name, platform,
+                fans_count, growth_count, read_count, post_count_24h,
+                fans_source, growth_source, read_source, post_count_source,
+                source_doc_url, source_row_index, source_payload_json,
+                target_doc_url, target_sheet_id, target_row_index,
+                writeback_status, writeback_error
+            )
+            VALUES (
+                %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s
+            )
+            ON DUPLICATE KEY UPDATE
+                id = LAST_INSERT_ID(id),
+                fans_count = COALESCE(VALUES(fans_count), fans_count),
+                growth_count = COALESCE(VALUES(growth_count), growth_count),
+                read_count = COALESCE(VALUES(read_count), read_count),
+                post_count_24h = COALESCE(VALUES(post_count_24h), post_count_24h),
+                fans_source = COALESCE(NULLIF(VALUES(fans_source), ''), fans_source),
+                growth_source = COALESCE(NULLIF(VALUES(growth_source), ''), growth_source),
+                read_source = COALESCE(NULLIF(VALUES(read_source), ''), read_source),
+                post_count_source = COALESCE(NULLIF(VALUES(post_count_source), ''), post_count_source),
+                source_doc_url = COALESCE(NULLIF(VALUES(source_doc_url), ''), source_doc_url),
+                source_row_index = COALESCE(VALUES(source_row_index), source_row_index),
+                source_payload_json = COALESCE(NULLIF(VALUES(source_payload_json), '{}'), source_payload_json),
+                target_doc_url = COALESCE(NULLIF(VALUES(target_doc_url), ''), target_doc_url),
+                target_sheet_id = COALESCE(NULLIF(VALUES(target_sheet_id), ''), target_sheet_id),
+                target_row_index = COALESCE(VALUES(target_row_index), target_row_index),
+                writeback_status = VALUES(writeback_status),
+                writeback_error = VALUES(writeback_error),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                metric_date,
+                kol_name,
+                platform,
+                fans_count,
+                growth_count,
+                read_count,
+                post_count_24h,
+                fans_source or "",
+                growth_source or "",
+                read_source or "",
+                post_count_source or "",
+                source_doc_url or "",
+                source_row_index,
+                source_payload_json,
+                target_doc_url or "",
+                target_sheet_id or "",
+                target_row_index,
+                writeback_status,
+                writeback_error,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def ensure_kol_daily_metric_row(
+    conn,
+    *,
+    metric_date: date,
+    kol_name: str,
+    platform: str,
+    source_payload: dict[str, Any] | None = None,
+) -> int:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO kol_daily_metrics (
+                metric_date, kol_name, platform, source_payload_json, writeback_status
+            )
+            VALUES (%s, %s, %s, %s, 'pending')
+            ON DUPLICATE KEY UPDATE
+                id = LAST_INSERT_ID(id)
+            """,
+            (
+                metric_date,
+                kol_name,
+                platform,
+                json_dumps(source_payload or {}),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def mark_kol_daily_metric_writeback(
+    conn,
+    *,
+    metric_date: date,
+    kol_name: str,
+    platform: str,
+    status: str,
+    error: str | None = None,
+) -> int:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE kol_daily_metrics
+            SET writeback_status = %s,
+                writeback_error = %s,
+                last_writeback_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE metric_date = %s
+              AND kol_name = %s
+              AND platform = %s
+            """,
+            (status, error, metric_date, kol_name, platform),
+        )
+        return int(cursor.rowcount)
+
+
+def list_kol_daily_metrics(conn, *, metric_date: date | None = None) -> list[dict[str, Any]]:
+    with conn.cursor() as cursor:
+        if metric_date:
+            cursor.execute(
+                """
+                SELECT
+                    m.*,
+                    b.homepage_url,
+                    b.group_name,
+                    COALESCE(NULLIF(b.kol_type, ''), '未匹配') AS kol_type
+                FROM kol_daily_metrics m
+                LEFT JOIN kol_base_profiles b
+                  ON b.kol_name = m.kol_name
+                 AND b.platform = m.platform
+                WHERE m.metric_date = %s
+                ORDER BY m.id ASC
+                """,
+                (metric_date,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT
+                    m.*,
+                    b.homepage_url,
+                    b.group_name,
+                    COALESCE(NULLIF(b.kol_type, ''), '未匹配') AS kol_type
+                FROM kol_daily_metrics m
+                LEFT JOIN kol_base_profiles b
+                  ON b.kol_name = m.kol_name
+                 AND b.platform = m.platform
+                ORDER BY m.metric_date ASC, m.id ASC
+                """
+            )
+        return [dict(row) for row in cursor.fetchall()]
+
+
 def upsert_document(conn, *, source_type: str, doc_url: str, file_id: str, title: str = "") -> int:
     with conn.cursor() as cursor:
         cursor.execute(

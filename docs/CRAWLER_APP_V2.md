@@ -65,10 +65,14 @@ profile_trigger_configs
 -> profile_metric_writebacks
 ```
 
-The default KOL daily crawl is `profile_trigger_configs.kol_daily_metrics_wpvy0d`.
-It scans today's rows in the KOL result sheet at `KOL_DAILY_CRAWL_TIME`, opens
-each `homepage_url`, and writes metrics back by date plus homepage URL. It is
-not a `document_trigger_configs` job.
+The current default KOL daily path is `kol_daily_db_pipeline`. It runs at
+`KOL_DAILY_CRAWL_TIME`, initializes `kol_daily_metrics`, syncs Tenpay external
+read counts for the configured lookback window, opens each `homepage_url` for
+today's profile metrics, and stores the result in MySQL. It is not a
+`document_trigger_configs` job.
+
+`profile_trigger_configs.kol_daily_metrics_wpvy0d` is kept as a compatibility
+path for troubleshooting or temporary Tencent Docs writeback.
 
 ## Online Document Commands
 

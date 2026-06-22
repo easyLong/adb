@@ -19,11 +19,15 @@
 https://docs.qq.com/sheet/DYnhxS2VHZHBqR0V5?tab=wpvy0d
 ```
 
-默认每天 `06:00` 由 `profile` worker 自动执行。
+默认每天 `06:00` 由 `profile` worker 自动执行，一次处理最近 5 个已结束日期：
+
+```text
+T-1、T-2、T-3、T-4、T-5
+```
 
 ## 手动运行
 
-回填当前目标表内所有能匹配到的日期：
+回填最近 5 个已结束日期：
 
 ```powershell
 .\scripts\run.ps1 -Task kol-tenpay-external-reads
@@ -68,12 +72,19 @@ KOL_TENPAY_EXTERNAL_READS_TARGET_RANGE
 KOL_TENPAY_EXTERNAL_READS_TIME
 KOL_TENPAY_EXTERNAL_READS_TARGET_PLATFORM
 KOL_TENPAY_EXTERNAL_READS_WRITEBACK_FONT_SIZE
+KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS
 ```
 
 更新执行时间示例：
 
 ```powershell
 .\scripts\run.ps1 -Task config -ConfigSet KOL_TENPAY_EXTERNAL_READS_TIME=06:00
+```
+
+更新默认回看天数示例：
+
+```powershell
+.\scripts\run.ps1 -Task config -ConfigSet KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS=5
 ```
 
 更新源表列表时，多个链接用英文逗号分隔。

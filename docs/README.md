@@ -16,13 +16,15 @@
    命令手册。说明 `scripts/run.ps1` 支持的任务和常用跑法。
 4. [RUNTIME_CONFIG.md](RUNTIME_CONFIG.md)  
    运行配置。说明 MySQL 配置、腾讯文档 OpenAPI、定时任务和采集行为配置。
-5. [ACTION_TEMPLATES.md](ACTION_TEMPLATES.md)
+5. [KOL_DAILY_DB_PIPELINE.md](KOL_DAILY_DB_PIPELINE.md)
+   KOL 每日数据库主链路。说明每日初始化、理财通阅读数 T-1 到 T-5 同步、主页粉丝数/增粉数采集，以及 Web 查看方式。
+6. [ACTION_TEMPLATES.md](ACTION_TEMPLATES.md)
    App 采集动作模板经验库。说明哪个 App 采集哪种数据、采用什么动作、UI/OCR/跳转/滚动等技术手段，以及什么证据算成功。
-6. [CRAWLER_APP_V2.md](CRAWLER_APP_V2.md)
+7. [CRAWLER_APP_V2.md](CRAWLER_APP_V2.md)
    v2 文档任务设计细节，主要面向帖子链接型任务。
-7. [V2_AUTO_RUN_OPERATION.md](V2_AUTO_RUN_OPERATION.md)
+8. [V2_AUTO_RUN_OPERATION.md](V2_AUTO_RUN_OPERATION.md)
    v2 文档触发器操作手册。
-8. [init.sql](init.sql)
+9. [init.sql](init.sql)
    数据库初始化 SQL。
 
 架构图见 [ARCHITECTURE.md](ARCHITECTURE.md)，完整源图见 [assets/adb-crawler-architecture.mmd](assets/adb-crawler-architecture.mmd)。
@@ -36,9 +38,9 @@
   -> writeback_plans
 
 主页型任务
-  -> profile_trigger
+  -> KOL 数据库每日表 / profile_trigger
   -> profile_metric_sources / profile_metric_runs
-  -> profile_metric_writebacks
+  -> kol_daily_metrics / profile_metric_writebacks
 
 内部数据报告
   -> 读取线上日期 sheet 当前数据

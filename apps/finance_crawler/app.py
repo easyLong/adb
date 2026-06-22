@@ -35,8 +35,12 @@ from apps.finance_crawler.workflows.article_details import (
     writeback_article_details,
 )
 from apps.finance_crawler.workflows.docs_link_reads import run_docs_link_reads
+from apps.finance_crawler.workflows.kol_daily_db_pipeline import run_kol_daily_db_pipeline
 from apps.finance_crawler.workflows.local_excel_detail import run_local_excel_detail
-from apps.finance_crawler.workflows.kol_tenpay_external_reads import run_kol_tenpay_external_reads
+from apps.finance_crawler.workflows.kol_tenpay_external_reads import (
+    run_kol_tenpay_external_reads,
+    run_kol_tenpay_external_reads_lookback,
+)
 from apps.finance_crawler.workflows.profile_metrics import (
     crawl_pending_profile_metrics,
     create_daily_profile_metric_tasks,
@@ -114,8 +118,20 @@ def run_kol_daily_crawl_job(target_date: date | None = None) -> dict[str, Any]:
     return run_default_kol_daily_profile_trigger(target_date=target_date or date.today(), trigger_type="scheduled")
 
 
+def run_kol_daily_db_pipeline_job(target_date: date | None = None) -> dict[str, Any]:
+    from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
+
+    init_crawler_app_db()
+    return run_kol_daily_db_pipeline(target_date=target_date or date.today())
+
+
 def run_kol_tenpay_external_reads_job(target_date: date | None = None) -> dict[str, Any]:
-    return run_kol_tenpay_external_reads(target_date=target_date)
+    from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
+
+    init_crawler_app_db()
+    if target_date:
+        return run_kol_tenpay_external_reads(target_date=target_date)
+    return run_kol_tenpay_external_reads_lookback()
 
 
 def run_wechat_hourly_sync_job(target_date: date | None = None) -> dict[str, Any]:
@@ -134,16 +150,16 @@ def _reload_runtime_config_for_task(task_name: str) -> None:
     load_runtime_config()
 
 
-def _kol_profile_trigger_scheduler_enabled() -> bool:
-    return bool(Config.KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL and Config.KOL_DAILY_CRAWL_TIME)
+def _kol_daily_db_pipeline_scheduler_enabled() -> bool:
+    return bool(Config.KOL_DAILY_CRAWL_TIME)
 
 
 def _legacy_profile_scheduler_enabled() -> bool:
     if not (Config.PROFILE_METRICS_DOC_URL and Config.PROFILE_METRICS_INTERVAL_MINUTES > 0):
         return False
-    if _kol_profile_trigger_scheduler_enabled():
+    if _kol_daily_db_pipeline_scheduler_enabled():
         logger.warning(
-            "skip legacy profile metrics scheduler because KOL profile trigger is enabled"
+            "skip legacy profile metrics scheduler because KOL daily DB pipeline is enabled"
         )
         return False
     return True
@@ -295,7 +311,12 @@ def _register_jobs() -> None:
             Config.PROFILE_METRICS_INTERVAL_MINUTES,
         )
 
-    if _scheduler_role_enabled("profile", "kol_snapshot") and Config.KOL_DAILY_SNAPSHOT_DOC_URL and Config.KOL_DAILY_SNAPSHOT_TIME:
+    if (
+        _scheduler_role_enabled("profile", "kol_snapshot")
+        and not _kol_daily_db_pipeline_scheduler_enabled()
+        and Config.KOL_DAILY_SNAPSHOT_DOC_URL
+        and Config.KOL_DAILY_SNAPSHOT_TIME
+    ):
         schedule.every().day.at(Config.KOL_DAILY_SNAPSHOT_TIME).do(
             safe_run, run_kol_daily_snapshot_job, "kol_daily_snapshot"
         )
@@ -304,20 +325,18 @@ def _register_jobs() -> None:
             Config.KOL_DAILY_SNAPSHOT_TIME,
         )
 
-    if _scheduler_role_enabled("profile", "kol_crawl") and _kol_profile_trigger_scheduler_enabled():
-        from apps.finance_crawler.workflows.profile_triggers import ensure_default_profile_trigger_configs
-
-        ensure_default_profile_trigger_configs()
+    if _scheduler_role_enabled("profile", "kol_pipeline") and _kol_daily_db_pipeline_scheduler_enabled():
         schedule.every().day.at(Config.KOL_DAILY_CRAWL_TIME).do(
-            safe_run, run_kol_daily_crawl_job, "kol_daily_crawl"
+            safe_run, run_kol_daily_db_pipeline_job, "kol_daily_db_pipeline"
         )
         logger.info(
-            "registered KOL daily crawl at %s",
+            "registered KOL daily DB pipeline at %s",
             Config.KOL_DAILY_CRAWL_TIME,
         )
 
     if (
         _scheduler_role_enabled("profile", "kol_tenpay_external_reads")
+        and not _kol_daily_db_pipeline_scheduler_enabled()
         and Config.KOL_TENPAY_EXTERNAL_READS_TIME
         and Config.KOL_TENPAY_EXTERNAL_READS_TARGET_DOC_URL
     ):
@@ -458,6 +477,7 @@ def main() -> int:
             "kol-daily-writeback",
             "kol-daily-crawl",
             "kol-tenpay-external-reads",
+            "kol-daily-db-pipeline",
             "profile-trigger-list",
             "profile-trigger-run",
             "article-sync",
@@ -797,20 +817,45 @@ def main() -> int:
         print(f"KOL daily summary: {summary}")
         return 0
     if args.once == "kol-tenpay-external-reads":
+        from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
+
         init_db()
+        init_crawler_app_db()
         updates = _config_updates_from_args(args, include_tencent_doc_url=False)
         if updates:
             set_runtime_config(updates)
         load_runtime_config()
         target_date = _parse_optional_date(args.report_date)
         summary = safe_run(
-            lambda: run_kol_tenpay_external_reads(
-                target_date=target_date,
-                target_doc_url=args.tencent_doc_url or None,
+            lambda: (
+                run_kol_tenpay_external_reads(
+                    target_date=target_date,
+                    target_doc_url=args.tencent_doc_url or None,
+                )
+                if target_date
+                else run_kol_tenpay_external_reads_lookback(
+                    target_doc_url=args.tencent_doc_url or None,
+                )
             ),
             "kol_tenpay_external_reads_once",
         ) or {}
         print(f"KOL Tenpay external reads summary: {summary}")
+        return 0
+    if args.once == "kol-daily-db-pipeline":
+        from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
+
+        init_db()
+        init_crawler_app_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        summary = safe_run(
+            lambda: run_kol_daily_db_pipeline(target_date=target_date or date.today()),
+            "kol_daily_db_pipeline_once",
+        ) or {}
+        print(f"KOL daily DB pipeline summary: {summary}")
         return 0
     if args.once in {"profile-trigger-list", "profile-trigger-run"}:
         from apps.finance_crawler.workflows.profile_triggers import (

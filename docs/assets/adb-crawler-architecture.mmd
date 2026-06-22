@@ -21,15 +21,15 @@ flowchart LR
         D11["腾讯文档字段级回填"]
     end
 
-    subgraph PROFILE["profile / KOL 主页链路"]
-        P1["KOL_DAILY_SNAPSHOT_DOC_URL<br/>基础大V名单"]
-        P2["22:00 生成明日行<br/>kol_daily_snapshots"]
-        P3["profile_trigger_configs<br/>kol_daily_metrics_wpvy0d"]
-        P4["08:00 今日主页采集"]
+    subgraph PROFILE["profile / KOL 数据库主链路"]
+        P1["kol_base_profiles<br/>基础大V名单"]
+        P2["kol_daily_db_pipeline<br/>KOL_DAILY_CRAWL_TIME"]
+        P3["kol_daily_metrics<br/>每日主结果表"]
+        P4["Tenpay external reads<br/>T-1 到 T-5"]
         P5["profile_metric_sources"]
-        P6["profile_metric_runs<br/>fans / growth / read"]
-        P7["profile_metric_writebacks"]
-        P8["按 日期 + homepage_url 回填"]
+        P6["ADB 主页采集<br/>fans / growth"]
+        P7["profile_metric_runs"]
+        P8["kol-metrics-web<br/>查看 / Excel 导出"]
     end
 
     subgraph REPORT["内部数据报告链路"]
@@ -45,7 +45,7 @@ flowchart LR
         W1["submit worker<br/>SUBMIT_WORKER_INTERVAL_SECONDS"]
         W2["crawl worker<br/>V2_CRAWL_WORKER_INTERVAL_SECONDS"]
         W3["writeback worker<br/>V2_WRITEBACK_WORKER_INTERVAL_SECONDS"]
-        W4["profile worker<br/>KOL snapshot / KOL crawl"]
+        W4["profile worker<br/>KOL DB pipeline"]
         W5["heartbeat"]
     end
 
@@ -68,24 +68,25 @@ flowchart LR
         S3["task queue<br/>source_rows / task_submissions"]
         S4["execution facts<br/>task_executions / captures / errors"]
         S5["writeback facts<br/>writeback_plans / profile_metric_writebacks"]
-        S6["KOL facts<br/>kol_base_profiles / kol_daily_snapshots"]
+        S6["KOL facts<br/>kol_base_profiles / kol_daily_metrics"]
         S7["task_log / local reports"]
     end
 
     INPUT --> D1
     I1 --> R1
-    I1 --> P1
+    I1 --> P4
     I3 --> D7
 
     D1 --> D2 --> D3 --> D4 --> D5 --> D6 --> D7 --> D8 --> D9 --> D10 --> D11
-    P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8
+    P1 --> P2 --> P3
+    P4 --> P2
+    P2 --> P5 --> P6 --> P7 --> P3 --> P8
     R1 --> R2 --> R3 --> R4 --> R5 --> R6
 
     W1 --> D3
     W2 --> D8
     W3 --> D10
     W4 --> P2
-    W4 --> P4
     W5 --> S7
 
     D8 --> C1

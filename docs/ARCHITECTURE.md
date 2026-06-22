@@ -157,42 +157,38 @@ document_trigger_configs
 
 - 每行是大V主页链接 `homepage_url`。
 - 需要采集粉丝数、增粉数、今日帖子阅读数。
-- 读取和写回都必须按日期定位，同一主页每天一行。
+- 新 KOL 每日主链路以 `kol_daily_metrics` 为主结果表，腾讯文档只作为外部阅读数来源或兼容写回目标。
 
 核心流程：
 
 ```text
-22:00 生成明日行
-  -> KOL_DAILY_SNAPSHOT_DOC_URL
-  -> kol_base_profiles
-  -> kol_daily_snapshots
-  -> 写入 KOL 结果 sheet
-
-08:00 采集今日行
-  -> profile_trigger_configs.kol_daily_metrics_wpvy0d
-  -> profile_trigger_runs
+KOL_DAILY_CRAWL_TIME
+  -> kol_daily_db_pipeline
+  -> 从 kol_base_profiles 初始化今天 kol_daily_metrics
+  -> 同步理财通外部阅读数 T-1 到 T-5
+  -> 从 kol_daily_metrics JOIN kol_base_profiles 生成采集来源
   -> profile_metric_sources
   -> ADB 打开 homepage_url
   -> profile_metric_runs
-  -> profile_metric_writebacks
-  -> 按 日期 + homepage_url 写回
+  -> fans_count / growth_count 写回 kol_daily_metrics
 ```
 
 默认配置：
 
 ```text
-config_key: kol_daily_metrics_wpvy0d
-row_adapter: kol_daily_profile
-source_name: kol_daily_crawl
-task_type: profile_daily_metrics
-fields: fans_count,growth_count,read_count
 schedule_time: KOL_DAILY_CRAWL_TIME
+task: kol_daily_db_pipeline
+result_table: kol_daily_metrics
+read_count_lookback: KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS
 ```
 
-写回保护：
+兼容旧链路仍保留 `profile_trigger_configs.kol_daily_metrics_wpvy0d`、`kol_daily_snapshot`、`profile_metric_writebacks`，用于排查或临时腾讯文档写回。
 
-- 写回前重新读取目标 sheet。
-- 只在 `日期 + 主页链接` 唯一匹配时写回。
+结果查看：
+
+```powershell
+.\scripts\run.ps1 -Task kol-metrics-web -WebPort 8091
+```
 - 前一日没有粉丝数时，增粉数按 0 处理。
 - 同一天最多取 3 条帖子参与阅读数识别和聚合。
 
@@ -260,22 +256,21 @@ worker 通过 `SCHEDULER_ROLES` 分角色运行，常见角色如下：
 | `submit` / `v2_submit` | 扫描到期 `document_trigger_configs` 并提交任务 | `SUBMIT_WORKER_INTERVAL_SECONDS` |
 | `crawl` / `v2_crawl` | 消费 `task_submissions`，执行 ADB 采集 | `V2_CRAWL_WORKER_INTERVAL_SECONDS` |
 | `writeback` / `v2_writeback` | 应用 `writeback_plans` 到在线文档 | `V2_WRITEBACK_WORKER_INTERVAL_SECONDS` |
-| `profile` / `kol_snapshot` | 每晚生成 KOL 明日行 | `KOL_DAILY_SNAPSHOT_TIME` |
-| `profile` / `kol_crawl` | 每天采集 KOL 今日主页指标 | `KOL_DAILY_CRAWL_TIME` |
+| `profile` / `kol_pipeline` | 每天串行执行 KOL 数据库主链路 | `KOL_DAILY_CRAWL_TIME` |
 | `heartbeat` | 写心跳日志 | `HEARTBEAT_INTERVAL_MINUTES` |
 
 `ENABLE_LEGACY_SCHEDULER_JOBS=false` 时，旧版 fetch/check/detail/report 周期任务不会注册。
 
 ## 10. 数据库边界
 
-当前运行数据库默认是 `crawler_app`。数据库用于排队、审计、执行记录、证据和写回计划；在线文档仍是业务表和最终适配层。
+当前运行数据库默认是 `crawler_app`。数据库用于排队、审计、执行记录、证据、写回计划和 KOL 主结果表；在线文档是输入来源或最终适配层，不再是 KOL 每日数据的唯一结果载体。
 
 | 类别 | 代表表 |
 | --- | --- |
 | 触发器配置 | `document_trigger_configs`, `document_trigger_bindings`, `profile_trigger_configs` |
 | 文档标准化 | `documents`, `document_sheets`, `column_mappings`, `source_rows` |
 | 任务队列 | `task_submissions`, `task_executions`, `writeback_plans` |
-| KOL 数据 | `kol_base_profiles`, `kol_daily_snapshots`, `profile_metric_sources`, `profile_metric_runs`, `profile_metric_writebacks` |
+| KOL 数据 | `kol_base_profiles`, `kol_daily_metrics`, `profile_metric_sources`, `profile_metric_runs`, `profile_metric_writebacks`, `kol_daily_snapshots` |
 | 兼容和运行日志 | `crawl_task_submissions`, `crawl_task_executions`, `crawl_results`, `crawl_writebacks`, `task_log` |
 
 ## 11. 扩展原则

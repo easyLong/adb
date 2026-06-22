@@ -101,6 +101,43 @@ def ensure_crawler_app_tables(cursor) -> None:
     )
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS kol_daily_metrics (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            metric_date DATE NOT NULL,
+            kol_name VARCHAR(255) NOT NULL,
+            platform VARCHAR(64) NOT NULL,
+            fans_count BIGINT NULL,
+            growth_count BIGINT NULL,
+            read_count BIGINT NULL,
+            post_count_24h INT NULL,
+            fans_source VARCHAR(64) NULL,
+            growth_source VARCHAR(64) NULL,
+            read_source VARCHAR(64) NULL,
+            post_count_source VARCHAR(64) NULL,
+            source_doc_url TEXT NULL,
+            source_row_index INT NULL,
+            source_payload_json LONGTEXT NULL,
+            target_doc_url TEXT NULL,
+            target_sheet_id VARCHAR(128) NULL,
+            target_row_index INT NULL,
+            writeback_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            writeback_error TEXT NULL,
+            last_writeback_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_kol_daily_metric (metric_date, kol_name, platform),
+            INDEX idx_kol_daily_metrics_date (metric_date),
+            INDEX idx_kol_daily_metrics_platform (platform),
+            INDEX idx_kol_daily_metrics_writeback (writeback_status, metric_date),
+            INDEX idx_kol_daily_metrics_target_row (target_sheet_id, target_row_index)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    _drop_column_if_exists(cursor, "kol_daily_metrics", "homepage_url")
+    _drop_column_if_exists(cursor, "kol_daily_metrics", "group_name")
+    _drop_column_if_exists(cursor, "kol_daily_metrics", "kol_type")
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS profile_action_profiles (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             action_profile_key VARCHAR(128) NOT NULL,

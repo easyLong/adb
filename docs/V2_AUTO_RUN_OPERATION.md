@@ -238,36 +238,36 @@ profile_trigger_configs
   -> profile_metric_writebacks
 ```
 
-当前默认 KOL 主页触发器：
+当前 KOL 每日任务优先走数据库主链路：
 
 ```text
-config_key: kol_daily_metrics_wpvy0d
-task_type: kol_daily_crawl
-row_adapter: kol_daily_profile
-requested_fields: fans_count,growth_count,read_count
-target_date_offset_days: 0
-schedule_time: 08:00
+kol_daily_db_pipeline
+  -> kol_daily_metrics
+  -> Tenpay external reads T-1 到 T-5
+  -> profile_metric_sources / profile_metric_runs
 ```
 
-查看 profile trigger：
+KOL 每日主链路不是 `document_trigger`。详细说明见 [KOL_DAILY_DB_PIPELINE.md](KOL_DAILY_DB_PIPELINE.md)。
+
+查看旧 profile trigger：
 
 ```powershell
 .\scripts\run.ps1 -Task profile-trigger-list
 ```
 
-手动跑今天：
+手动跑今天的新主链路：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-trigger-run
+.\scripts\run.ps1 -Task kol-daily-db-pipeline
 ```
 
-手动跑指定日期：
+手动跑指定日期的新主链路：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
+.\scripts\run.ps1 -Task kol-daily-db-pipeline -ReportDate 2026-06-22
 ```
 
-`kol-daily-crawl` 仍保留为兼容命令，但新链路优先使用 `profile-trigger-run`。
+`profile-trigger-run` 和 `kol-daily-crawl` 仍保留为兼容命令，用于旧腾讯文档回填链路排查。
 
 ## 8. 先试跑一次
 
@@ -323,8 +323,7 @@ schedule_time: 08:00
 v2 submit worker       每 SUBMIT_WORKER_INTERVAL_SECONDS 秒检查 document trigger
 v2 crawl worker        每 V2_CRAWL_WORKER_INTERVAL_SECONDS 秒处理采集队列
 v2 writeback worker    每 V2_WRITEBACK_WORKER_INTERVAL_SECONDS 秒处理回填队列
-kol_daily_snapshot     每天 22:00 生成明日 KOL 行
-kol_daily_crawl        每天 08:00 通过 profile trigger 采集今日 KOL 主页数据
+kol_daily_db_pipeline  每天 KOL_DAILY_CRAWL_TIME 串行执行 KOL 数据库主链路
 ```
 
 ## 10. 字段和 URL 规则

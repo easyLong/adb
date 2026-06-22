@@ -263,6 +263,51 @@ def run_kol_daily_crawl_pipeline(
     }
 
 
+def run_kol_daily_crawl_db_pipeline(
+    *,
+    target_date: date | None = None,
+    limit: int | None = None,
+    source_name: str | None = None,
+    requested_fields: tuple[str, ...] | list[str] | None = None,
+    action_profile_key: str | None = None,
+) -> dict[str, Any]:
+    resolved_date = target_date or date.today()
+    resolved_source_name = source_name or KOL_DAILY_CRAWL_SOURCE_NAME
+    resolved_fields = tuple(requested_fields or KOL_DAILY_CRAWL_FIELDS)
+    sync_summary = sync_kol_crawl_sources_from_db(
+        target_date=resolved_date,
+        source_name=resolved_source_name,
+        requested_fields=resolved_fields,
+        action_profile_key=action_profile_key,
+    )
+    resolved_limit = limit if limit is not None else Config.KOL_DAILY_CRAWL_LIMIT
+    fans_results = crawl_pending_profile_metrics(
+        limit=resolved_limit or None,
+        target_date=resolved_date,
+        source_name=resolved_source_name,
+    )
+    if "read_count" in resolved_fields:
+        read_results = crawl_profile_post_reads(
+            limit=resolved_limit or None,
+            target_date=resolved_date,
+            source_name=resolved_source_name,
+        )
+    else:
+        read_results = []
+    summary = {
+        "date": resolved_date.isoformat(),
+        "mode": "database",
+        "source_name": resolved_source_name,
+        "action_profile_key": action_profile_key,
+        "sync": sync_summary,
+        "fans_crawled": len(fans_results),
+        "read_crawled": len(read_results),
+        "writeback": None,
+    }
+    logger.info("KOL daily DB crawl summary: %s", summary)
+    return summary
+
+
 def sync_kol_crawl_sources_from_writeback_doc(
     *,
     target_date: date | None = None,
@@ -354,6 +399,138 @@ def sync_kol_crawl_sources_from_writeback_doc(
         "trigger_run_id": trigger_run_id,
     }
     logger.info("KOL daily crawl sources synced: %s", summary)
+    return summary
+
+
+def ensure_kol_daily_metric_rows_from_base_profiles(*, metric_date: date | None = None) -> dict[str, Any]:
+    target_date = metric_date or date.today()
+    conn = get_conn()
+    try:
+        profiles = repository.list_kol_base_profiles(conn)
+        created_or_existing = 0
+        skipped = 0
+        for profile in profiles:
+            kol_name = str(profile.get("kol_name") or "").strip()
+            platform = str(profile.get("platform") or "").strip()
+            if not kol_name or not platform:
+                skipped += 1
+                continue
+            repository.ensure_kol_daily_metric_row(
+                conn,
+                metric_date=target_date,
+                kol_name=kol_name,
+                platform=platform,
+                source_payload={
+                    "workflow": "kol_daily_db_init",
+                    "kol_profile_id": profile.get("id"),
+                    "homepage_url": profile.get("homepage_url"),
+                },
+            )
+            created_or_existing += 1
+        conn.commit()
+        summary = {
+            "date": target_date.isoformat(),
+            "base_profiles": len(profiles),
+            "ensured": created_or_existing,
+            "skipped": skipped,
+        }
+        logger.info("KOL daily DB metric rows ensured: %s", summary)
+        return summary
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def sync_kol_crawl_sources_from_db(
+    *,
+    target_date: date | None = None,
+    source_name: str | None = None,
+    requested_fields: tuple[str, ...] | list[str] | None = None,
+    action_profile_key: str | None = None,
+) -> dict[str, Any]:
+    resolved_date = target_date or date.today()
+    resolved_source_name = source_name or KOL_DAILY_CRAWL_SOURCE_NAME
+    resolved_fields = tuple(requested_fields or KOL_DAILY_CRAWL_FIELDS)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    m.metric_date,
+                    m.kol_name,
+                    m.platform,
+                    m.fans_count,
+                    b.homepage_url
+                FROM kol_daily_metrics m
+                LEFT JOIN kol_base_profiles b
+                  ON b.kol_name = m.kol_name
+                 AND b.platform = m.platform
+                WHERE m.metric_date = %s
+                ORDER BY m.id ASC
+                """,
+                (resolved_date,),
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    imported = 0
+    skipped = 0
+    for row in rows:
+        homepage_url = str(row.get("homepage_url") or "").strip()
+        if not homepage_url or homepage_url == "/":
+            skipped += 1
+            continue
+        app_type = detect_link_source(homepage_url)
+        row_action_profile_key = action_profile_key or _resolve_profile_action_profile_key(
+            app_type=app_type,
+            requested_fields=resolved_fields,
+        )
+        source_locator = {
+            "source": "kol_daily_metrics",
+            "source_name": resolved_source_name,
+            "requested_fields": list(resolved_fields),
+            "action_profile_key": row_action_profile_key,
+            "metric_date": resolved_date.isoformat(),
+        }
+        profile_key = profile_key_for_url(homepage_url)
+        upsert_profile_source(
+            {
+                "profile_key": profile_key,
+                "account_name": str(row.get("kol_name") or ""),
+                "platform": str(row.get("platform") or ""),
+                "app_type": app_type,
+                "homepage_url": homepage_url,
+                "metric_date": resolved_date,
+                "source_type": "database",
+                "source_name": resolved_source_name,
+                "source_key": profile_key_for_url(
+                    f"{resolved_source_name}:database:{resolved_date.isoformat()}:{homepage_url}"
+                ),
+                "source_locator": source_locator,
+                "requested_fields": list(resolved_fields),
+                "source": {
+                    "workflow": "kol_daily_db_pipeline",
+                    "action_profile_key": row_action_profile_key,
+                },
+                "existing_fans_count": row.get("fans_count"),
+            }
+        )
+        imported += 1
+
+    summary = {
+        "date": resolved_date.isoformat(),
+        "source": "kol_daily_metrics",
+        "source_rows": len(rows),
+        "imported": imported,
+        "skipped": skipped,
+        "source_name": resolved_source_name,
+        "action_profile_key": action_profile_key or "auto_by_app",
+    }
+    logger.info("KOL daily DB crawl sources synced: %s", summary)
     return summary
 
 

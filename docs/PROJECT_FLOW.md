@@ -180,56 +180,68 @@ profile writeback
 | `tenpay_profile_daily_metrics_v1` | 理财通 | App 重启清状态，UI/OCR 采集，三列计数器识别，粉丝详情页精确化，账号锚点校验 |
 | `unknown_profile_daily_metrics_v1` | 兜底 | 基础主页采集 |
 
-## 5. KOL 每日流程
+## 5. KOL 每日数据库主链路
 
-业务表：
+主结果表：
 
 ```text
-https://docs.qq.com/sheet/DYnhxS2VHZHBqR0V5?tab=wpvy0d
+kol_daily_metrics
 ```
 
-列结构：
+基础资料表：
 
-| 列 | 字段 |
+```text
+kol_base_profiles
+```
+
+主字段：
+
+| 字段 | 说明 |
 | --- | --- |
-| A | 日期 |
-| B | 大V名称 |
-| C | 平台 |
-| D | 主页链接 |
-| E | 第几群 |
-| F | 类型 |
-| G | 粉丝数 |
-| H | 增粉数 |
-| I | 阅读数 |
+| `metric_date` | 日期 |
+| `kol_name` | 大 V 名称 |
+| `platform` | 平台 |
+| `fans_count` | 粉丝数 |
+| `growth_count` | 增粉数 |
+| `read_count` | 阅读数 |
 
-每天 22:00：
+每天 `KOL_DAILY_CRAWL_TIME`：
 
 ```text
-KOL_DAILY_SNAPSHOT_DOC_URL
-  -> 同步基础大 V 信息
-  -> 生成明日 kol_daily_snapshots
-  -> 写入 wpvy0d
+kol_daily_db_pipeline
+  -> 从 kol_base_profiles 生成今天 kol_daily_metrics 空行
+  -> 读取 7 个理财通外部文档，更新 T-1 到 T-5 read_count
+  -> 从 kol_daily_metrics JOIN kol_base_profiles 生成今日主页采集来源
+  -> ADB 采集今日 fans_count / growth_count
+  -> 写回 kol_daily_metrics
 ```
 
-每天 08:00：
-
-```text
-profile_trigger_configs.kol_daily_metrics_wpvy0d
-  -> 筛选 wpvy0d 日期 = 今天
-  -> 跑主页粉丝数和阅读数
-  -> 回填 G/H/I
-```
+这条主链路是串行的，前一步失败会在结果里体现，后续排查以数据库为准。腾讯文档只作为理财通外部阅读数来源，不作为 KOL 主结果表。
 
 手动跑今日：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-trigger-run
+.\scripts\run.ps1 -Task kol-daily-db-pipeline
 ```
 
 手动跑历史日期：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
+.\scripts\run.ps1 -Task kol-daily-db-pipeline -ReportDate 2026-06-22
+```
+
+查看页面：
+
+```powershell
+.\scripts\run.ps1 -Task kol-metrics-web -WebPort 8091
+```
+
+兼容旧链路仍保留：
+
+```text
+kol_daily_snapshot         旧腾讯文档快照写回
+profile-trigger-run        旧 profile trigger 手动采集
+kol-tenpay-external-reads  旧理财通阅读数腾讯文档写回
 ```
 
 ## 6. 常驻运行
@@ -248,8 +260,7 @@ profile_trigger_configs.kol_daily_metrics_wpvy0d
 | `v2_submit_worker` | 300 秒 |
 | `v2_crawl_worker` | 30 秒 |
 | `v2_writeback_worker` | 30 秒 |
-| `kol_daily_snapshot` | 22:00 |
-| `kol_daily_crawl` | 08:00 |
+| `kol_daily_db_pipeline` | `KOL_DAILY_CRAWL_TIME`，默认 08:00 |
 | `heartbeat` | 30 分钟 |
 
 ## 7. 排查顺序
@@ -297,4 +308,10 @@ profile 链路：
   profile_metric_sources
   profile_metric_runs
   profile_metric_writebacks
+
+KOL 数据库主链路：
+  kol_base_profiles
+  kol_daily_metrics
+  profile_metric_sources
+  profile_metric_runs
 ```

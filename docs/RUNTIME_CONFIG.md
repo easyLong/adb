@@ -171,25 +171,35 @@ DEVICE_LOCK_WAIT_SECONDS
 .\scripts\run.ps1 -Task scheduler -SchedulerRoles wechat
 ```
 
-## KOL 每日生成和主页采集
+## KOL 每日数据库主链路
 
 | Key | 默认 | 说明 |
 | --- | --- | --- |
-| `KOL_DAILY_SNAPSHOT_READ_RANGE` | `A1:H2000` | 读取 KOL 基础信息来源表范围 |
-| `KOL_DAILY_SNAPSHOT_TIME` | `22:00` | 每天生成明日 `wpvy0d` 行 |
-| `KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS` | `1` | 写回几天的快照行 |
-| `KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS` | `1` | 22:00 生成目标日期偏移；`1` 表示明天 |
-| `KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE` | `10` | 写入 `wpvy0d` 的字号 |
-| `KOL_DAILY_CRAWL_TIME` | `08:00` | 每天采集今日 `wpvy0d` 主页指标 |
-| `KOL_DAILY_CRAWL_LIMIT` | `0` | 单次 profile trigger 采集限制；`0` 表示不限制 |
+| `KOL_DAILY_CRAWL_TIME` | `08:00` | 每天触发 KOL 数据库主链路 |
+| `KOL_DAILY_CRAWL_LIMIT` | `0` | 单次主页采集限制；`0` 表示不限制 |
+| `KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS` | `5` | 每次主链路同步最近几个已结束日期的理财通阅读数，默认 T-1 到 T-5 |
+| `KOL_DAILY_SNAPSHOT_READ_RANGE` | `A1:H2000` | 兼容旧快照链路：读取 KOL 基础信息来源表范围 |
+| `KOL_DAILY_SNAPSHOT_TIME` | `22:00` | 兼容旧快照链路：每天生成明日 `wpvy0d` 行 |
+| `KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS` | `1` | 兼容旧快照链路：写回几天的快照行 |
+| `KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS` | `1` | 兼容旧快照链路：目标日期偏移；`1` 表示明天 |
+| `KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE` | `10` | 兼容旧快照链路：写入 `wpvy0d` 的字号 |
 
-`KOL_DAILY_CRAWL_TIME` 触发的是 profile 链路：
+`KOL_DAILY_CRAWL_TIME` 触发的是数据库主链路：
 
 ```text
-profile_trigger_configs.kol_daily_metrics_wpvy0d
+kol_daily_db_pipeline
+  -> ensure kol_daily_metrics rows
+  -> sync Tenpay external reads to kol_daily_metrics.read_count
+  -> crawl profile metrics to kol_daily_metrics.fans_count / growth_count
 ```
 
-不是 document trigger。
+不是 document trigger，也不是旧的腾讯文档写回链路。
+
+查看结果页面：
+
+```powershell
+.\scripts\run.ps1 -Task kol-metrics-web -WebPort 8091
+```
 
 ## Profile 主页动作模板
 
@@ -272,8 +282,10 @@ alipay + detail + account_name,read_count,screenshot
 ## 注意事项
 
 - 日常不要固定 `PROFILE_METRICS_TARGET_DATE`，否则旧 profile 链路会一直抓同一天。
-- 启用 `KOL_DAILY_CRAWL_TIME` 和 `KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL` 后，scheduler 会优先走新的 profile trigger，并跳过旧 `PROFILE_METRICS_*` 自动调度；旧 profile 命令仍可手动执行。
-- `KOL_DAILY_SNAPSHOT_TIME=22:00` 只生成明日行，不采集。
-- `KOL_DAILY_CRAWL_TIME=08:00` 才采集今日主页数据。
+- 启用 `KOL_DAILY_CRAWL_TIME` 后，scheduler 会优先注册 `kol_daily_db_pipeline`，并跳过旧 `PROFILE_METRICS_*` 自动调度；旧 profile 命令仍可手动执行。
+- 新 KOL 主链路只更新数据库；查看和下载走 `kol-metrics-web`。
+- `KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS=5` 表示阅读数每天更新 T-1 到 T-5。
+- `KOL_DAILY_SNAPSHOT_TIME=22:00` 是旧腾讯文档快照链路配置，新主链路日常不依赖它。
+- `KOL_DAILY_CRAWL_TIME=08:00` 才采集今日主页粉丝数和增粉数。
 - 文档字段优先按表头 title 识别，列号配置只是兜底。
 - 写回图片时要走腾讯文档图片上传，不应把本地路径当最终截图结果。
