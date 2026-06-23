@@ -93,21 +93,23 @@ def crawl_detail_task(submission: dict[str, Any]) -> dict[str, Any]:
     app_type = str(submission.get("app_type") or "unknown")
     fields = _requested_fields(submission, default=(ACCOUNT_NAME, READ_COUNT, COMMENT_COUNT, SCREENSHOT))
     opened_url = resolve_short_url(str(submission["post_url"]))
+    capture_plan = resolve_capture_plan_for_task(
+        task_type=DETAIL,
+        app_type=app_type,
+        fields=fields,
+        profile=submission.get("capture_action_profile"),
+    )
     result = _open_and_scrape_with_app_recovery(
         opened_url=opened_url,
         record_id=int(submission["id"]),
         source_app=app_type,
+        capture_plan=capture_plan,
     )
     result.update(
         {
             "row_index": int(submission["row_index"]),
             "opened_url": opened_url,
-            "capture_plan": resolve_capture_plan_for_task(
-                task_type=DETAIL,
-                app_type=app_type,
-                fields=fields,
-                profile=submission.get("capture_action_profile"),
-            ).to_json_dict(),
+            "capture_plan": capture_plan.to_json_dict(),
         }
     )
     return _with_post_field_results(result, task_type=DETAIL, app_type=app_type, fields=fields)
@@ -230,6 +232,7 @@ def _open_and_scrape_with_app_recovery(
     opened_url: str,
     record_id: int,
     source_app: str,
+    capture_plan,
 ) -> dict[str, Any]:
     attempts = max(1, Config.DETAIL_BLANK_REOPEN_RETRIES + 1)
     result: dict[str, Any] = {}
@@ -237,7 +240,7 @@ def _open_and_scrape_with_app_recovery(
 
     for attempt in range(1, attempts + 1):
         open_url(opened_url)
-        result = scrape_record_content(record_id, source_app=source_app)
+        result = scrape_record_content(record_id, source_app=source_app, capture_plan=capture_plan)
         should_recover = _is_blank_target_result(result) or is_transient_open_failure(result)
         if not should_recover or attempt >= attempts:
             if attempt > 1 or restarts:

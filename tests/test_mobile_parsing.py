@@ -4,10 +4,24 @@ from datetime import datetime, date
 from pathlib import Path
 from unittest.mock import patch
 
+from apps.finance_crawler.crawlers.base import CapturePlan
 from apps.finance_crawler.mobile.capture_engine import _is_input_injection_permission_error
+from apps.finance_crawler.mobile.action_plan import (
+    ACTION_CLICK_DETAIL,
+    ACTION_OCR,
+    ACTION_OPEN_LINK,
+    ACTION_SCREENSHOT,
+    ACTION_SCROLL,
+    ACTION_UI_CONTROLS,
+    FieldCapturePlan,
+)
+from apps.finance_crawler.mobile.crawler import (
+    _runtime_capture_plan,
+    _should_run_adapter_before_main_capture,
+    is_transient_open_failure,
+    wait_for_page_status_ready,
+)
 from apps.finance_crawler.mobile.page_status import detect_page_status_from_texts
-from apps.finance_crawler.mobile.crawler import is_transient_open_failure, wait_for_page_status_ready
-from apps.finance_crawler.mobile.action_plan import ACTION_OPEN_LINK, ACTION_SCREENSHOT, ACTION_UI_CONTROLS, FieldCapturePlan
 from apps.finance_crawler.mobile.parsers import extract_account_name, extract_profile_fans_count
 from apps.finance_crawler.mobile.read_count_crawler import ReadCountTarget, crawl_read_count_target
 from apps.finance_crawler.workflows.article_details import (
@@ -54,6 +68,68 @@ class PageStatusTests(unittest.TestCase):
 
         self.assertEqual(status, "success")
         self.assertIsNone(error)
+
+
+class RuntimeCapturePlanTests(unittest.TestCase):
+    def test_runtime_capture_plan_uses_v2_scroll_and_ocr_limits(self) -> None:
+        class Adapter:
+            source_app = "fake"
+
+            def capture_plan(self):
+                return CapturePlan(
+                    max_pages=3,
+                    scroll_wait=0.8,
+                    enable_ocr=True,
+                    ocr_min_confidence=0.5,
+                    max_detail_scrolls=2,
+                )
+
+        no_scroll_plan = FieldCapturePlan(
+            task_type="detail",
+            app_type="alipay",
+            fields=("read_count", "screenshot"),
+            actions=(ACTION_OPEN_LINK, ACTION_UI_CONTROLS, ACTION_SCREENSHOT),
+            max_scrolls=2,
+            wait_after_scroll=1.2,
+        )
+        runtime = _runtime_capture_plan(Adapter(), no_scroll_plan)
+
+        self.assertEqual(runtime.max_pages, 1)
+        self.assertEqual(runtime.max_detail_scrolls, 0)
+        self.assertFalse(runtime.enable_ocr)
+
+        scroll_plan = FieldCapturePlan(
+            task_type="detail",
+            app_type="alipay",
+            fields=("comment_count",),
+            actions=(ACTION_OPEN_LINK, ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_OCR, ACTION_SCROLL),
+            max_scrolls=2,
+            wait_after_scroll=1.2,
+        )
+        runtime = _runtime_capture_plan(Adapter(), scroll_plan)
+
+        self.assertEqual(runtime.max_pages, 3)
+        self.assertEqual(runtime.max_detail_scrolls, 2)
+        self.assertTrue(runtime.enable_ocr)
+        self.assertEqual(runtime.scroll_wait, 1.2)
+
+    def test_adapter_before_main_hook_requires_click_detail_in_v2_plan(self) -> None:
+        plain_plan = FieldCapturePlan(
+            task_type="detail",
+            app_type="tenpay",
+            fields=("read_count",),
+            actions=(ACTION_OPEN_LINK, ACTION_UI_CONTROLS, ACTION_SCREENSHOT),
+        )
+        click_plan = FieldCapturePlan(
+            task_type="detail",
+            app_type="tenpay",
+            fields=("trade_details",),
+            actions=(ACTION_OPEN_LINK, ACTION_SCREENSHOT, ACTION_OCR, ACTION_CLICK_DETAIL),
+        )
+
+        self.assertTrue(_should_run_adapter_before_main_capture(None))
+        self.assertFalse(_should_run_adapter_before_main_capture(plain_plan))
+        self.assertTrue(_should_run_adapter_before_main_capture(click_plan))
 
 
 class AccountParserTests(unittest.TestCase):

@@ -28,6 +28,7 @@ from apps.finance_crawler.mobile.page_status import (
     detect_page_status_from_texts,
     records_to_texts,
 )
+from apps.finance_crawler.mobile.action_plan import ACTION_CLICK_DETAIL, FieldCapturePlan
 from apps.finance_crawler.mobile.record_capture import capture_record_pages
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.utils.logger import get_logger
@@ -276,7 +277,38 @@ def _adapter_capture_plan(app_adapter: AppCrawlerAdapter) -> CapturePlan:
         return DefaultCrawlerAdapter().capture_plan()
 
 
-def scrape_record_content(record_id: int, source_app: str | None = None) -> dict[str, Any]:
+def _runtime_capture_plan(
+    app_adapter: AppCrawlerAdapter,
+    field_capture_plan: FieldCapturePlan | None,
+) -> CapturePlan:
+    adapter_plan = _adapter_capture_plan(app_adapter)
+    if field_capture_plan is None:
+        return adapter_plan
+
+    max_scrolls = field_capture_plan.max_scrolls if field_capture_plan.allow_scroll else 0
+    return CapturePlan(
+        max_pages=max(1, max_scrolls + 1),
+        scroll_wait=field_capture_plan.wait_after_scroll,
+        enable_ocr=field_capture_plan.enable_ocr,
+        ocr_min_confidence=adapter_plan.ocr_min_confidence,
+        ocr_min_top=adapter_plan.ocr_min_top,
+        stop_when_counts_found=field_capture_plan.stop_when_fields_found,
+        stop_on_repeated_screen=adapter_plan.stop_on_repeated_screen,
+        max_detail_scrolls=max_scrolls,
+    )
+
+
+def _should_run_adapter_before_main_capture(field_capture_plan: FieldCapturePlan | None) -> bool:
+    if field_capture_plan is None:
+        return True
+    return ACTION_CLICK_DETAIL in field_capture_plan.actions
+
+
+def scrape_record_content(
+    record_id: int,
+    source_app: str | None = None,
+    capture_plan: FieldCapturePlan | None = None,
+) -> dict[str, Any]:
     output_dir = Config.CAPTURE_DIR / f"record_{record_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     result: dict[str, Any] = {
         "status": "error",
@@ -296,25 +328,27 @@ def scrape_record_content(record_id: int, source_app: str | None = None) -> dict
         return result
 
     app_adapter = get_app_adapter(source_app)
-    capture_plan = _adapter_capture_plan(app_adapter)
-    adapter_data = _adapter_before_main_capture(
-        app_adapter,
-        CrawlAdapterContext(
-            source_app=source_app,
-            output_dir=output_dir,
-            capture_ocr_snapshot=_capture_ocr_snapshot,
-            device=device,
-            scroll_forward=lambda current_device: scroll_forward(current_device, serial=current_serial()),
-            scroll_wait=capture_plan.scroll_wait,
-            max_detail_scrolls=capture_plan.max_detail_scrolls,
+    runtime_capture_plan = _runtime_capture_plan(app_adapter, capture_plan)
+    adapter_data = {}
+    if _should_run_adapter_before_main_capture(capture_plan):
+        adapter_data = _adapter_before_main_capture(
+            app_adapter,
+            CrawlAdapterContext(
+                source_app=source_app,
+                output_dir=output_dir,
+                capture_ocr_snapshot=_capture_ocr_snapshot,
+                device=device,
+                scroll_forward=lambda current_device: scroll_forward(current_device, serial=current_serial()),
+                scroll_wait=runtime_capture_plan.scroll_wait,
+                max_detail_scrolls=runtime_capture_plan.max_detail_scrolls,
+            )
         )
-    )
     current_device = device()
     summary = capture_record_pages(
         record_id=record_id,
         output_dir=output_dir,
         app_adapter=app_adapter,
-        capture_plan=capture_plan,
+        capture_plan=runtime_capture_plan,
         device=current_device,
         serial=current_serial(),
         parse_counts=lambda texts: _parse_counts_with_adapter(app_adapter, texts),
@@ -365,6 +399,12 @@ def scrape_record_content(record_id: int, source_app: str | None = None) -> dict
             "ocr_attempted": summary["ocr_attempted"],
             "ocr_available": summary["ocr_available"],
             "ocr_records": summary["ocr_records"],
+            "runtime_capture_plan": {
+                "max_pages": runtime_capture_plan.max_pages,
+                "max_detail_scrolls": runtime_capture_plan.max_detail_scrolls,
+                "enable_ocr": runtime_capture_plan.enable_ocr,
+                "scroll_wait": runtime_capture_plan.scroll_wait,
+            },
             **app_result_fields,
         }
     )

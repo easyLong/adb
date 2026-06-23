@@ -1566,7 +1566,7 @@ class CrawlerAppDocumentTests(unittest.TestCase):
             patch(
                 "apps.finance_crawler.crawler_app.strategies.post.scrape_record_content",
                 side_effect=[blank, success],
-            ),
+            ) as scrape_mock,
             patch("apps.finance_crawler.crawler_app.strategies.post.restart_app_for_url", return_value=True) as restart,
         ):
             result = crawl_detail_task(
@@ -1580,6 +1580,10 @@ class CrawlerAppDocumentTests(unittest.TestCase):
             )
 
         self.assertEqual(open_url_mock.call_count, 2)
+        self.assertEqual(scrape_mock.call_count, 2)
+        for call in scrape_mock.call_args_list:
+            self.assertEqual(call.kwargs["capture_plan"].max_scrolls, 0)
+            self.assertEqual(call.kwargs["capture_plan"].fields, (ACCOUNT_NAME, READ_COUNT_FIELD))
         restart.assert_called_once_with("app://post", source_app=SOURCE_ALIPAY)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["app_metrics"]["blank_reopen_attempts"], 1)
