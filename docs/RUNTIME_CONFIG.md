@@ -230,6 +230,8 @@ alipay + detail + account_name,read_count,screenshot
 | --- | --- |
 | `ADB_PATH` | ADB 路径，默认优先使用 `platform-tools/adb.exe` |
 | `DEVICE_SERIAL` | 指定设备序列号，空则自动选择可用设备 |
+| `DEVICE_POOL_HOST_ID` | 多机器设备池隔离标识，空则使用电脑名 |
+| `DEVICE_FAILURE_COOLDOWN_SECONDS` | 普通采集失败后，该设备/App 短冷却时间 |
 | `DEVICE_CHECK_TIMEOUT` | 设备检测超时 |
 | `DEVICE_HEALTH_CACHE_SECONDS` | 设备健康检查缓存时间 |
 | `DEVICE_AUTO_RECONNECT` | 是否自动重连 |

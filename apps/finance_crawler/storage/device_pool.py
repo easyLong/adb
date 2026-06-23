@@ -26,6 +26,7 @@ class DeviceLease:
     lease_id: int | None
     lease_token: str
     device_id: int | None
+    host_id: str
     adb_serial: str
     app_type: str
     task_scope: str
@@ -36,10 +37,12 @@ class DeviceLease:
 
 def refresh_adb_devices() -> list[AdbDevice]:
     devices = list_adb_devices()
+    host_id = _device_pool_host_id()
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
             ensure_device_pool_tables(cursor)
+            _expire_stale_device_leases(cursor, host_id=host_id)
             seen_serials = []
             for device in devices:
                 seen_serials.append(device.serial)
@@ -47,9 +50,9 @@ def refresh_adb_devices() -> list[AdbDevice]:
                 cursor.execute(
                     """
                     INSERT INTO adb_devices (
-                        adb_serial, connect_type, model, product, device_name, status, last_seen_at, last_error
+                        host_id, adb_serial, connect_type, model, product, device_name, status, last_seen_at, last_error
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW(), NULL)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NULL)
                     ON DUPLICATE KEY UPDATE
                         connect_type = VALUES(connect_type),
                         model = VALUES(model),
@@ -68,6 +71,7 @@ def refresh_adb_devices() -> list[AdbDevice]:
                         last_error = NULL
                     """,
                     (
+                        host_id,
                         device.serial,
                         device.transport,
                         device.model or None,
@@ -84,10 +88,11 @@ def refresh_adb_devices() -> list[AdbDevice]:
                     SET status = CASE WHEN status = 'disabled' THEN status ELSE 'offline' END,
                         current_worker_id = NULL,
                         lease_until = NULL
-                    WHERE adb_serial NOT IN ({placeholders})
+                    WHERE host_id = %s
+                      AND adb_serial NOT IN ({placeholders})
                       AND status <> 'disabled'
                     """,
-                    seen_serials,
+                    [host_id, *seen_serials],
                 )
             else:
                 cursor.execute(
@@ -96,8 +101,10 @@ def refresh_adb_devices() -> list[AdbDevice]:
                     SET status = CASE WHEN status = 'disabled' THEN status ELSE 'offline' END,
                         current_worker_id = NULL,
                         lease_until = NULL
-                    WHERE status <> 'disabled'
-                    """
+                    WHERE host_id = %s
+                      AND status <> 'disabled'
+                    """,
+                    (host_id,),
                 )
         conn.commit()
     except Exception:
@@ -110,35 +117,38 @@ def refresh_adb_devices() -> list[AdbDevice]:
 
 def device_pool_status() -> dict[str, Any]:
     refresh_adb_devices()
+    host_id = _device_pool_host_id()
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
             ensure_device_pool_tables(cursor)
+            _expire_stale_device_leases(cursor, host_id=host_id)
             cursor.execute(
                 """
-                SELECT id, adb_serial, connect_type, model, product, device_name, status,
+                SELECT id, host_id, adb_serial, connect_type, model, product, device_name, status,
                        last_seen_at, cooldown_until, current_worker_id, lease_until, last_error
                 FROM adb_devices
-                ORDER BY id ASC
+                ORDER BY host_id ASC, id ASC
                 """
             )
             devices = cursor.fetchall()
             cursor.execute(
                 """
-                SELECT d.adb_serial, s.app_type, s.login_status, s.risk_status,
+                SELECT d.host_id, d.adb_serial, s.app_type, s.login_status, s.risk_status,
                        s.cooldown_until, s.success_count, s.failure_count,
                        s.last_success_at, s.last_failure_at, s.last_risk_reason
                 FROM adb_device_app_sessions s
                 JOIN adb_devices d ON d.id = s.device_id
-                ORDER BY d.id ASC, s.app_type ASC
+                ORDER BY d.host_id ASC, d.id ASC, s.app_type ASC
                 """
             )
             sessions = cursor.fetchall()
             cursor.execute(
                 """
-                SELECT task_scope, task_id, app_type, adb_serial, status, leased_until, started_at
+                SELECT host_id, task_scope, task_id, app_type, adb_serial, status, leased_until, started_at
                 FROM adb_execution_leases
                 WHERE status = 'running'
+                  AND leased_until > NOW()
                 ORDER BY started_at ASC
                 """
             )
@@ -146,6 +156,7 @@ def device_pool_status() -> dict[str, Any]:
     finally:
         conn.close()
     return {
+        "current_host_id": host_id,
         "devices": [_json_ready_row(item) for item in devices],
         "sessions": [_json_ready_row(item) for item in sessions],
         "running_leases": [_json_ready_row(item) for item in running_leases],
@@ -250,6 +261,7 @@ def _acquire_device(
             lease_id=None,
             lease_token=str(uuid.uuid4()),
             device_id=None,
+            host_id=_device_pool_host_id(),
             adb_serial=device.serial,
             app_type=app_type or "unknown",
             task_scope=task_scope,
@@ -259,6 +271,7 @@ def _acquire_device(
         )
 
     refresh_adb_devices()
+    host_id = _device_pool_host_id()
     worker = worker_id or _default_worker_id()
     lease_token = str(uuid.uuid4())
     lease_seconds = max(
@@ -271,7 +284,7 @@ def _acquire_device(
         with conn.cursor() as cursor:
             ensure_device_pool_tables(cursor)
             serial_clause = ""
-            params: list[Any] = [app_type or "unknown"]
+            params: list[Any] = [app_type or "unknown", host_id]
             if preferred_serial:
                 serial_clause = "AND d.adb_serial = %s"
                 params.append(preferred_serial)
@@ -283,14 +296,21 @@ def _acquire_device(
                   ON s.device_id = d.id
                  AND s.app_type = %s
                 WHERE d.status IN ('online', 'device')
+                  AND d.host_id = %s
                   AND (d.cooldown_until IS NULL OR d.cooldown_until <= NOW())
                   AND (d.lease_until IS NULL OR d.lease_until <= NOW())
                   AND (s.cooldown_until IS NULL OR s.cooldown_until <= NOW())
                   AND COALESCE(s.risk_status, 'ok') NOT IN ('blocked', 'disabled')
                   AND COALESCE(s.login_status, 'unknown') NOT IN ('login_required', 'disabled')
                   {serial_clause}
-                ORDER BY COALESCE(s.failure_count, 0) ASC,
+                ORDER BY CASE
+                             WHEN s.last_failure_at IS NOT NULL
+                              AND s.last_failure_at > DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+                             THEN 1 ELSE 0
+                         END ASC,
                          COALESCE(s.success_count, 0) DESC,
+                         COALESCE(s.failure_count, 0) ASC,
+                         s.last_success_at DESC,
                          d.last_seen_at DESC,
                          d.id ASC
                 LIMIT 1
@@ -328,11 +348,11 @@ def _acquire_device(
             cursor.execute(
                 """
                 INSERT INTO adb_execution_leases (
-                    task_scope, task_id, app_type, device_id, adb_serial, lease_token, worker_id, leased_until
+                    host_id, task_scope, task_id, app_type, device_id, adb_serial, lease_token, worker_id, leased_until
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (task_scope, task_id, app_type or "unknown", device_id, adb_serial, lease_token, worker, leased_until),
+                (host_id, task_scope, task_id, app_type or "unknown", device_id, adb_serial, lease_token, worker, leased_until),
             )
             lease_id = int(cursor.lastrowid)
         conn.commit()
@@ -348,6 +368,7 @@ def _acquire_device(
             lease_id=lease_id,
             lease_token=lease_token,
             device_id=device_id,
+            host_id=host_id,
             adb_serial=adb_serial,
             app_type=app_type or "unknown",
             task_scope=task_scope,
@@ -372,8 +393,14 @@ def finish_device_lease(
     if not Config.DEVICE_POOL_ENABLED or lease.device_id is None:
         return
     normalized_status = "success" if status == "success" else "failed"
-    cooldown_seconds = _cooldown_seconds(error=error, error_type=error_type)
-    cooldown_until = datetime.now() + timedelta(seconds=cooldown_seconds) if cooldown_seconds > 0 else None
+    app_cooldown_seconds = 0 if normalized_status == "success" else _cooldown_seconds(error=error, error_type=error_type)
+    device_cooldown_seconds = 0 if normalized_status == "success" else _device_cooldown_seconds(error_type=error_type)
+    app_cooldown_until = datetime.now() + timedelta(seconds=app_cooldown_seconds) if app_cooldown_seconds > 0 else None
+    device_cooldown_until = (
+        datetime.now() + timedelta(seconds=device_cooldown_seconds)
+        if device_cooldown_seconds > 0
+        else None
+    )
     conn = get_conn()
     try:
         with conn.cursor() as cursor:
@@ -403,7 +430,12 @@ def finish_device_lease(
                     last_error = %s
                 WHERE id = %s
                 """,
-                (cooldown_until, cooldown_until, error if cooldown_until else None, lease.device_id),
+                (
+                    device_cooldown_until,
+                    device_cooldown_until,
+                    error if normalized_status != "success" else None,
+                    lease.device_id,
+                ),
             )
             if normalized_status == "success":
                 cursor.execute(
@@ -419,7 +451,7 @@ def finish_device_lease(
                     (lease.device_id, lease.app_type),
                 )
             else:
-                risk_status = "cooldown" if cooldown_until else "ok"
+                risk_status = "cooldown" if app_cooldown_until else "ok"
                 login_status = "login_required" if _is_login_error(error) else "unknown"
                 cursor.execute(
                     """
@@ -432,7 +464,7 @@ def finish_device_lease(
                         last_failure_at = NOW()
                     WHERE device_id = %s AND app_type = %s
                     """,
-                    (risk_status, login_status, cooldown_until, error, lease.device_id, lease.app_type),
+                    (risk_status, login_status, app_cooldown_until, error, lease.device_id, lease.app_type),
                 )
         conn.commit()
     except Exception:
@@ -451,7 +483,10 @@ def mark_device_app_cooldown(*, adb_serial: str, app_type: str, reason: str, sec
     try:
         with conn.cursor() as cursor:
             ensure_device_pool_tables(cursor)
-            cursor.execute("SELECT id FROM adb_devices WHERE adb_serial = %s", (adb_serial,))
+            cursor.execute(
+                "SELECT id FROM adb_devices WHERE host_id = %s AND adb_serial = %s",
+                (_device_pool_host_id(), adb_serial),
+            )
             row = cursor.fetchone()
             if not row:
                 return
@@ -496,7 +531,11 @@ def _restore_lease_serial(lease: DeviceLease) -> None:
 
 
 def _default_worker_id() -> str:
-    return f"{socket.gethostname()}:{os.getpid()}"
+    return f"{_device_pool_host_id()}:{os.getpid()}"
+
+
+def _device_pool_host_id() -> str:
+    return ((Config.DEVICE_POOL_HOST_ID or socket.gethostname() or "local").strip() or "local").lower()
 
 
 def _json_ready_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -549,4 +588,41 @@ def _cooldown_seconds(*, error: str | None, error_type: str | None) -> int:
         return int(Config.DEVICE_LOGIN_COOLDOWN_SECONDS)
     if normalized == "risk_control" or _is_risk_error(error):
         return int(Config.DEVICE_RISK_COOLDOWN_SECONDS)
+    return int(Config.DEVICE_FAILURE_COOLDOWN_SECONDS)
+
+
+def _device_cooldown_seconds(*, error_type: str | None) -> int:
+    if str(error_type or "").lower() == "device_unavailable":
+        return int(Config.DEVICE_UNAVAILABLE_COOLDOWN_SECONDS)
     return 0
+
+
+def _expire_stale_device_leases(cursor, *, host_id: str) -> None:
+    cursor.execute(
+        """
+        UPDATE adb_execution_leases
+        SET status = 'expired',
+            error_type = COALESCE(error_type, 'lease_expired'),
+            error = COALESCE(error, 'lease expired before release'),
+            finished_at = NOW()
+        WHERE status = 'running'
+          AND leased_until <= NOW()
+        """,
+    )
+    cursor.execute(
+        """
+        UPDATE adb_devices
+        SET current_worker_id = NULL,
+            lease_until = NULL,
+            status = CASE
+                WHEN status = 'disabled' THEN status
+                WHEN cooldown_until IS NOT NULL AND cooldown_until > NOW() THEN status
+                ELSE 'online'
+            END
+        WHERE host_id = %s
+          AND lease_until IS NOT NULL
+          AND lease_until <= NOW()
+          AND status <> 'offline'
+        """,
+        (host_id,),
+    )

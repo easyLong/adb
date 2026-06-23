@@ -438,6 +438,20 @@ class DocLinkReadParserTests(unittest.TestCase):
         open_url.assert_called_once()
         sleep.assert_called_once_with(12.0)
 
+    def test_device_pool_ordinary_failure_uses_short_app_cooldown_only(self) -> None:
+        from apps.finance_crawler.storage.device_pool import _cooldown_seconds, _device_cooldown_seconds
+
+        with patch("apps.finance_crawler.config.Config.DEVICE_FAILURE_COOLDOWN_SECONDS", 123):
+            self.assertEqual(_cooldown_seconds(error="account name was not detected", error_type="field_not_detected"), 123)
+            self.assertEqual(_device_cooldown_seconds(error_type="field_not_detected"), 0)
+
+    def test_device_pool_device_unavailable_cools_down_whole_device(self) -> None:
+        from apps.finance_crawler.storage.device_pool import _cooldown_seconds, _device_cooldown_seconds
+
+        with patch("apps.finance_crawler.config.Config.DEVICE_UNAVAILABLE_COOLDOWN_SECONDS", 456):
+            self.assertEqual(_cooldown_seconds(error="adb shell unavailable", error_type="device_unavailable"), 456)
+            self.assertEqual(_device_cooldown_seconds(error_type="device_unavailable"), 456)
+
     def test_antfortune_read_count_warmup_launches_and_swipes_before_post(self) -> None:
         plan = FieldCapturePlan(
             task_type="read_count",

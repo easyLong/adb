@@ -139,6 +139,8 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS profile_metric_writebacks", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS capture_action_profiles", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS field_capture_observations", ddl)
+        self.assertIn("host_id VARCHAR(191) NOT NULL DEFAULT ''", ddl)
+        self.assertIn("UNIQUE KEY uk_adb_devices_host_serial", ddl)
         self.assertIn("app_type VARCHAR(64) NOT NULL", ddl)
         self.assertIn("task_type VARCHAR(64) NOT NULL", ddl)
         self.assertIn("field_combo VARCHAR(512) NOT NULL", ddl)
