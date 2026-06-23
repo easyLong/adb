@@ -89,9 +89,9 @@ OpenAPI 凭证写入运行时配置表，不写死在代码里：
 | 链路 | 用途 | 核心触发器 |
 | --- | --- | --- |
 | 帖子/链接型任务 | 每行是帖子链接 `post_url`，采集昵称、阅读数、截图、评论数、备注等 | `document_trigger_configs` |
-| 主页型任务 | 每行是主页链接 `homepage_url`，采集粉丝数、主页最近帖子阅读数、持仓等复杂动作 | `profile_trigger_configs` |
+| KOL / 主页型任务 | 每行是主页链接 `homepage_url`，采集粉丝数、增粉数，合并理财通阅读数 | `kol_daily_db_pipeline` |
 
-普通在线文档的初检、详情、阅读数任务走 `document_trigger`。KOL 每日主页采集走 `profile_trigger`，默认配置是 `kol_daily_metrics_wpvy0d`。
+普通在线文档的初检、详情、阅读数任务走 `document_trigger`。KOL 每日主页采集不再走独立 profile trigger 入口，主结果只看 `kol_daily_metrics`。
 
 ## 5. 配置常驻 worker 间隔
 
@@ -227,18 +227,9 @@ document_trigger_bindings  配这个 trigger 要提交哪些任务和字段
 -DocumentSheetMode "sheet_title_contains" -DocumentSheetKeyword "红土"
 ```
 
-## 7. 配置 profile trigger
+## 7. KOL / 主页型任务
 
-profile trigger 用于主页型任务，不走 `task_submissions` / `writeback_plans`，而是走：
-
-```text
-profile_trigger_configs
-  -> profile_metric_sources
-  -> profile_metric_runs
-  -> profile_metric_writebacks
-```
-
-当前 KOL 每日任务优先走数据库主链路：
+KOL 每日任务走数据库主链路：
 
 ```text
 kol_daily_db_pipeline
@@ -248,12 +239,6 @@ kol_daily_db_pipeline
 ```
 
 KOL 每日主链路不是 `document_trigger`。详细说明见 [KOL_DAILY_DB_PIPELINE.md](KOL_DAILY_DB_PIPELINE.md)。
-
-查看旧 profile trigger：
-
-```powershell
-.\scripts\run.ps1 -Task profile-trigger-list
-```
 
 手动跑今天的新主链路：
 
@@ -267,7 +252,7 @@ KOL 每日主链路不是 `document_trigger`。详细说明见 [KOL_DAILY_DB_PIP
 .\scripts\run.ps1 -Task kol-daily-db-pipeline -ReportDate 2026-06-22
 ```
 
-`profile-trigger-run` 和 `kol-daily-crawl` 仍保留为兼容命令，用于旧腾讯文档回填链路排查。
+旧 `profile-trigger-*` / `kol-daily-crawl` 入口已移除；KOL 主结果只看数据库。
 
 ## 8. 先试跑一次
 
@@ -411,7 +396,6 @@ Get-ChildItem apps\finance_crawler\logs |
 ```powershell
 .\scripts\run.ps1 -Task config
 .\scripts\run.ps1 -Task v2-trigger-list
-.\scripts\run.ps1 -Task profile-trigger-list
 ```
 
 单独跑 worker：

@@ -49,7 +49,7 @@ flowchart LR
 | 链路 | 入口 | 目标 | 关键事实 |
 | --- | --- | --- | --- |
 | 帖子/链接型 document 链路 | 在线 sheet 中的 `post_url` | 回填发帖账号昵称、标题、评论、点赞、阅读、截图、备注等字段 | 以 `document_trigger_configs` 提交任务，队列化采集和字段级写回 |
-| 大V主页 profile/KOL 链路 | 在线 sheet 中的 `homepage_url` | 回填粉丝数、增粉数、阅读数 | 以 `profile_trigger_configs` 和每日快照驱动，按 `日期 + 主页链接` 定位写回 |
+| 大V主页 KOL 链路 | `kol_base_profiles` 中的 `homepage_url` | 更新粉丝数、增粉数、理财通阅读数 | 以 `kol_daily_db_pipeline` 串行驱动，主结果写入 `kol_daily_metrics` |
 | 内部数据报告 report 链路 | 线上日期 sheet 当前内容 | 统计预发帖、采集失败、成功、失败、阅读指标 | 以 sheet 当前数据为准，不再依赖数据库任务；默认统计昨日，周末跳过 |
 
 ## 3. 运行入口
@@ -182,8 +182,6 @@ result_table: kol_daily_metrics
 read_count_lookback: KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS
 ```
 
-兼容旧链路仍保留 `profile_trigger_configs.kol_daily_metrics_wpvy0d`、`kol_daily_snapshot`、`profile_metric_writebacks`，用于排查或临时腾讯文档写回。
-
 结果查看：
 
 ```powershell
@@ -267,16 +265,16 @@ worker 通过 `SCHEDULER_ROLES` 分角色运行，常见角色如下：
 
 | 类别 | 代表表 |
 | --- | --- |
-| 触发器配置 | `document_trigger_configs`, `document_trigger_bindings`, `profile_trigger_configs` |
+| 触发器配置 | `document_trigger_configs`, `document_trigger_bindings` |
 | 文档标准化 | `documents`, `document_sheets`, `column_mappings`, `source_rows` |
 | 任务队列 | `task_submissions`, `task_executions`, `writeback_plans` |
-| KOL 数据 | `kol_base_profiles`, `kol_daily_metrics`, `profile_metric_sources`, `profile_metric_runs`, `profile_metric_writebacks`, `kol_daily_snapshots` |
+| KOL 数据 | `kol_base_profiles`, `kol_daily_metrics`, `profile_metric_sources`, `profile_metric_runs` |
 | 兼容和运行日志 | `crawl_task_submissions`, `crawl_task_executions`, `crawl_results`, `crawl_writebacks`, `task_log` |
 
 ## 11. 扩展原则
 
 - 新增帖子/链接型业务：优先新增 `document_trigger` 和对应 `capture_action_profiles`。
-- 新增主页型业务：优先新增 `profile_trigger`、row adapter 和主页 action profile。
+- 新增主页型业务：优先扩展 KOL DB pipeline 的来源生成、主页 action profile 和结果表字段。
 - 新增 App：先补链接识别和 App profile，再补采集动作和字段解析。
 - 新增写回字段：先定义固定业务字段名，再补表头识别、采集结果、写回定位。
 - 高风险页面动作放在 handler/action profile/adapter 中，不放在 trigger 配置里。

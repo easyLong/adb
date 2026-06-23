@@ -34,43 +34,27 @@ adb shell svc power stayon true
 scheduler 启动后会：
 
 - 加载运行时配置。
-- 注册通用任务和大 V 任务。
-- 如果配置了大 V 文档和每日准备时间，会先检查当天行是否存在。
-- 如果配置了大 V 抓取间隔，会跑一次 `profile_metrics`。
+- 注册 document 队列 worker、KOL DB pipeline、WeChat 同步等已启用任务。
+- KOL / 主页型任务由 `kol-daily-db-pipeline` 串行处理。
 
 ## 3. 大 V 每日流程
 
 每日自动流程：
 
 ```text
-00:10 profile-daily-rows
-每 60 分钟 profile-metrics
+KOL_DAILY_CRAWL_TIME kol-daily-db-pipeline
 ```
 
-手动补今天行：
+手动跑今天：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-daily-rows
+.\scripts\run.ps1 -Task kol-daily-db-pipeline
 ```
 
-手动补指定日期：
+手动跑指定日期：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-daily-rows -ReportDate 2026-06-04
-```
-
-手动完整抓取：
-
-```powershell
-.\scripts\run.ps1 -Task profile-metrics
-```
-
-拆分执行：
-
-```powershell
-.\scripts\run.ps1 -Task profile-sync
-.\scripts\run.ps1 -Task profile-crawl
-.\scripts\run.ps1 -Task profile-writeback
+.\scripts\run.ps1 -Task kol-daily-db-pipeline -ReportDate 2026-06-04
 ```
 
 线上文档检查要点：
@@ -83,14 +67,10 @@ scheduler 启动后会：
 
 ## 4. 主页帖子阅读数
 
-```powershell
-.\scripts\run.ps1 -Task profile-post-reads -ReportDate 2026-06-04
-```
-
-如果需要限制数量：
+主页阅读数不再使用旧的独立 profile-post-reads 入口。当前理财通阅读数通过以下任务写入 `kol_daily_metrics`：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-post-reads -ReportDate 2026-06-04 -ConfigSet PROFILE_POST_READ_CRAWL_LIMIT=5
+.\scripts\run.ps1 -Task kol-tenpay-external-reads -ReportDate 2026-06-04
 ```
 
 ## 5. 需求 1 文章详情

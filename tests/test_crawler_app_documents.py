@@ -133,8 +133,6 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS submit_runs", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS kol_daily_snapshots", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS profile_action_profiles", ddl)
-        self.assertIn("CREATE TABLE IF NOT EXISTS profile_trigger_configs", ddl)
-        self.assertIn("CREATE TABLE IF NOT EXISTS profile_trigger_runs", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS profile_targets", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS profile_metric_sources", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS profile_metric_runs", ddl)
@@ -644,31 +642,6 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         first_cell = data_request["rows"][0]["values"][0]
         self.assertEqual(first_cell["cellFormat"]["textFormat"]["fontSize"], 10)
 
-    def test_kol_daily_scheduled_job_targets_tomorrow(self) -> None:
-        from apps.finance_crawler import app as app_module
-
-        class FakeDate(date):
-            @classmethod
-            def today(cls):
-                return cls(2026, 6, 6)
-
-        captured_dates = []
-        old_offset = Config.KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS
-        Config.KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS = 1
-        try:
-            with (
-                patch("apps.finance_crawler.app.date", FakeDate),
-                patch(
-                    "apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots.run_kol_daily_snapshot_pipeline",
-                    side_effect=lambda snapshot_date=None: captured_dates.append(snapshot_date) or {},
-                ),
-            ):
-                app_module.run_kol_daily_snapshot_job()
-        finally:
-            Config.KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS = old_offset
-
-        self.assertEqual(captured_dates, [date(2026, 6, 7)])
-
     def test_kol_daily_crawl_row_parses_generated_sheet_columns(self) -> None:
         row = [
             "2026-06-06",
@@ -808,26 +781,6 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertEqual(mark_writeback.call_args.kwargs["locator"]["resolved_row_index"], 2)
         self.assertEqual(mark_writeback.call_args.kwargs["locator"]["duplicate_row_indexes"], [3])
 
-    def test_kol_daily_crawl_scheduled_job_targets_today(self) -> None:
-        from apps.finance_crawler import app as app_module
-
-        class FakeDate(date):
-            @classmethod
-            def today(cls):
-                return cls(2026, 6, 6)
-
-        captured_dates = []
-        with (
-            patch("apps.finance_crawler.app.date", FakeDate),
-            patch(
-                "apps.finance_crawler.workflows.profile_triggers.run_default_kol_daily_profile_trigger",
-                side_effect=lambda target_date=None, trigger_type=None: captured_dates.append((target_date, trigger_type)) or {},
-            ),
-        ):
-            app_module.run_kol_daily_crawl_job()
-
-        self.assertEqual(captured_dates, [(date(2026, 6, 6), "scheduled")])
-
     def test_kol_daily_crawl_skips_post_reads_when_read_count_not_requested(self) -> None:
         with (
             patch(
@@ -906,29 +859,17 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         values = request["rows"][0]["values"]
         self.assertEqual([item["cellValue"]["text"] for item in values], ["22", "3"])
 
-    def test_scheduler_prefers_profile_trigger_over_legacy_profile_metrics(self) -> None:
+    def test_scheduler_enables_kol_db_pipeline_when_time_configured(self) -> None:
         from apps.finance_crawler import app as app_module
 
-        with (
-            patch.object(Config, "PROFILE_METRICS_DOC_URL", "https://docs.qq.com/sheet/legacy"),
-            patch.object(Config, "PROFILE_METRICS_INTERVAL_MINUTES", 5),
-            patch.object(Config, "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL", "https://docs.qq.com/sheet/kol"),
-            patch.object(Config, "KOL_DAILY_CRAWL_TIME", "08:00"),
-        ):
-            self.assertTrue(app_module._kol_profile_trigger_scheduler_enabled())
-            self.assertFalse(app_module._legacy_profile_scheduler_enabled())
+        with patch.object(Config, "KOL_DAILY_CRAWL_TIME", "08:00"):
+            self.assertTrue(app_module._kol_daily_db_pipeline_scheduler_enabled())
 
-    def test_scheduler_can_still_register_legacy_profile_metrics_without_profile_trigger(self) -> None:
+    def test_scheduler_disables_kol_db_pipeline_when_time_empty(self) -> None:
         from apps.finance_crawler import app as app_module
 
-        with (
-            patch.object(Config, "PROFILE_METRICS_DOC_URL", "https://docs.qq.com/sheet/legacy"),
-            patch.object(Config, "PROFILE_METRICS_INTERVAL_MINUTES", 5),
-            patch.object(Config, "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL", ""),
-            patch.object(Config, "KOL_DAILY_CRAWL_TIME", "08:00"),
-        ):
-            self.assertFalse(app_module._kol_profile_trigger_scheduler_enabled())
-            self.assertTrue(app_module._legacy_profile_scheduler_enabled())
+        with patch.object(Config, "KOL_DAILY_CRAWL_TIME", ""):
+            self.assertFalse(app_module._kol_daily_db_pipeline_scheduler_enabled())
 
     def test_scheduler_roles_split_independent_queues(self) -> None:
         from apps.finance_crawler import app as app_module

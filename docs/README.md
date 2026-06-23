@@ -37,15 +37,24 @@
   -> task_submissions / task_executions
   -> writeback_plans
 
-主页型任务
-  -> KOL 数据库每日表 / profile_trigger
+KOL / 主页型任务
+  -> kol_daily_metrics 数据库每日表
+  -> 理财通外部阅读数同步
   -> profile_metric_sources / profile_metric_runs
-  -> kol_daily_metrics / profile_metric_writebacks
+  -> KOL Web 查看 / Excel 导出
 
 内部数据报告
   -> 读取线上日期 sheet 当前数据
   -> 按产品统计
   -> 写回日报 sheet
+```
+
+KOL 主结果只看数据库，目前只保留三个日常入口：
+
+```text
+kol-daily-db-pipeline
+kol-metrics-web
+kol-tenpay-external-reads
 ```
 
 常驻入口：

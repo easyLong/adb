@@ -139,34 +139,7 @@ writeback_plans
 | `v2-crawl-worker-once` | 手动跑一次 document 采集 worker |
 | `v2-writeback-worker-once` | 手动跑一次 document 写回 worker |
 
-## 3. profile 链路命令
-
-profile 链路处理主页型任务，核心表是：
-
-```text
-profile_trigger_configs
-profile_action_profiles
-profile_trigger_runs
-profile_metric_sources
-profile_metric_runs
-profile_metric_writebacks
-```
-
-| Task | 作用 |
-| --- | --- |
-| `profile-trigger-list` | 查看 profile 触发器 |
-| `profile-trigger-run` | 手动跑 profile 触发器，默认跑 `kol_daily_metrics_wpvy0d` |
-| `kol-daily-crawl` | 兼容命令，内部走默认 profile trigger |
-
-示例：
-
-```powershell
-.\scripts\run.ps1 -Task profile-trigger-list
-.\scripts\run.ps1 -Task profile-trigger-run
-.\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
-```
-
-## 4. KOL 每日数据库主链路和兼容命令
+## 3. KOL 每日数据库主链路
 
 日常优先使用 `kol-daily-db-pipeline`。这条链路以 `kol_daily_metrics` 为主结果表，串行执行：
 
@@ -180,12 +153,7 @@ profile_metric_writebacks
 | --- | --- |
 | `kol-daily-db-pipeline` | 串行执行 KOL 每日数据库主链路 |
 | `kol-metrics-web` | 启动 KOL 数据查看页面，支持筛选、排序和下载 Excel |
-| `kol-tenpay-external-reads` | 兼容命令。旧链路从外部文档读取理财通阅读数并写回目标腾讯文档；新主链路只更新数据库 |
-| `kol-daily-snapshot` | 同步 KOL 基础数据，生成指定日期快照，并写入目标表 |
-| `kol-daily-writeback` | 只把 `kol_daily_snapshots` 写回目标表 |
-| `kol-daily-crawl` | 跑当天或指定日期主页采集，兼容入口 |
-
-`kol-daily-snapshot` / `kol-daily-writeback` / `kol-daily-crawl` 是兼容旧入口；新主链路日常不依赖腾讯文档作为主结果表。
+| `kol-tenpay-external-reads` | 单独补跑理财通外部阅读数；正常由 `kol-daily-db-pipeline` 串起来 |
 
 启动常驻 worker 后，`profile` 角色会按 `KOL_DAILY_CRAWL_TIME` 注册：
 
@@ -226,29 +194,7 @@ If another device on the LAN cannot open the page, allow inbound TCP 8091 in Win
 .\scripts\run.ps1 -Task config -ConfigSet KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS=5
 ```
 
-旧 profile trigger 手动采集某天主页指标：
-
-```powershell
-.\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
-```
-
-## 5. 旧 profile 拆分命令
-
-这些命令仍保留，用于旧版主页统计链路排查：
-
-| Task | 作用 |
-| --- | --- |
-| `profile-sync` | 从旧主页统计文档同步来源行 |
-| `profile-daily-rows` | 根据模板生成每日行 |
-| `profile-create-tasks` | 从 active profile targets 创建 DB-only 任务 |
-| `profile-crawl` | 抓主页粉丝数 |
-| `profile-writeback` | 写回粉丝数、增粉数 |
-| `profile-metrics` | 同步、采集、写回一体流程 |
-| `profile-post-reads` | 抓主页指定日期帖子阅读数 |
-
-新 KOL 主页自动化优先使用 `profile-trigger-*`。
-
-## 6. 其它业务命令
+## 4. 其它业务命令
 
 | Task | 作用 |
 | --- | --- |
@@ -275,7 +221,7 @@ If another device on the LAN cannot open the page, allow inbound TCP 8091 in Win
   -TencentDocUrl "https://docs.qq.com/sheet/<fileId>?tab=<sheetId>"
 ```
 
-## 7. 常用排查
+## 6. 常用排查
 
 看设备：
 
@@ -307,7 +253,7 @@ Get-Content apps\finance_crawler\logs\<date>.log -Tail 120
 git status --short
 ```
 
-## 8. 今日详情定时提交脚本
+## 7. 今日详情定时提交脚本
 
 `scripts/submit_redsoil_detail_today.ps1` 是一个单入口脚本，用于把当天
 `redsoil_detail` 任务提交到 `task_submissions` 队列。它只负责提交任务，

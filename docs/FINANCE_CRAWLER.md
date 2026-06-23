@@ -32,7 +32,9 @@ fetch -> check -> detail -> writeback
 
 ## 3. 大 V 主页统计
 
-文档列约定：
+本节为历史链路说明。当前 KOL / 主页型任务主结果只看数据库表 `kol_daily_metrics`，日常入口见 [KOL_DAILY_DB_PIPELINE.md](KOL_DAILY_DB_PIPELINE.md)。
+
+旧文档列约定：
 
 | 列 | 含义 |
 | --- | --- |
@@ -51,12 +53,7 @@ fetch -> check -> detail -> writeback
 A2:H126
 ```
 
-每日流程：
-
-1. `profile-daily-rows` 根据模板生成当天行。
-2. `profile-sync` 将新行同步到数据库。
-3. `profile-crawl` 打开主页抓粉丝数。
-4. `profile-writeback` 写回 E/F 列。
+旧的 profile 拆分命令入口已移除。当前每日流程由 `kol-daily-db-pipeline` 串行完成：初始化当天数据、同步理财通阅读数、采集主页粉丝数和增粉数。
 
 增粉数规则：
 
@@ -77,11 +74,7 @@ A2:H126
 - 点击详情页读取阅读数。
 - 汇总写入数据库的 `read_count`。
 
-入口：
-
-```powershell
-.\scripts\run.ps1 -Task profile-post-reads -ReportDate 2026-06-04
-```
+旧的独立主页帖子阅读数入口已移除。当前阅读数由 `kol-tenpay-external-reads` 合并到 `kol_daily_metrics`。
 
 ## 5. 需求 1 文章详情
 

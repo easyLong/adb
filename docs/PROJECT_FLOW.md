@@ -14,12 +14,12 @@
   -> 腾讯文档回填
 ```
 
-现在有两类触发器：
+现在有两条主链路：
 
-| 触发器 | 处理对象 | 适用场景 |
+| 链路 | 处理对象 | 适用场景 |
 | --- | --- | --- |
 | `document_trigger` | 帖子链接 `post_url` | 初检、详情、阅读数、截图、评论数 |
-| `profile_trigger` | 主页链接 `homepage_url` | 大 V 主页粉丝数、主页帖子阅读数、持仓等复杂主页动作 |
+| `kol_daily_db_pipeline` | KOL 基础表中的主页链接 `homepage_url` | 大 V 粉丝数、增粉数、理财通阅读数 |
 
 ## 2. 人工需要配置什么
 
@@ -63,33 +63,19 @@ TENCENT_DOC_TOKEN_URL
   -DocumentFields account_name,read_count,screenshot,remark
 ```
 
-### 主页型任务
+### KOL / 主页型任务
 
-配置 `profile_trigger_configs` 和 `profile_action_profiles`。
-
-当前默认 KOL 主页触发器会自动生成：
-
-```text
-config_key: kol_daily_metrics_wpvy0d
-doc: DYnhxS2VHZHBqR0V5 / wpvy0d
-row_adapter: kol_daily_profile
-source_name: kol_daily_crawl
-task_type: profile_daily_metrics
-fields: fans_count,growth_count,read_count
-schedule_time: 08:00
-```
-
-查看：
+当前 KOL 主结果只看数据库表 `kol_daily_metrics`，日常只使用数据库主链路：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-trigger-list
+.\scripts\run.ps1 -Task kol-daily-db-pipeline
+.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
 ```
 
-手动跑：
+需要单独补跑理财通外部阅读数时使用：
 
 ```powershell
-.\scripts\run.ps1 -Task profile-trigger-run
-.\scripts\run.ps1 -Task profile-trigger-run -ReportDate 2026-06-06
+.\scripts\run.ps1 -Task kol-tenpay-external-reads
 ```
 
 ## 3. document 链路
@@ -143,32 +129,20 @@ v2_writeback_worker
 | 回填按 URL 重新定位当前行 | 避免人工插行、删行后写错位置 |
 | URL 重复时只写第一个，后续标记重复 | 避免同一个链接多行被误写 |
 
-## 4. profile 链路
+## 4. KOL / 主页链路
 
 适合主页型业务：一行一个主页链接。
 
 ```text
-profile_trigger
-  -> 读取 profile_trigger_configs
-  -> 选择 row_adapter
-  -> 读取在线文档当天行
-  -> 写入 profile_metric_sources
-  -> 记录 profile_trigger_runs
-
-profile crawl
+kol_daily_db_pipeline
+  -> 根据 kol_base_profiles 初始化当天 kol_daily_metrics
+  -> 同步 T-1 到 T-5 理财通阅读数
+  -> 为当天主页采集生成 profile_metric_sources
   -> 根据 profile_metric_sources 打开主页
   -> 采集粉丝数
   -> 如果需要，进入精确粉丝页
-  -> 查找最近帖子
-  -> 点击帖子详情采集阅读数
-  -> 按 aggregation_policy 聚合
   -> 写入 profile_metric_runs
-
-profile writeback
-  -> 重新读取目标 sheet
-  -> 按 日期 + 主页链接 定位唯一行
-  -> 回填粉丝数、增粉数、阅读数
-  -> 更新 profile_metric_writebacks
+  -> 汇总写入 kol_daily_metrics
 ```
 
 默认动作模板：
@@ -236,14 +210,6 @@ kol_daily_db_pipeline
 .\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
 ```
 
-兼容旧链路仍保留：
-
-```text
-kol_daily_snapshot         旧腾讯文档快照写回
-profile-trigger-run        旧 profile trigger 手动采集
-kol-tenpay-external-reads  旧理财通阅读数腾讯文档写回
-```
-
 ## 6. 常驻运行
 
 启动：
@@ -291,7 +257,6 @@ Get-ChildItem apps\finance_crawler\logs |
 
 ```powershell
 .\scripts\run.ps1 -Task v2-trigger-list
-.\scripts\run.ps1 -Task profile-trigger-list
 ```
 
 5. 看数据库状态：
@@ -303,15 +268,11 @@ document 链路：
   task_executions
   writeback_plans
 
-profile 链路：
-  profile_trigger_runs
-  profile_metric_sources
-  profile_metric_runs
-  profile_metric_writebacks
-
 KOL 数据库主链路：
   kol_base_profiles
   kol_daily_metrics
+  profile_metric_sources
+  profile_metric_runs
   profile_metric_sources
   profile_metric_runs
 ```

@@ -55,14 +55,14 @@ This flow is the post/link document path. It is used when each spreadsheet row
 contains a concrete `post_url`, such as initial check, detail, read count,
 comment count, screenshot, and remark writeback.
 
-Homepage/KOL work uses the separate profile path because the crawl target and
+Homepage/KOL work uses the DB-first KOL path because the crawl target and
 actions are different:
 
 ```text
-profile_trigger_configs
+kol_daily_db_pipeline
 -> profile_metric_sources
 -> profile_metric_runs
--> profile_metric_writebacks
+-> kol_daily_metrics
 ```
 
 The current default KOL daily path is `kol_daily_db_pipeline`. It runs at
@@ -70,9 +70,6 @@ The current default KOL daily path is `kol_daily_db_pipeline`. It runs at
 read counts for the configured lookback window, opens each `homepage_url` for
 today's profile metrics, and stores the result in MySQL. It is not a
 `document_trigger_configs` job.
-
-`profile_trigger_configs.kol_daily_metrics_wpvy0d` is kept as a compatibility
-path for troubleshooting or temporary Tencent Docs writeback.
 
 ## Online Document Commands
 

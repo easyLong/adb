@@ -14,7 +14,7 @@ app_type + task_type + requested_fields
 
 ## 2. Profile/KOL 主页型任务
 
-主页型任务走 `profile_trigger_configs` -> `profile_metric_sources` -> `profile_metric_runs` -> `profile_metric_writebacks`。
+主页型任务由 `kol_daily_db_pipeline` 生成 `profile_metric_sources`，再写入 `profile_metric_runs`，最终汇总到 `kol_daily_metrics`。
 
 | App | 任务 | 字段 | 动作模板 | 技术手段 | 成功证据 |
 | --- | --- | --- | --- | --- | --- |

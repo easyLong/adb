@@ -23,8 +23,7 @@
 
 ```powershell
 .\scripts\run.ps1 -Task config `
-  -ConfigSet KOL_DAILY_CRAWL_TIME=08:00 `
-  -ConfigSet KOL_DAILY_SNAPSHOT_TIME=22:00
+  -ConfigSet KOL_DAILY_CRAWL_TIME=08:00
 ```
 
 ## MySQL
@@ -59,9 +58,6 @@ MYSQL_APP_DATABASE=crawler_app
 | Key | 说明 |
 | --- | --- |
 | `TENCENT_DOC_URL` | 通用文档 URL，旧链路和部分调试命令使用 |
-| `KOL_DAILY_SNAPSHOT_DOC_URL` | KOL 基础数据来源文档 |
-| `KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL` | KOL 每日结果表，目前是 `wpvy0d` |
-| `PROFILE_METRICS_DOC_URL` | 旧版主页统计文档 |
 | `ARTICLE_DETAILS_DOC_URL` | 文章详情文档 |
 | `EXCEL_DETAIL_INPUT_PATH` | 本地 Excel 输入路径 |
 | `SINGLE_TEST_LINK` | 单链接调试 |
@@ -121,7 +117,7 @@ excel-detail
 link-detail
 doc-link-reads
 article-crawl / article-details
-profile-crawl / profile-metrics / profile-post-reads / profile-trigger-run / kol-daily-crawl
+kol-daily-db-pipeline
 wechat-groups-capture / wechat-hourly-sync
 ```
 
@@ -178,11 +174,6 @@ DEVICE_LOCK_WAIT_SECONDS
 | `KOL_DAILY_CRAWL_TIME` | `08:00` | 每天触发 KOL 数据库主链路 |
 | `KOL_DAILY_CRAWL_LIMIT` | `0` | 单次主页采集限制；`0` 表示不限制 |
 | `KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS` | `5` | 每次主链路同步最近几个已结束日期的理财通阅读数，默认 T-1 到 T-5 |
-| `KOL_DAILY_SNAPSHOT_READ_RANGE` | `A1:H2000` | 兼容旧快照链路：读取 KOL 基础信息来源表范围 |
-| `KOL_DAILY_SNAPSHOT_TIME` | `22:00` | 兼容旧快照链路：每天生成明日 `wpvy0d` 行 |
-| `KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS` | `1` | 兼容旧快照链路：写回几天的快照行 |
-| `KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS` | `1` | 兼容旧快照链路：目标日期偏移；`1` 表示明天 |
-| `KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE` | `10` | 兼容旧快照链路：写入 `wpvy0d` 的字号 |
 
 `KOL_DAILY_CRAWL_TIME` 触发的是数据库主链路：
 
@@ -260,32 +251,22 @@ alipay + detail + account_name,read_count,screenshot
 
 项目只抽象执行设备，不抽象桌面或浏览器。执行设备统一是 ADB 手机，只是连接方式可能是 USB、WiFi 或后续其他 ADB 适配方式。
 
-## 旧 Profile 配置
+## KOL 底层 Profile 配置
 
-这些配置仍保留，用于旧版 profile 拆分链路排查：
+这些配置只服务当前 KOL DB pipeline 的底层主页采集模块，旧的独立 profile CLI 和 scheduler 入口已移除：
 
 | Key | 说明 |
 | --- | --- |
-| `PROFILE_METRICS_READ_RANGE` | 旧 profile 表读取范围 |
-| `PROFILE_METRICS_TEMPLATE_RANGE` | 旧 profile 每日行模板范围 |
-| `PROFILE_METRICS_DAILY_PREPARE_TIME` | 旧 profile 每日生成行时间，空则关闭 |
-| `PROFILE_METRICS_INTERVAL_MINUTES` | 旧 profile 周期采集间隔；`0` 关闭 |
-| `PROFILE_METRICS_CRAWL_LIMIT` | 旧 profile 单轮限制 |
-| `PROFILE_METRICS_TARGET_DATE` | 固定目标日期，日常不要设置 |
-| `PROFILE_METRICS_WRITEBACK_ENABLED` | 是否写回 |
+| `PROFILE_METRICS_CRAWL_LIMIT` | KOL 主页粉丝采集单轮限制，`0` 表示不限制 |
 | `PROFILE_POST_READ_MAX_SCROLLS` | 主页帖子阅读数最多滚动页数 |
 | `PROFILE_POST_READ_MAX_POSTS` | 主页帖子阅读数最多取几条帖子 |
 | `PROFILE_POST_READ_CRAWL_LIMIT` | 主页帖子阅读数单轮限制 |
 
-新 KOL 主页自动化优先走 `profile_trigger_configs`。
-
 ## 注意事项
 
-- 日常不要固定 `PROFILE_METRICS_TARGET_DATE`，否则旧 profile 链路会一直抓同一天。
-- 启用 `KOL_DAILY_CRAWL_TIME` 后，scheduler 会优先注册 `kol_daily_db_pipeline`，并跳过旧 `PROFILE_METRICS_*` 自动调度；旧 profile 命令仍可手动执行。
+- 启用 `KOL_DAILY_CRAWL_TIME` 后，scheduler 会注册 `kol_daily_db_pipeline`。
 - 新 KOL 主链路只更新数据库；查看和下载走 `kol-metrics-web`。
 - `KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS=5` 表示阅读数每天更新 T-1 到 T-5。
-- `KOL_DAILY_SNAPSHOT_TIME=22:00` 是旧腾讯文档快照链路配置，新主链路日常不依赖它。
 - `KOL_DAILY_CRAWL_TIME=08:00` 才采集今日主页粉丝数和增粉数。
 - 文档字段优先按表头 title 识别，列号配置只是兜底。
 - 写回图片时要走腾讯文档图片上传，不应把本地路径当最终截图结果。

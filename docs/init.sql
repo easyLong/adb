@@ -21,9 +21,7 @@ INSERT INTO data_source_links (source_key, data_source_link, status, description
 VALUES
     ('TENCENT_DOC_URL', '', 'active', 'Tencent Docs source URL', 'system'),
     ('EXCEL_DETAIL_INPUT_PATH', '', 'unavailable', 'Local Excel detail input path', 'system'),
-    ('SINGLE_TEST_LINK', '', 'unavailable', 'One-shot single detail test link', 'system'),
-    ('KOL_DAILY_SNAPSHOT_DOC_URL', '', 'unavailable', 'Tencent Docs URL for daily KOL snapshots', 'system'),
-    ('KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL', '', 'unavailable', 'Tencent Docs URL that receives daily KOL snapshots', 'system')
+    ('SINGLE_TEST_LINK', '', 'unavailable', 'One-shot single detail test link', 'system')
 ON DUPLICATE KEY UPDATE
     description = VALUES(description);
 
@@ -48,11 +46,6 @@ VALUES
     ('TENCENT_DOC_ACCESS_TOKEN', '', 'unavailable', 1, 'Tencent Docs OpenAPI Access-Token', 'system'),
     ('TENCENT_DOC_CLIENT_SECRET', '', 'unavailable', 1, 'Tencent Docs OpenAPI Client-Secret', 'system'),
     ('TENCENT_DOC_TOKEN_URL', 'https://docs.qq.com/oauth/v2/token', 'active', 0, 'Tencent Docs OpenAPI token URL', 'system'),
-    ('KOL_DAILY_SNAPSHOT_READ_RANGE', 'A1:H2000', 'active', 0, 'Tencent Docs range for daily KOL snapshots', 'system'),
-    ('KOL_DAILY_SNAPSHOT_TIME', '22:00', 'active', 0, 'Daily HH:MM time for KOL snapshot import', 'system'),
-    ('KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS', '1', 'active', 0, 'Recent KOL snapshot days to write back', 'system'),
-    ('KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS', '1', 'active', 0, 'Scheduled KOL snapshot date offset; 1 means tomorrow', 'system'),
-    ('KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE', '10', 'active', 0, 'KOL snapshot writeback font size', 'system'),
     ('KOL_DAILY_CRAWL_TIME', '08:00', 'active', 0, 'Daily HH:MM time for KOL crawl from generated rows', 'system'),
     ('KOL_DAILY_CRAWL_LIMIT', '0', 'active', 0, 'Max KOL daily crawl rows per run; 0 means unlimited', 'system')
 ON DUPLICATE KEY UPDATE
@@ -73,28 +66,6 @@ CREATE TABLE IF NOT EXISTS kol_base_profiles (
     INDEX idx_kol_base_profile_platform (platform),
     INDEX idx_kol_base_profile_type (kol_type),
     INDEX idx_kol_base_profile_group (group_name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS kol_daily_snapshots (
-    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    kol_profile_id BIGINT UNSIGNED NULL,
-    snapshot_date DATE NOT NULL,
-    kol_name VARCHAR(255) NOT NULL,
-    platform VARCHAR(64) NOT NULL,
-    homepage_url TEXT NULL,
-    group_name VARCHAR(64) NULL,
-    kol_type VARCHAR(64) NOT NULL DEFAULT 'other',
-    fans_count BIGINT NULL,
-    growth_count BIGINT NULL,
-    read_count BIGINT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_kol_daily_snapshot (snapshot_date, kol_name, platform),
-    INDEX idx_kol_daily_profile (kol_profile_id),
-    INDEX idx_kol_daily_date (snapshot_date),
-    INDEX idx_kol_daily_platform (platform),
-    INDEX idx_kol_daily_type (kol_type),
-    INDEX idx_kol_daily_group (group_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS crawl_sources (
@@ -499,70 +470,6 @@ ON DUPLICATE KEY UPDATE
     description = VALUES(description),
     status = 'active',
     updated_by = 'system';
-
-CREATE TABLE IF NOT EXISTS profile_trigger_configs (
-    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    config_key VARCHAR(128) NOT NULL,
-    source_type VARCHAR(64) NOT NULL DEFAULT 'tencent_docs',
-    doc_url TEXT NOT NULL,
-    file_id VARCHAR(128) NULL,
-    sheet_id VARCHAR(128) NULL,
-    read_range VARCHAR(64) NOT NULL DEFAULT 'A1:I5000',
-    row_adapter VARCHAR(64) NOT NULL DEFAULT 'kol_daily_profile',
-    source_name VARCHAR(191) NOT NULL,
-    task_type VARCHAR(64) NOT NULL DEFAULT 'profile_daily_metrics',
-    requested_fields_json LONGTEXT NOT NULL,
-    action_profile_key VARCHAR(128) NULL,
-    aggregation_policy_json LONGTEXT NULL,
-    schedule_time VARCHAR(16) NULL,
-    target_date_offset_days INT NOT NULL DEFAULT 0,
-    scan_interval_seconds INT NOT NULL DEFAULT 300,
-    next_scan_at DATETIME NULL,
-    last_scan_at DATETIME NULL,
-    scan_status VARCHAR(32) NOT NULL DEFAULT 'idle',
-    locked_by VARCHAR(128) NULL,
-    locked_until DATETIME NULL,
-    last_error TEXT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'active',
-    description VARCHAR(255) NULL,
-    updated_by VARCHAR(64) NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_profile_trigger_config (config_key),
-    INDEX idx_profile_trigger_due (status, next_scan_at),
-    INDEX idx_profile_trigger_file (source_type, file_id),
-    INDEX idx_profile_trigger_status (scan_status),
-    INDEX idx_profile_trigger_lock (locked_until)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS profile_trigger_runs (
-    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    trigger_config_id BIGINT UNSIGNED NULL,
-    config_key VARCHAR(128) NULL,
-    trigger_type VARCHAR(64) NOT NULL DEFAULT 'scheduled',
-    target_date DATE NULL,
-    action_profile_key VARCHAR(128) NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'running',
-    file_id VARCHAR(128) NULL,
-    sheet_id VARCHAR(128) NULL,
-    sheet_title VARCHAR(255) NULL,
-    source_rows INT NOT NULL DEFAULT 0,
-    submitted_sources INT NOT NULL DEFAULT 0,
-    skipped_rows INT NOT NULL DEFAULT 0,
-    fans_crawled INT NOT NULL DEFAULT 0,
-    read_crawled INT NOT NULL DEFAULT 0,
-    written_rows INT NOT NULL DEFAULT 0,
-    failed_rows INT NOT NULL DEFAULT 0,
-    summary_json LONGTEXT NULL,
-    error TEXT NULL,
-    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    finished_at DATETIME NULL,
-    INDEX idx_profile_trigger_runs_config (trigger_config_id),
-    INDEX idx_profile_trigger_runs_key (config_key),
-    INDEX idx_profile_trigger_runs_status (status),
-    INDEX idx_profile_trigger_runs_date (target_date),
-    INDEX idx_profile_trigger_runs_started (started_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS profile_targets (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

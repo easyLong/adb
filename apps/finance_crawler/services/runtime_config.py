@@ -68,21 +68,7 @@ _CONFIG_ATTRS: dict[str, str] = {
     "V2_WRITEBACK_WORKER_INTERVAL_SECONDS": "V2_WRITEBACK_WORKER_INTERVAL_SECONDS",
     "REPORT_TIME": "REPORT_TIME",
     "TENCENT_DOC_REPORT_SHEET_TITLE": "TENCENT_DOC_REPORT_SHEET_TITLE",
-    "PROFILE_METRICS_DOC_URL": "PROFILE_METRICS_DOC_URL",
-    "PROFILE_METRICS_READ_RANGE": "PROFILE_METRICS_READ_RANGE",
-    "PROFILE_METRICS_TEMPLATE_RANGE": "PROFILE_METRICS_TEMPLATE_RANGE",
-    "PROFILE_METRICS_DAILY_PREPARE_TIME": "PROFILE_METRICS_DAILY_PREPARE_TIME",
-    "PROFILE_METRICS_INTERVAL_MINUTES": "PROFILE_METRICS_INTERVAL_MINUTES",
     "PROFILE_METRICS_CRAWL_LIMIT": "PROFILE_METRICS_CRAWL_LIMIT",
-    "PROFILE_METRICS_TARGET_DATE": "PROFILE_METRICS_TARGET_DATE",
-    "PROFILE_METRICS_WRITEBACK_ENABLED": "PROFILE_METRICS_WRITEBACK_ENABLED",
-    "KOL_DAILY_SNAPSHOT_DOC_URL": "KOL_DAILY_SNAPSHOT_DOC_URL",
-    "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL": "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL",
-    "KOL_DAILY_SNAPSHOT_READ_RANGE": "KOL_DAILY_SNAPSHOT_READ_RANGE",
-    "KOL_DAILY_SNAPSHOT_TIME": "KOL_DAILY_SNAPSHOT_TIME",
-    "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS": "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS",
-    "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS": "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS",
-    "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE": "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE",
     "KOL_DAILY_CRAWL_TIME": "KOL_DAILY_CRAWL_TIME",
     "KOL_DAILY_CRAWL_LIMIT": "KOL_DAILY_CRAWL_LIMIT",
     "KOL_TENPAY_EXTERNAL_READS_SOURCE_DOC_URLS": "KOL_TENPAY_EXTERNAL_READS_SOURCE_DOC_URLS",
@@ -167,9 +153,6 @@ _DATA_SOURCE_KEYS: tuple[str, ...] = (
     "TENCENT_DOC_URL",
     "EXCEL_DETAIL_INPUT_PATH",
     "SINGLE_TEST_LINK",
-    "PROFILE_METRICS_DOC_URL",
-    "KOL_DAILY_SNAPSHOT_DOC_URL",
-    "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL",
     "KOL_TENPAY_EXTERNAL_READS_TARGET_DOC_URL",
     "ARTICLE_DETAILS_DOC_URL",
 )
@@ -204,18 +187,7 @@ _APP_BEHAVIOR_CONFIG_KEYS: tuple[str, ...] = (
     "V2_WRITEBACK_WORKER_INTERVAL_SECONDS",
     "TASK_RUNNING_TIMEOUT_MINUTES",
     "TENCENT_DOC_REPORT_SHEET_TITLE",
-    "PROFILE_METRICS_READ_RANGE",
-    "PROFILE_METRICS_TEMPLATE_RANGE",
-    "PROFILE_METRICS_DAILY_PREPARE_TIME",
-    "PROFILE_METRICS_INTERVAL_MINUTES",
     "PROFILE_METRICS_CRAWL_LIMIT",
-    "PROFILE_METRICS_TARGET_DATE",
-    "PROFILE_METRICS_WRITEBACK_ENABLED",
-    "KOL_DAILY_SNAPSHOT_READ_RANGE",
-    "KOL_DAILY_SNAPSHOT_TIME",
-    "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS",
-    "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS",
-    "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE",
     "KOL_DAILY_CRAWL_TIME",
     "KOL_DAILY_CRAWL_LIMIT",
     "KOL_TENPAY_EXTERNAL_READS_SOURCE_DOC_URLS",
@@ -341,15 +313,7 @@ _DESCRIPTIONS.update(
         "V2_WRITEBACK_WORKER_INTERVAL_SECONDS": "Seconds between v2 pending writeback scans.",
         "TASK_RUNNING_TIMEOUT_MINUTES": "Minutes before a running task is considered abandoned and returned to retry/final state.",
         "TENCENT_DOC_REPORT_SHEET_TITLE": "Tencent Docs sheet title used for structured daily report writeback.",
-        "PROFILE_METRICS_TEMPLATE_RANGE": "Tencent Docs range used as the profile daily-row template.",
-        "PROFILE_METRICS_DAILY_PREPARE_TIME": "Daily HH:MM time to append missing profile metric rows for today's date. Empty disables the daily prepare job.",
-        "KOL_DAILY_SNAPSHOT_DOC_URL": "Tencent Docs URL for daily KOL base and metric snapshots.",
-        "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL": "Tencent Docs URL that receives daily KOL snapshot rows.",
-        "KOL_DAILY_SNAPSHOT_READ_RANGE": "Tencent Docs range for daily KOL snapshot import.",
-        "KOL_DAILY_SNAPSHOT_TIME": "Daily HH:MM time to import KOL snapshots from Tencent Docs. Empty disables the job.",
-        "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS": "Number of recent snapshot dates to write back, including the target date.",
-        "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS": "Days offset used by the scheduled KOL snapshot job. 1 means tomorrow.",
-        "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE": "Font size used when writing KOL snapshot rows back to Tencent Docs.",
+        "PROFILE_METRICS_CRAWL_LIMIT": "Max KOL homepage fan crawl rows per run. 0 means no limit.",
         "KOL_DAILY_CRAWL_TIME": "Daily HH:MM time to scan today's KOL rows and crawl fans/read counts. Empty disables the job.",
         "KOL_DAILY_CRAWL_LIMIT": "Max KOL daily crawl rows per run. 0 means no limit.",
         "KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS": "Number of recent completed dates to update for KOL Tenpay external reads. 5 means T-1 through T-5.",
@@ -398,15 +362,7 @@ _DISPLAY_LABELS.update(
         "V2_WRITEBACK_WORKER_INTERVAL_SECONDS": "V2 writeback interval",
         "TASK_RUNNING_TIMEOUT_MINUTES": "Running task timeout",
         "TENCENT_DOC_REPORT_SHEET_TITLE": "Report sheet title",
-        "PROFILE_METRICS_TEMPLATE_RANGE": "Profile template range",
-        "PROFILE_METRICS_DAILY_PREPARE_TIME": "Profile daily prepare time",
-        "KOL_DAILY_SNAPSHOT_DOC_URL": "KOL snapshot doc URL",
-        "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL": "KOL writeback doc URL",
-        "KOL_DAILY_SNAPSHOT_READ_RANGE": "KOL snapshot range",
-        "KOL_DAILY_SNAPSHOT_TIME": "KOL snapshot time",
-        "KOL_DAILY_SNAPSHOT_WRITEBACK_DAYS": "KOL writeback days",
-        "KOL_DAILY_SNAPSHOT_SCHEDULE_TARGET_OFFSET_DAYS": "KOL schedule offset",
-        "KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE": "KOL writeback font",
+        "PROFILE_METRICS_CRAWL_LIMIT": "Profile crawl limit",
         "KOL_DAILY_CRAWL_TIME": "KOL crawl time",
         "KOL_DAILY_CRAWL_LIMIT": "KOL crawl limit",
         "KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS": "Tenpay reads lookback days",
@@ -435,24 +391,6 @@ def _ensure_data_source_defaults(cursor) -> None:
         ),
         ("SINGLE_TEST_LINK", "", "unavailable", _DESCRIPTIONS["SINGLE_TEST_LINK"]),
         (
-            "PROFILE_METRICS_DOC_URL",
-            Config.PROFILE_METRICS_DOC_URL,
-            "active" if Config.PROFILE_METRICS_DOC_URL else "unavailable",
-            "Tencent Docs sheet URL used by the profile metrics workflow.",
-        ),
-        (
-            "KOL_DAILY_SNAPSHOT_DOC_URL",
-            Config.KOL_DAILY_SNAPSHOT_DOC_URL,
-            "active" if Config.KOL_DAILY_SNAPSHOT_DOC_URL else "unavailable",
-            _DESCRIPTIONS["KOL_DAILY_SNAPSHOT_DOC_URL"],
-        ),
-        (
-            "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL",
-            Config.KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL,
-            "active" if Config.KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL else "unavailable",
-            _DESCRIPTIONS["KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL"],
-        ),
-        (
             "ARTICLE_DETAILS_DOC_URL",
             Config.ARTICLE_DETAILS_DOC_URL,
             "active" if Config.ARTICLE_DETAILS_DOC_URL else "unavailable",
@@ -472,7 +410,7 @@ def _ensure_data_source_defaults(cursor) -> None:
         """
         UPDATE data_source_links
         SET status = 'unavailable'
-        WHERE source_key IN ('EXCEL_DETAIL_INPUT_PATH', 'SINGLE_TEST_LINK', 'PROFILE_METRICS_DOC_URL', 'KOL_DAILY_SNAPSHOT_DOC_URL', 'KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL', 'ARTICLE_DETAILS_DOC_URL')
+        WHERE source_key IN ('EXCEL_DETAIL_INPUT_PATH', 'SINGLE_TEST_LINK', 'ARTICLE_DETAILS_DOC_URL')
           AND (data_source_link IS NULL OR data_source_link = '')
         """
     )
@@ -724,8 +662,6 @@ def _set_data_source_config(values: dict[str, str], *, updated_by: str) -> None:
     for key, value in values.items():
         if key in {
             "TENCENT_DOC_URL",
-            "KOL_DAILY_SNAPSHOT_DOC_URL",
-            "KOL_DAILY_SNAPSHOT_WRITEBACK_DOC_URL",
             "KOL_TENPAY_EXTERNAL_READS_TARGET_DOC_URL",
         } and value:
             parse_doc_url(value)

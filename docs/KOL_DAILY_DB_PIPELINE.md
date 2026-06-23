@@ -4,6 +4,14 @@
 
 这条链路以 MySQL 为主结果表，只更新数据库。腾讯文档只作为外部阅读数来源，不作为主结果载体。
 
+当前 KOL / 主页型任务只保留三个入口：
+
+| Task | 作用 |
+| --- | --- |
+| `kol-daily-db-pipeline` | 串行执行每日主链路 |
+| `kol-metrics-web` | 查看、筛选和导出 KOL 数据 |
+| `kol-tenpay-external-reads` | 单独补跑理财通外部阅读数；正常由主链路串起来 |
+
 ## 串行顺序
 
 ```text
