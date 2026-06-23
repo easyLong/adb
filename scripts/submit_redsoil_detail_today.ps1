@@ -167,8 +167,17 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
     $startedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "[$startedAt] attempt=$attempt target_mode=$TargetMode limit=$Limit trigger_type=$TriggerType" | Tee-Object -FilePath $LogPath -Append
 
-    $PythonCode | & $Python - 2>&1 | Tee-Object -FilePath $LogPath -Append
-    $exitCode = $LASTEXITCODE
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell can turn native stderr into NativeCommandError when
+        # ErrorActionPreference=Stop. Python logs may use stderr, so treat output
+        # as log text and rely on LASTEXITCODE for success/failure.
+        $ErrorActionPreference = "Continue"
+        $PythonCode | & $Python - 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $LogPath -Append
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
     if ($exitCode -eq 0) {
         $finishedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         "[$finishedAt] success" | Tee-Object -FilePath $LogPath -Append
