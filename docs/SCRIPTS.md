@@ -215,8 +215,10 @@ kol_daily_db_pipeline
 只打开 KOL 数据页面：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-metrics-web -WebPort 8091
+.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
 ```
+
+If another device on the LAN cannot open the page, allow inbound TCP 8091 in Windows Firewall.
 
 调整阅读数回看天数：
 

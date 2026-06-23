@@ -92,14 +92,17 @@ kol_daily_metrics.growth_count
 启动 KOL 数据页面：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-metrics-web -WebPort 8091
+.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
 ```
 
 打开：
 
 ```text
 http://127.0.0.1:8091/
+http://<LAN-IP>:8091/
 ```
+
+If another device on the LAN cannot open the page, allow inbound TCP 8091 in Windows Firewall.
 
 页面支持按日期、平台、标题/大 V 名称筛选，支持按 title 排序，也支持下载 Excel。
 

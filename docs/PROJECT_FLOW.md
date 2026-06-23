@@ -233,7 +233,7 @@ kol_daily_db_pipeline
 查看页面：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-metrics-web -WebPort 8091
+.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
 ```
 
 兼容旧链路仍保留：

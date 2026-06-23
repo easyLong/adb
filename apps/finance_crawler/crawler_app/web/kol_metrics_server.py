@@ -15,10 +15,11 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from apps.finance_crawler.crawler_app.storage.db import get_conn, init_crawler_app_db
 
 
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8091
 MAX_LIMIT = 2000
 SORT_OPTIONS = {
+    "base_id": "CASE WHEN b.id IS NULL THEN 1 ELSE 0 END, b.id ASC, m.metric_date DESC, m.platform ASC, m.kol_name ASC",
     "title": "m.kol_name ASC, m.metric_date DESC",
     "title_desc": "m.kol_name DESC, m.metric_date DESC",
     "date_desc": "m.metric_date DESC, m.platform ASC, b.group_name ASC, m.kol_name ASC",
@@ -26,9 +27,11 @@ SORT_OPTIONS = {
     "platform": "m.platform ASC, b.group_name ASC, m.kol_name ASC, m.metric_date DESC",
     "group": "b.group_name ASC, m.kol_name ASC, m.metric_date DESC",
     "fans_desc": "m.fans_count DESC, m.metric_date DESC, m.kol_name ASC",
+    "growth_desc": "m.growth_count DESC, m.metric_date DESC, m.kol_name ASC",
     "read_desc": "m.read_count DESC, m.metric_date DESC, m.kol_name ASC",
 }
 SORT_LABELS = {
+    "base_id": "基础表顺序",
     "title": "Title 升序",
     "title_desc": "Title 降序",
     "date_desc": "日期最新",
@@ -36,6 +39,7 @@ SORT_LABELS = {
     "platform": "平台",
     "group": "群",
     "fans_desc": "粉丝数高到低",
+    "growth_desc": "增粉数高到低",
     "read_desc": "阅读数高到低",
 }
 MISSING_OPTIONS = {
@@ -165,7 +169,7 @@ def export_xlsx(params: dict[str, str]) -> bytes:
         for cell in row_cells:
             cell.alignment = Alignment(vertical="center")
 
-    widths = [12, 24, 10, 10, 10, 45, 12, 12, 12, 12, 20, 36]
+    widths = [12, 24, 10, 10, 10, 45, 12, 12, 12, 12, 20, 18, 36]
     for index, width in enumerate(widths, start=1):
         worksheet.column_dimensions[get_column_letter(index)].width = width
     worksheet.freeze_panes = "A2"
@@ -178,9 +182,9 @@ def export_xlsx(params: dict[str, str]) -> bytes:
 
 def _normalize_filters(params: dict[str, str]) -> dict[str, Any]:
     limit = _parse_int(params.get("limit"), 500) or 500
-    sort = params.get("sort", "title")
+    sort = params.get("sort", "base_id")
     if sort not in SORT_OPTIONS:
-        sort = "title"
+        sort = "base_id"
     return {
         "metric_date": _parse_date(params.get("date")),
         "platform": params.get("platform", ""),
@@ -318,6 +322,7 @@ def _load_rows(conn, filters: dict[str, Any]) -> list[dict[str, Any]]:
                 m.growth_count,
                 m.read_count,
                 m.post_count_24h,
+                m.source_payload_json,
                 m.writeback_error,
                 m.updated_at
             FROM kol_daily_metrics m
@@ -330,7 +335,10 @@ def _load_rows(conn, filters: dict[str, Any]) -> list[dict[str, Any]]:
             """,
             args,
         )
-        return [dict(row) for row in cursor.fetchall()]
+        rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            row["remark"] = row_remark(row)
+        return rows
 
 
 def render_page(params: dict[str, str]) -> str:
@@ -427,6 +435,10 @@ def render_page(params: dict[str, str]) -> str:
       color: var(--accent);
       white-space: nowrap;
     }}
+    .download.copied {{
+      border-color: var(--ok);
+      color: var(--ok);
+    }}
     main {{ padding: 12px 16px 24px; }}
     .result-meta {{
       background: var(--panel);
@@ -489,10 +501,11 @@ def render_page(params: dict[str, str]) -> str:
     <div class="table-wrap">
       <table>
         <thead>{render_table_header()}</thead>
-        <tbody>{''.join(render_row(row) for row in rows) or '<tr><td colspan="12" class="muted">没有数据</td></tr>'}</tbody>
+        <tbody>{''.join(render_row(row) for row in rows) or '<tr><td colspan="13" class="muted">没有数据</td></tr>'}</tbody>
       </table>
     </div>
   </main>
+  {render_copy_script(filters, date_value)}
 </body>
 </html>"""
 
@@ -506,7 +519,7 @@ def render_filters(date_value: str, filters: dict[str, Any], options: dict[str, 
   <label>排序{select("sort", filters["sort"], list(SORT_LABELS), "")}</label>
   <label>搜索<input name="q" value="{e(filters['q'])}" placeholder="大V名称 / 群"></label>
   <label>行数<input name="limit" value="{int(filters['limit'])}" inputmode="numeric"></label>
-  <div class="actions"><button type="submit">查询</button><a class="download" href="{download_href(filters, date_value)}">下载 Excel</a></div>
+  <div class="actions"><button type="submit">查询</button><button type="button" class="download" id="copy-table">复制表格</button><a class="download" href="{download_href(filters, date_value)}">下载 Excel</a></div>
 </form>"""
 
 
@@ -552,6 +565,7 @@ def export_columns() -> list[tuple[str, str]]:
         ("阅读数", "read_count"),
         ("24h发文", "post_count_24h"),
         ("更新时间", "updated_at"),
+        ("备注", "remark"),
         ("错误", "writeback_error"),
     ]
 
@@ -571,6 +585,7 @@ def render_row(row: dict[str, Any]) -> str:
         n(row.get("read_count")),
         n(row.get("post_count_24h")),
         row.get("updated_at"),
+        row.get("remark"),
         row.get("writeback_error"),
     ]
     numeric_indexes = {6, 7, 8, 9}
@@ -584,6 +599,106 @@ def render_row(row: dict[str, Any]) -> str:
         else:
             rendered.append(f"<td{css}>{e(value)}</td>")
     return "<tr>" + "".join(rendered) + "</tr>"
+
+
+def row_remark(row: dict[str, Any]) -> str:
+    payload = json_loads(row.get("source_payload_json")) or {}
+    warning = str(payload.get("quality_warning") or "").strip()
+    if warning:
+        return warning
+    if payload.get("nickname_mismatch"):
+        return "昵称不一致"
+    return ""
+
+
+def render_copy_script(filters: dict[str, Any], date_value: str) -> str:
+    config = {
+        "apiUrl": api_href(filters, date_value),
+        "columns": export_columns(),
+    }
+    config_json = json.dumps(config, ensure_ascii=False).replace("</", "<\\/")
+    script = r"""<script>
+(function () {
+  const config = __COPY_CONFIG__;
+  const button = document.getElementById("copy-table");
+  if (!button) {
+    return;
+  }
+
+  function cell(value) {
+    if (value === null || value === undefined) {
+      return "";
+    }
+    return String(value).replace(/\r?\n/g, " ").replace(/\t/g, " ").trim();
+  }
+
+  function rowsToTsv(rows) {
+    const lines = [config.columns.map(function (column) { return column[0]; }).join("\t")];
+    rows.forEach(function (row) {
+      lines.push(config.columns.map(function (column) { return cell(row[column[1]]); }).join("\t"));
+    });
+    return lines.join("\r\n");
+  }
+
+  async function writeClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+
+  function setButtonText(text, copied) {
+    button.textContent = text;
+    button.classList.toggle("copied", Boolean(copied));
+  }
+
+  button.addEventListener("click", async function () {
+    const original = button.textContent;
+    button.disabled = true;
+    setButtonText("复制中...", false);
+    try {
+      const response = await fetch(config.apiUrl, { credentials: "same-origin" });
+      if (!response.ok) {
+        throw new Error("HTTP " + response.status);
+      }
+      const data = await response.json();
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      await writeClipboard(rowsToTsv(rows));
+      setButtonText("已复制", true);
+      setTimeout(function () { setButtonText(original || "复制表格", false); }, 1600);
+    } catch (error) {
+      console.error(error);
+      setButtonText("复制失败", false);
+      setTimeout(function () { setButtonText(original || "复制表格", false); }, 2200);
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
+</script>"""
+    return script.replace("__COPY_CONFIG__", config_json)
+
+
+def api_href(filters: dict[str, Any], date_value: str) -> str:
+    query = {
+        "date": date_value,
+        "platform": filters["platform"],
+        "kol_type": filters["kol_type"],
+        "missing": filters["missing"],
+        "sort": filters["sort"],
+        "q": filters["q"],
+        "limit": int(filters["limit"]),
+    }
+    return "/api/metrics?" + urlencode({key: value for key, value in query.items() if value not in {None, ""}})
 
 
 def download_href(filters: dict[str, Any], date_value: str) -> str:
@@ -603,6 +718,15 @@ def excel_value(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value
     return "" if value is None else value
+
+
+def json_loads(value: Any) -> Any:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def n(value: Any) -> str:

@@ -1,6 +1,7 @@
 param(
     [string]$ReportDate = "",
     [switch]$StartWeb,
+    [string]$WebHost = "0.0.0.0",
     [int]$WebPort = 8091,
     [switch]$DryRun
 )
@@ -38,6 +39,8 @@ if ($StartWeb) {
         $RunScript,
         "-Task",
         "kol-metrics-web",
+        "-WebHost",
+        $WebHost,
         "-WebPort",
         "$WebPort"
     )
@@ -49,6 +52,7 @@ if ($StartWeb) {
             -ArgumentList $WebArgs `
             -WorkingDirectory $Root `
             -WindowStyle Hidden
-        Write-Host "KOL metrics web: http://127.0.0.1:$WebPort/"
+        Write-Host "KOL metrics web: http://$WebHost`:$WebPort/"
+        Write-Host "LAN access: use this computer's LAN IP, for example http://<LAN-IP>:$WebPort/"
     }
 }

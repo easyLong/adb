@@ -47,7 +47,7 @@ param(
     [string]$TencentDocScanDate = "",
     [string]$TencentDocSheetTitleFilter = "",
     [string]$DetailSourceDates = "",
-    [string]$WebHost = "127.0.0.1",
+    [string]$WebHost = "0.0.0.0",
     [int]$WebPort = 8091,
     [string[]]$ConfigSet = @()
 )

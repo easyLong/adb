@@ -187,7 +187,7 @@ read_count_lookback: KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS
 结果查看：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-metrics-web -WebPort 8091
+.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
 ```
 - 前一日没有粉丝数时，增粉数按 0 处理。
 - 同一天最多取 3 条帖子参与阅读数识别和聚合。

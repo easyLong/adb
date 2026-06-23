@@ -676,6 +676,8 @@ def _resolve_profile_fans_count(
         "exact_required": bool(extraction.evidence.get("exact_required")),
         "exact_used": bool(extraction.evidence.get("exact_used")),
         "account_verified": bool(extraction.evidence.get("account_verified")),
+        "nickname_mismatch": bool(extraction.evidence.get("nickname_mismatch")),
+        "quality_warning": extraction.evidence.get("quality_warning"),
         "action_template": action_template.key,
         "actions": list(action_template.actions),
         "quality_error": None if validation.accepted else (validation.reason or extraction.quality_error),
@@ -905,24 +907,20 @@ class ProfileFansCountExtractor:
                 quality_error="abbreviated fans count requires exact detail page",
             )
 
-        if action_template.config.get("require_account_anchor") and not account_verified:
-            return FieldExtraction(
-                field_name=self.field_name,
-                value=None,
-                source=None,
-                page_state=page_state.name,
-                confidence=0.0,
-                evidence=evidence,
-                quality_error="profile account anchor did not match expected account",
-            )
-
         if evidence.get("home_fans_count") is not None:
+            if action_template.config.get("require_account_anchor") and not account_verified:
+                evidence.update(
+                    {
+                        "nickname_mismatch": True,
+                        "quality_warning": "昵称不一致",
+                    }
+                )
             return FieldExtraction(
                 field_name=self.field_name,
                 value=evidence["home_fans_count"],
                 source="ui_home",
                 page_state="profile_home",
-                confidence=0.8,
+                confidence=0.7 if evidence.get("nickname_mismatch") else 0.8,
                 evidence=evidence,
             )
         return FieldExtraction(

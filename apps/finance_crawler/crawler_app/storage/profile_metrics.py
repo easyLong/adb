@@ -458,6 +458,7 @@ def record_profile_metric(
                     fans_count=fans_count,
                     growth_count=growth_count,
                     read_count=read_count,
+                    metrics=metrics or {},
                     error=error,
                 )
             if status == "success":
@@ -814,6 +815,7 @@ def sync_kol_daily_metrics_from_profile_runs(metric_date: date | None = None) ->
                     m.fans_count,
                     m.growth_count,
                     m.read_count,
+                    m.metrics_json,
                     m.error
                 FROM profile_metric_runs m
                 JOIN profile_targets t ON t.id = m.target_id
@@ -837,6 +839,7 @@ def sync_kol_daily_metrics_from_profile_runs(metric_date: date | None = None) ->
                     fans_count=row.get("fans_count"),
                     growth_count=row.get("growth_count"),
                     read_count=row.get("read_count"),
+                    metrics=_json_loads(row.get("metrics_json")) or {},
                     error=row.get("error"),
                 )
         conn.commit()
@@ -860,7 +863,8 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
     fans_count: int | None,
     growth_count: int | None,
     read_count: int | None,
-    error: str | None,
+    metrics: dict[str, Any] | None = None,
+    error: str | None = None,
 ) -> None:
     cursor.execute(
         """
@@ -893,6 +897,10 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
 
     source = _json_loads(row.get("source_json")) or {}
     locator = _json_loads(row.get("source_locator_json")) or {}
+    metric_payload = metrics or {}
+    fans_payload = metric_payload.get("fans") if isinstance(metric_payload.get("fans"), dict) else {}
+    quality_warning = str(fans_payload.get("quality_warning") or "").strip()
+    nickname_mismatch = bool(fans_payload.get("nickname_mismatch"))
     source_payload = {
         "workflow": "profile_metrics",
         "metric_id": metric_id,
@@ -902,6 +910,8 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
         "homepage_url": homepage_url,
         "status": status,
         "error": error,
+        "nickname_mismatch": nickname_mismatch,
+        "quality_warning": quality_warning,
     }
     cursor.execute(
         """
