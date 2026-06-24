@@ -18,9 +18,23 @@
   -> 理财通外部阅读数同步
   -> ADB 主页粉丝数 / 增粉数采集
   -> 数据库结果查看和导出
+
+内部数据报告
+  -> 读取线上日期 sheet 当前数据
+  -> 按产品统计
+  -> 写回日报 sheet
+
+微信群消息 / ops_platform 需求识别
+  -> ops_platform 群配置
+  -> wechat_capture_runs / wechat_message_observations
+  -> wechat_demand_intake_offsets / wechat_demand_intake_runs
+  -> ops_platform.demand_intake_candidates / demand_candidate_evidence
 ```
 
-KOL 每日数据现在优先走数据库主链路，腾讯文档不再作为主结果表。需要查看或导出时，启动本地 Web 页面。
+当前口径里：
+
+- KOL 每日数据优先走数据库主链路，腾讯文档不再作为主结果表
+- 微信群消息链路优先走 `wechat-hourly-sync`，先沉淀稳定消息，再做增量需求识别
 
 ## 快速开始
 
@@ -29,6 +43,7 @@ cd C:\Code\adb
 pip install -r requirements.txt
 adb devices
 .\scripts\run.ps1 -Task db
+.\scripts\run.ps1 -Task crawler-app-db
 .\scripts\run.ps1 -Task config
 ```
 
@@ -76,6 +91,21 @@ KOL 数据库主链路：
 .\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22 -StartWeb
 ```
 
+微信群消息主链路：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-hourly-sync
+```
+
+拆开调试：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-groups-list
+.\scripts\run.ps1 -Task wechat-groups-capture -ReportDate 2026-06-17 -WechatLimit 1
+.\scripts\run.ps1 -Task wechat-messages-parse -ReportDate 2026-06-17
+.\scripts\run.ps1 -Task wechat-demand-intake -WechatIntakeMode incremental
+```
+
 KOL 数据查看页面：
 
 ```powershell
@@ -100,6 +130,8 @@ If another device on the LAN cannot open the page, allow inbound TCP 8091 in Win
 - [docs/KOL_DAILY_DB_PIPELINE.md](docs/KOL_DAILY_DB_PIPELINE.md)
 - [docs/KOL_TENPAY_EXTERNAL_READS.md](docs/KOL_TENPAY_EXTERNAL_READS.md)
 - [docs/RUNTIME_CONFIG.md](docs/RUNTIME_CONFIG.md)
+- [docs/OPS_PLATFORM_INTAKE.md](docs/OPS_PLATFORM_INTAKE.md)
+- [docs/WECHAT_CHAT_EXPORT.md](docs/WECHAT_CHAT_EXPORT.md)
 - [docs/ACTION_TEMPLATES.md](docs/ACTION_TEMPLATES.md)
 - [docs/CRAWLER_APP_V2.md](docs/CRAWLER_APP_V2.md)
 

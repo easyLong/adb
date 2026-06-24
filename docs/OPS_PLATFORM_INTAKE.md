@@ -2,6 +2,36 @@
 
 本文记录 ADB 项目从微信群持续采集消息、识别需求候选，并写入 `ops_platform` 的当前生产链路。
 
+## 一眼看懂
+
+当前微信链路已经收敛成两层：
+
+```text
+事实层
+ops_platform 群配置
+-> ADB 打开微信群并按日期/页面采集截图
+-> OCR 原始行入库
+-> 规整成稳定群消息
+
+业务层
+active 群消息
+-> 增量取新消息 + 少量历史上下文
+-> 模型识别需求候选
+-> 写入 ops_platform 候选需求和证据链
+```
+
+可以把它理解成：
+
+- `wechat_capture_runs`、`wechat_ocr_observations`、`wechat_message_observations` 负责“尽量完整保留群消息事实”
+- `demand_intake_candidates`、`demand_candidate_evidence` 负责“把事实消息变成可审核的需求候选”
+
+当前生产推荐口径：
+
+- 微信消息解析默认使用 `ocr`，不默认使用模型视觉识别
+- 需求识别只消费 `wechat_message_observations.status = 'active'`
+- 持续生产优先跑 `incremental`，不是每天全量回扫
+- 人工已 `confirmed/rejected` 的候选不应被自动覆盖
+
 ## 当前主链路
 
 ```text
@@ -23,6 +53,60 @@ ops_platform 群配置
 增量识别只处理水位后的新消息
 人工 confirmed/rejected 的候选不被自动覆盖
 ```
+
+## 表级数据流
+
+```text
+ops_platform.group_contact_mappings + ops_platform.customers
+-> crawler_app.wechat_capture_runs
+-> crawler_app.wechat_ocr_observations
+-> crawler_app.wechat_message_observations
+-> crawler_app.wechat_demand_intake_offsets / crawler_app.wechat_demand_intake_runs
+-> ops_platform.demand_intake_candidates
+-> ops_platform.demand_candidate_evidence
+```
+
+每一层的职责是：
+
+| 层 | 表 | 作用 |
+| --- | --- | --- |
+| 群元数据 | `ops_platform.group_contact_mappings`, `ops_platform.customers` | 定义“采谁”，并提供客户、对接人、平台等上下文 |
+| 采集运行 | `crawler_app.wechat_capture_runs` | 记录一次截图采集 run，包含群、日期、截图目录、状态 |
+| OCR 原始事实 | `crawler_app.wechat_ocr_observations` | 保存每张截图的 OCR 原始行，主要用于追溯和排错 |
+| 稳定消息流 | `crawler_app.wechat_message_observations` | 保存最终可消费的文本消息，按 `message_fingerprint` 幂等去重 |
+| 增量水位 | `crawler_app.wechat_demand_intake_offsets` | 记录每个群上次识别推进到哪一条消息 |
+| 识别运行 | `crawler_app.wechat_demand_intake_runs` | 记录一次增量识别看了哪些消息、带了多少上下文、产出多少候选 |
+| 候选需求 | `ops_platform.demand_intake_candidates` | AI 识别出的待审核需求候选 |
+| 候选证据 | `ops_platform.demand_candidate_evidence` | 候选需求关联的原始群消息证据链 |
+
+## 运行入口
+
+日常生产只需要记住一条命令：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-hourly-sync
+```
+
+它会串联执行：
+
+```text
+wechat-groups-capture
+-> wechat-messages-parse
+-> wechat-demand-intake -WechatIntakeMode incremental
+```
+
+拆开单独跑时：
+
+- `wechat-groups-capture`：只采截图
+- `wechat-messages-parse`：把截图转成 `active` 群消息
+- `wechat-demand-intake -WechatIntakeMode incremental`：只处理水位之后的新消息
+
+生产排查时，建议按这个顺序看：
+
+1. `wechat_capture_runs` 有没有成功采到截图
+2. `wechat_message_observations` 有没有生成 `active` 文本消息
+3. `wechat_demand_intake_offsets` 有没有推进
+4. `ops_platform.demand_intake_candidates` 有没有产出新的 `pending` 候选
 
 ## 元数据来源
 
@@ -46,6 +130,218 @@ status             active / inactive
 ```
 
 ADB 会将这些信息带入采集 run、消息和需求候选，作为后续匹配客户、对接人、平台的依据。
+
+## 如何配置“采集谁”
+
+当前“采集谁”不再从 `crawler_app.wechat_chats` 维护，而是直接读取：
+
+```text
+ops_platform.group_contact_mappings
+ops_platform.customers
+```
+
+系统实际筛选条件是：
+
+```sql
+mapping.status = 'active'
+AND mapping.collect_enabled = 1
+AND mapping.deleted_at IS NULL
+AND customer.deleted_at IS NULL
+```
+
+也就是说，只有“有效 + 启用采集”的群映射，才会进入 `wechat-groups-list` 和 `wechat-hourly-sync`。
+
+### 新增一个群的最小操作
+
+新增群时，至少要保证两件事：
+
+1. `customers` 里已经有对应的 `customer_code`
+2. `group_contact_mappings` 里插入一条启用采集的群映射
+
+最小必填字段建议是：
+
+```text
+group_key
+group_name
+customer_code
+contact_name
+business_platform
+status
+collect_enabled
+```
+
+推荐值：
+
+```text
+status = active
+collect_enabled = 1
+```
+
+### 字段怎么理解
+
+| 字段 | 含义 | 配置建议 |
+| --- | --- | --- |
+| `group_key` | 群稳定主键 | 推荐使用稳定 ID；如果没有稳定 ID，至少保证同一个群长期不变 |
+| `group_name` | 微信里真实可搜索的群名称 | ADB 进微信后就是靠它搜群，尽量和微信显示完全一致 |
+| `customer_code` | 客户编码 | 必须能在 `customers` 表里关联到有效客户 |
+| `contact_name` | 对接人 | 后续会写进候选需求上下文；同群多对接人可以多行配置 |
+| `business_platform` | 平台 | 比如基金平台、业务线、渠道；会进入候选需求元数据 |
+| `status` | 配置状态 | 生产建议固定 `active` |
+| `collect_enabled` | 是否参与微信采集 | 打开为 `1`，暂停采集就改成 `0` |
+
+### 最常见的新增方式
+
+如果一个群只服务一个客户、一个平台，直接加一行：
+
+```sql
+INSERT INTO ops_platform.group_contact_mappings (
+    group_key,
+    group_name,
+    customer_code,
+    contact_name,
+    business_platform,
+    status,
+    collect_enabled
+) VALUES (
+    'wx_group_demo_001',
+    '向量-汇添富沟通小分队',
+    'HTF001',
+    '张三',
+    '微信',
+    'active',
+    1
+);
+```
+
+### 已有基金信息，只新增一个群
+
+如果 `customers` 里已经有这只基金，只需要新增 `group_contact_mappings`，不需要再插 `customers`。
+
+先确认基金已经存在：
+
+```sql
+SELECT id, customer_code, customer_name, status, deleted_at
+FROM ops_platform.customers
+WHERE customer_code = 'HTF001';
+```
+
+确认存在且未删除后，直接插入群映射：
+
+```sql
+INSERT INTO ops_platform.group_contact_mappings (
+    id,
+    group_key,
+    group_name,
+    contact_name,
+    business_platform,
+    collect_enabled,
+    status,
+    remark,
+    deleted_at,
+    customer_code
+) VALUES (
+    UUID(),
+    'wx_group_htf_new_001',
+    '汇添富设计需求响应群',
+    '张三',
+    '微信',
+    1,
+    'active',
+    '已有基金信息，新增微信群采集配置',
+    NULL,
+    'HTF001'
+);
+```
+
+如果这个新群也有多个对接人，就继续追加多行，保持：
+
+```text
+group_key 相同
+group_name 相同
+customer_code 相同
+```
+
+只修改 `contact_name`。
+
+### 一个群多个对接人，怎么配
+
+同一个群如果只是多个对接人、但客户和平台相同，可以插入多行，`group_key` 和 `group_name` 保持一致，`contact_name` 不同。
+
+系统读取时会按：
+
+```text
+group_key + group_name + customer_code + customer_name + business_platform
+```
+
+做聚合，并把多个 `contact_name` 用逗号拼起来。
+
+也就是说：
+
+- 同群 + 同客户 + 同平台 + 多对接人：会合并成一条采集来源
+- 同群 + 不同客户，或同群 + 不同平台：会变成多条采集来源
+
+这一点很重要，新增群时如果配了多客户/多平台，要明确这是有意为之，不然同一个群会被系统当成多个来源上下文。
+
+### 新增后怎么验证
+
+先查元数据是否生效：
+
+```sql
+SELECT
+    mapping.group_key,
+    mapping.group_name,
+    mapping.customer_code,
+    customer.customer_name,
+    mapping.contact_name,
+    mapping.business_platform,
+    mapping.status,
+    mapping.collect_enabled
+FROM ops_platform.group_contact_mappings mapping
+JOIN ops_platform.customers customer
+  ON customer.customer_code = mapping.customer_code
+ AND customer.deleted_at IS NULL
+WHERE mapping.group_name = '向量-汇添富沟通小分队'
+  AND mapping.deleted_at IS NULL;
+```
+
+再用项目命令确认会不会被采集进来：
+
+```powershell
+.\scripts\run.ps1 -Task wechat-groups-list
+```
+
+如果列表里没有出现，优先检查：
+
+- `group_name` 是否和微信里真实群名一致
+- `customer_code` 是否能关联到 `customers`
+- `status` 是否为 `active`
+- `collect_enabled` 是否为 `1`
+- 是否被误删，`deleted_at` 不为空
+
+### 临时停用一个群
+
+不建议删数据，建议直接停用：
+
+```sql
+UPDATE ops_platform.group_contact_mappings
+SET collect_enabled = 0
+WHERE group_key = 'wx_group_demo_001';
+```
+
+重新启用：
+
+```sql
+UPDATE ops_platform.group_contact_mappings
+SET collect_enabled = 1,
+    status = 'active'
+WHERE group_key = 'wx_group_demo_001';
+```
+
+### 改群名怎么处理
+
+如果只是微信群改名了，优先更新 `group_name`，不要新建一条新群配置；这样历史 `source_key/group_key` 还能连续。
+
+只有在“这个群在业务上已经不是原来的群”时，才建议换新的 `group_key`。
 
 ## crawler_app 表职责
 

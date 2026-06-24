@@ -24,12 +24,16 @@
    v2 文档任务设计细节，主要面向帖子链接型任务。
 8. [V2_AUTO_RUN_OPERATION.md](V2_AUTO_RUN_OPERATION.md)
    v2 文档触发器操作手册。
-9. [init.sql](init.sql)
+9. [OPS_PLATFORM_INTAKE.md](OPS_PLATFORM_INTAKE.md)
+   微信群消息采集和需求识别生产链路。说明群配置来源、新增群如何配置、截图/OCR/稳定消息流、增量水位、候选需求和证据链写入。
+10. [WECHAT_CHAT_EXPORT.md](WECHAT_CHAT_EXPORT.md)
+   微信聊天截图导出命令。说明单群按日期截图、跳过导航、保留设备截图等调试用法。
+11. [init.sql](init.sql)
    数据库初始化 SQL。
 
 架构图见 [ARCHITECTURE.md](ARCHITECTURE.md)，完整源图见 [assets/adb-crawler-architecture.mmd](assets/adb-crawler-architecture.mmd)。
 
-当前架构有三条主线：
+当前架构有四条主线：
 
 ```text
 帖子/链接型任务
@@ -47,6 +51,12 @@ KOL / 主页型任务
   -> 读取线上日期 sheet 当前数据
   -> 按产品统计
   -> 写回日报 sheet
+
+微信群消息 / ops_platform 需求识别
+  -> ops_platform 群配置
+  -> wechat_capture_runs / wechat_message_observations
+  -> wechat_demand_intake_offsets / wechat_demand_intake_runs
+  -> ops_platform.demand_intake_candidates / demand_candidate_evidence
 ```
 
 KOL 主结果只看数据库，目前只保留三个日常入口：
