@@ -1,8 +1,5 @@
 param(
     [string]$ReportDate = "",
-    [switch]$StartWeb,
-    [string]$WebHost = "0.0.0.0",
-    [int]$WebPort = 8091,
     [switch]$DryRun
 )
 
@@ -27,32 +24,5 @@ if ($DryRun) {
     & $RunScript @PipelineArgs
     if ($LASTEXITCODE) {
         exit $LASTEXITCODE
-    }
-}
-
-if ($StartWeb) {
-    $WebArgs = @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        $RunScript,
-        "-Task",
-        "kol-metrics-web",
-        "-WebHost",
-        $WebHost,
-        "-WebPort",
-        "$WebPort"
-    )
-
-    if ($DryRun) {
-        Write-Host (Format-CommandLine "Start-Process powershell" $WebArgs)
-    } else {
-        Start-Process -FilePath "powershell" `
-            -ArgumentList $WebArgs `
-            -WorkingDirectory $Root `
-            -WindowStyle Hidden
-        Write-Host "KOL metrics web: http://$WebHost`:$WebPort/"
-        Write-Host "LAN access: use this computer's LAN IP, for example http://<LAN-IP>:$WebPort/"
     }
 }

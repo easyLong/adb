@@ -69,7 +69,6 @@ TENCENT_DOC_TOKEN_URL
 
 ```powershell
 .\scripts\run.ps1 -Task kol-daily-db-pipeline
-.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
 ```
 
 需要单独补跑理财通外部阅读数时使用：
@@ -207,7 +206,8 @@ kol_daily_db_pipeline
 查看页面：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
+cd ..\easy-viewer
+.\scripts\start_viewer.ps1
 ```
 
 ## 6. 常驻运行

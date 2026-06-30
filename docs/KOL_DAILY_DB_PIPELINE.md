@@ -9,7 +9,7 @@
 | Task | 作用 |
 | --- | --- |
 | `kol-daily-db-pipeline` | 串行执行每日主链路 |
-| `kol-metrics-web` | 查看、筛选和导出 KOL 数据 |
+| `easy-viewer /kol-metrics` | 查看、筛选和导出 KOL 数据 |
 | `kol-tenpay-external-reads` | 单独补跑理财通外部阅读数；正常由主链路串起来 |
 
 ## 串行顺序
@@ -86,13 +86,13 @@ kol_daily_metrics.growth_count
 
 ```powershell
 .\scripts\kol-daily-db-pipeline.ps1
-.\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22 -StartWeb
+.\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22
 ```
 
 只查看命令，不实际执行：
 
 ```powershell
-.\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22 -StartWeb -DryRun
+.\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22 -DryRun
 ```
 
 ## 查看和导出
@@ -100,17 +100,16 @@ kol_daily_metrics.growth_count
 启动 KOL 数据页面：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
+cd ..\easy-viewer
+.\scripts\start_viewer.ps1
 ```
 
 打开：
 
 ```text
-http://127.0.0.1:8091/
-http://<LAN-IP>:8091/
+http://127.0.0.1:8898/kol-metrics
 ```
 
-If another device on the LAN cannot open the page, allow inbound TCP 8091 in Windows Firewall.
 
 页面支持按日期、平台、标题/大 V 名称筛选，支持按 title 排序，也支持下载 Excel。
 

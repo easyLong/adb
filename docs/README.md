@@ -63,7 +63,7 @@ KOL 主结果只看数据库，目前只保留三个日常入口：
 
 ```text
 kol-daily-db-pipeline
-kol-metrics-web
+easy-viewer /kol-metrics
 kol-tenpay-external-reads
 ```
 

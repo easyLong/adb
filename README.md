@@ -17,7 +17,7 @@
   -> kol_daily_metrics 数据库每日表
   -> 理财通外部阅读数同步
   -> ADB 主页粉丝数 / 增粉数采集
-  -> 数据库结果查看和导出
+  -> easy-viewer 查看和导出
 
 内部数据报告
   -> 读取线上日期 sheet 当前数据
@@ -88,7 +88,7 @@ KOL 数据库主链路：
 
 ```powershell
 .\scripts\kol-daily-db-pipeline.ps1
-.\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22 -StartWeb
+.\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22
 ```
 
 微信群消息主链路：
@@ -109,17 +109,16 @@ KOL 数据库主链路：
 KOL 数据查看页面：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
+cd ..\easy-viewer
+.\scripts\start_viewer.ps1
 ```
 
 打开：
 
 ```text
-http://127.0.0.1:8091/
-http://<LAN-IP>:8091/
+http://127.0.0.1:8898/kol-metrics
 ```
 
-If another device on the LAN cannot open the page, allow inbound TCP 8091 in Windows Firewall.
 
 ## 文档入口
 
@@ -142,7 +141,7 @@ apps/finance_crawler/
   app.py                    CLI、scheduler、supervisor 入口
   config.py                 默认配置和环境变量读取
   workflows/                业务流程编排
-  crawler_app/              v2 数据库、任务、KOL 每日表和 Web 页面
+  crawler_app/              v2 数据库、任务和 KOL 每日表
   mobile/                   ADB、uiautomator2、截图、OCR、页面采集
   crawlers/                 App 链接识别和 App 专属解析
   integrations/tencent_docs 腾讯文档 OpenAPI 客户端

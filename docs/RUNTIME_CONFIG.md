@@ -189,7 +189,8 @@ kol_daily_db_pipeline
 查看结果页面：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
+cd ..\easy-viewer
+.\scripts\start_viewer.ps1
 ```
 
 ## Profile 主页动作模板
@@ -267,7 +268,7 @@ alipay + detail + account_name,read_count,screenshot
 ## 注意事项
 
 - 启用 `KOL_DAILY_CRAWL_TIME` 后，scheduler 会注册 `kol_daily_db_pipeline`。
-- 新 KOL 主链路只更新数据库；查看和下载走 `kol-metrics-web`。
+- 新 KOL 主链路只更新数据库；查看和下载走 `easy-viewer` 的 `/kol-metrics` 页面。
 - `KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS=5` 表示阅读数每天更新 T-1 到 T-5。
 - `KOL_DAILY_CRAWL_TIME=08:00` 才采集今日主页粉丝数和增粉数。
 - 文档字段优先按表头 title 识别，列号配置只是兜底。

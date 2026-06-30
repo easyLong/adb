@@ -152,7 +152,7 @@ writeback_plans
 | Task | 作用 |
 | --- | --- |
 | `kol-daily-db-pipeline` | 串行执行 KOL 每日数据库主链路 |
-| `kol-metrics-web` | 启动 KOL 数据查看页面，支持筛选、排序和下载 Excel |
+| `easy-viewer /kol-metrics` | KOL 数据查看页面，支持筛选、排序和下载 Excel |
 | `kol-tenpay-external-reads` | 单独补跑理财通外部阅读数；正常由 `kol-daily-db-pipeline` 串起来 |
 
 启动常驻 worker 后，`profile` 角色会按 `KOL_DAILY_CRAWL_TIME` 注册：
@@ -177,16 +177,16 @@ kol_daily_db_pipeline
 
 ```powershell
 .\scripts\kol-daily-db-pipeline.ps1
-.\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22 -StartWeb
+.\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22
 ```
 
 只打开 KOL 数据页面：
 
 ```powershell
-.\scripts\run.ps1 -Task kol-metrics-web -WebHost 0.0.0.0 -WebPort 8091
+cd ..\easy-viewer
+.\scripts\start_viewer.ps1
 ```
 
-If another device on the LAN cannot open the page, allow inbound TCP 8091 in Windows Firewall.
 
 调整阅读数回看天数：
 
