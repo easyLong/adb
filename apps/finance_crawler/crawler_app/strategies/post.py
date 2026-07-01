@@ -14,8 +14,10 @@ from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawler_app.capture.planner import resolve_capture_plan_for_task
 from apps.finance_crawler.crawler_app.documents.fields import (
     ACCOUNT_NAME,
+    ARTICLE_TITLE,
     CHECK_RESULT,
     COMMENT_COUNT,
+    LIKE_COUNT,
     READ_COUNT,
     REMARK,
     SCREENSHOT,
@@ -138,8 +140,10 @@ def _with_post_field_results(
 def detail_metrics(result: dict[str, Any]) -> dict[str, Any]:
     metrics = {
         ACCOUNT_NAME: result.get("account_name"),
+        ARTICLE_TITLE: result.get("article_title"),
         READ_COUNT: result.get("read_count"),
         COMMENT_COUNT: result.get("comment_count"),
+        LIKE_COUNT: result.get("like_count"),
         "capture_pages": result.get("capture_pages"),
         "ocr_attempted": result.get("ocr_attempted"),
     }
@@ -158,8 +162,12 @@ def detail_writeback_values(result: dict[str, Any]) -> dict[str, Any]:
             COMMENT_COUNT: result.get("comment_count") or 0,
             REMARK: "成功",
         }
+        if result.get("like_count") is not None:
+            values[LIKE_COUNT] = result.get("like_count") or 0
         if result.get("account_name"):
             values[ACCOUNT_NAME] = result.get("account_name")
+        if result.get("article_title"):
+            values[ARTICLE_TITLE] = result.get("article_title")
         if result.get("screenshot_path"):
             values[SCREENSHOT] = result.get("screenshot_path")
         return values

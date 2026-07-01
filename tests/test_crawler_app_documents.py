@@ -16,8 +16,10 @@ from apps.finance_crawler.crawler_app.capture.post_fields import (
 from apps.finance_crawler.crawler_app.documents import column_resolver
 from apps.finance_crawler.crawler_app.documents.fields import (
     ACCOUNT_NAME,
+    ARTICLE_TITLE,
     CHECK_RESULT,
     COMMENT_COUNT,
+    LIKE_COUNT,
     READ_COUNT as READ_COUNT_FIELD,
     REMARK,
     SCREENSHOT,
@@ -64,6 +66,7 @@ from apps.finance_crawler.crawler_app.workflows.kol_daily_snapshots import (
 )
 from apps.finance_crawler.crawler_app.workflows.execution import (
     _attach_capture_action_profile,
+    _record_derived_records,
     _record_field_capture_observations,
     _requested_writeback_values,
     _sleep_between_submissions,
@@ -139,6 +142,7 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS profile_metric_writebacks", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS capture_action_profiles", ddl)
         self.assertIn("CREATE TABLE IF NOT EXISTS field_capture_observations", ddl)
+        self.assertIn("CREATE TABLE IF NOT EXISTS derived_records", ddl)
         self.assertIn("host_id VARCHAR(191) NOT NULL DEFAULT ''", ddl)
         self.assertIn("UNIQUE KEY uk_adb_devices_host_serial", ddl)
         self.assertIn("app_type VARCHAR(64) NOT NULL", ddl)
@@ -448,12 +452,15 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         bundle = build_post_capture_bundle(
             task_type=DETAIL,
             app_type=SOURCE_ALIPAY,
-            requested_fields=(ACCOUNT_NAME, READ_COUNT_FIELD, SCREENSHOT, REMARK),
+            requested_fields=(ACCOUNT_NAME, ARTICLE_TITLE, READ_COUNT_FIELD, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT, REMARK),
             result={
                 "status": "success",
                 "opened_url": "https://example.com/post",
                 "account_name": "acct",
+                "article_title": "title",
                 "read_count": 123,
+                "comment_count": 28,
+                "like_count": 133,
                 "screenshot_path": "shot.png",
                 "capture_plan": {
                     "actions": ["open_link", "ui_controls", "screenshot"],
@@ -465,7 +472,10 @@ class CrawlerAppDocumentTests(unittest.TestCase):
 
         self.assertEqual(bundle.page_state, "post_detail")
         self.assertEqual(results[ACCOUNT_NAME].value, "acct")
+        self.assertEqual(results[ARTICLE_TITLE].value, "title")
         self.assertEqual(results[READ_COUNT_FIELD].value, 123)
+        self.assertEqual(results[COMMENT_COUNT].value, 28)
+        self.assertEqual(results[LIKE_COUNT].value, 133)
         self.assertEqual(results[SCREENSHOT].value, "shot.png")
         self.assertTrue(all(item.accepted for item in results.values()))
 
@@ -473,7 +483,9 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         result = {
             "field_results": [
                 {"field_name": ACCOUNT_NAME, "value": "acct", "accepted": True},
+                {"field_name": ARTICLE_TITLE, "value": "title", "accepted": True},
                 {"field_name": READ_COUNT_FIELD, "value": 123, "accepted": True},
+                {"field_name": LIKE_COUNT, "value": 133, "accepted": True},
                 {"field_name": SCREENSHOT, "value": "shot.png", "accepted": True},
                 {"field_name": COMMENT_COUNT, "value": None, "accepted": False},
             ]
@@ -483,7 +495,9 @@ class CrawlerAppDocumentTests(unittest.TestCase):
             writeback_values_from_field_results(result),
             {
                 ACCOUNT_NAME: "acct",
+                ARTICLE_TITLE: "title",
                 READ_COUNT_FIELD: 123,
+                LIKE_COUNT: 133,
                 SCREENSHOT: "shot.png",
             },
         )
@@ -543,6 +557,49 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertEqual(captured[0].target_type, "source_row")
         self.assertEqual(captured[0].target_id, 5)
         self.assertEqual(captured[0].field_name, READ_COUNT_FIELD)
+
+    def test_execution_records_derived_records(self) -> None:
+        captured = {}
+
+        def fake_upsert(_conn, records, **kwargs):
+            captured["records"] = records
+            captured["kwargs"] = kwargs
+            return len(records)
+
+        result = {
+            "derived_records": [
+                {
+                    "record_type": "profile",
+                    "app_type": SOURCE_TENPAY,
+                    "relation_type": "post_author",
+                    "unique_key": "userId:ozae1tyM8fsarCpvtj6tNd0ddltE",
+                    "url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/mycomment/index?userId=ozae1tyM8fsarCpvtj6tNd0ddltE",
+                    "title": "author",
+                    "payload": {"subject_id": "202606261348430140397759"},
+                },
+                "ignore-me",
+            ]
+        }
+
+        with patch("apps.finance_crawler.crawler_app.workflows.execution.repository.upsert_derived_records", fake_upsert):
+            count = _record_derived_records(
+                object(),
+                submission={"id": 7, "task_type": DETAIL},
+                execution_id=11,
+                result=result,
+            )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(captured["records"][0]["record_type"], "profile")
+        self.assertEqual(captured["records"][0]["relation_type"], "post_author")
+        self.assertEqual(
+            captured["kwargs"],
+            {
+                "source_submission_id": 7,
+                "source_execution_id": 11,
+                "source_task_type": DETAIL,
+            },
+        )
 
     def test_kol_daily_header_resolves_by_title(self) -> None:
         header = [
@@ -1672,6 +1729,59 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertIn(ACTION_SCROLL, plan.actions)
         self.assertGreaterEqual(plan.max_scrolls, 1)
         self.assertEqual(plan.complexity, "scroll_capture")
+
+    def test_tenpay_like_count_capture_plan_uses_first_screen_ocr(self) -> None:
+        plan = plan_capture_for_task(
+            task_type="detail",
+            app_type=SOURCE_TENPAY,
+            fields=(LIKE_COUNT, SCREENSHOT),
+        )
+
+        self.assertIn(ACTION_OCR, plan.actions)
+        self.assertNotIn(ACTION_SCROLL, plan.actions)
+        self.assertEqual(plan.max_scrolls, 0)
+        self.assertEqual(plan.complexity, "ui_ocr_capture")
+
+    def test_tenpay_title_comment_like_screenshot_uses_first_screen_ocr(self) -> None:
+        plan = plan_capture_for_task(
+            task_type="detail",
+            app_type=SOURCE_TENPAY,
+            fields=(ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT),
+        )
+
+        self.assertEqual(
+            plan.actions,
+            (ACTION_OPEN_LINK, ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_OCR),
+        )
+        self.assertEqual(plan.max_scrolls, 0)
+        self.assertEqual(plan.complexity, "ui_ocr_capture")
+
+    def test_tenpay_article_title_capture_plan_enables_ocr(self) -> None:
+        plan = plan_capture_for_task(
+            task_type="detail",
+            app_type=SOURCE_TENPAY,
+            fields=(ARTICLE_TITLE, SCREENSHOT),
+        )
+
+        self.assertIn(ACTION_SCREENSHOT, plan.actions)
+        self.assertIn(ACTION_OCR, plan.actions)
+        self.assertNotIn(ACTION_SCROLL, plan.actions)
+        self.assertEqual(plan.complexity, "ui_ocr_capture")
+
+    def test_metric_capture_plan_is_independent_of_task_type(self) -> None:
+        detail_plan = plan_capture_for_task(
+            task_type="detail",
+            app_type=SOURCE_TENPAY,
+            fields=(LIKE_COUNT,),
+        )
+        article_plan = plan_capture_for_task(
+            task_type="article_detail",
+            app_type=SOURCE_TENPAY,
+            fields=(LIKE_COUNT,),
+        )
+
+        self.assertEqual(detail_plan.actions, article_plan.actions)
+        self.assertEqual(detail_plan.max_scrolls, article_plan.max_scrolls)
 
     def test_interactive_detail_capture_plan_uses_click_and_ocr(self) -> None:
         plan = plan_capture_for_task(

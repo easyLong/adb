@@ -186,13 +186,6 @@ kol_daily_db_pipeline
 
 不是 document trigger，也不是旧的腾讯文档写回链路。
 
-查看结果页面：
-
-```powershell
-cd ..\easy-viewer
-.\scripts\start_viewer.ps1
-```
-
 ## Profile 主页动作模板
 
 主页动作模板存在 `profile_action_profiles`。
@@ -211,7 +204,7 @@ profile trigger 的 `action_profile_key` 可以为空。为空时，系统按每
 
 帖子/链接型动作模板存在 `capture_action_profiles`。
 
-执行时按以下维度选择动作：
+默认规划先按 `app_type + metric` 合并动作需求；如果数据库里配置了显式模板，则按以下维度选择覆盖动作：
 
 ```text
 app_type + task_type + requested_fields
@@ -268,7 +261,7 @@ alipay + detail + account_name,read_count,screenshot
 ## 注意事项
 
 - 启用 `KOL_DAILY_CRAWL_TIME` 后，scheduler 会注册 `kol_daily_db_pipeline`。
-- 新 KOL 主链路只更新数据库；查看和下载走 `easy-viewer` 的 `/kol-metrics` 页面。
+- 新 KOL 主链路只更新数据库。
 - `KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS=5` 表示阅读数每天更新 T-1 到 T-5。
 - `KOL_DAILY_CRAWL_TIME=08:00` 才采集今日主页粉丝数和增粉数。
 - 文档字段优先按表头 title 识别，列号配置只是兜底。

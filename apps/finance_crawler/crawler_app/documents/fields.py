@@ -26,6 +26,8 @@ ACCOUNT_NAME = "account_name"
 POST_TIME = "post_time"
 READ_COUNT = "read_count"
 COMMENT_COUNT = "comment_count"
+LIKE_COUNT = "like_count"
+ARTICLE_TITLE = "article_title"
 SCREENSHOT = "screenshot"
 REMARK = "remark"
 CHECK_RESULT = "check_result"
@@ -91,6 +93,20 @@ DEFAULT_BUSINESS_FIELDS: tuple[BusinessField, ...] = (
         name=COMMENT_COUNT,
         label="\u8bc4\u8bba\u6570",
         aliases=("\u8bc4\u8bba\u6570", "\u8bc4\u8bba\u91cf"),
+        role=FieldRole.OUTPUT,
+        create_if_missing=True,
+    ),
+    BusinessField(
+        name=LIKE_COUNT,
+        label="\u70b9\u8d5e\u6570",
+        aliases=("\u70b9\u8d5e\u6570", "\u70b9\u8d5e\u91cf", "\u8d5e\u6570"),
+        role=FieldRole.OUTPUT,
+        create_if_missing=True,
+    ),
+    BusinessField(
+        name=ARTICLE_TITLE,
+        label="\u6587\u7ae0\u6807\u9898",
+        aliases=("\u6587\u7ae0\u6807\u9898", "\u6807\u9898", "\u5e16\u5b50\u6807\u9898", "\u5185\u5bb9\u6807\u9898"),
         role=FieldRole.OUTPUT,
         create_if_missing=True,
     ),

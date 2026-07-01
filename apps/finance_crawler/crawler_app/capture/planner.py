@@ -8,8 +8,10 @@ from typing import Any
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawler_app.documents.fields import (
     ACCOUNT_NAME,
+    ARTICLE_TITLE,
     CHECK_RESULT,
     COMMENT_COUNT,
+    LIKE_COUNT,
     READ_COUNT,
     REMARK,
     SCREENSHOT,
@@ -28,15 +30,8 @@ from apps.finance_crawler.mobile.action_plan import (
 
 
 @dataclass(frozen=True, slots=True)
-class AppCapturePolicy:
-    extra_actions: tuple[str, ...] = ()
-    min_scrolls: int = 0
-    requires_ocr: bool = False
-
-
-@dataclass(frozen=True, slots=True)
 class FieldEvidenceRequirement:
-    """Evidence actions required to extract one field from a shared capture."""
+    """Evidence actions required to extract one metric from a shared capture."""
 
     actions: tuple[str, ...]
     min_scrolls: int = 0
@@ -58,15 +53,29 @@ FIELD_EVIDENCE_REQUIREMENTS: dict[str, FieldEvidenceRequirement] = {
         (ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_TAP_RETRY),
     ),
     COMMENT_COUNT: FieldEvidenceRequirement((ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_SCROLL), min_scrolls=1),
+    LIKE_COUNT: FieldEvidenceRequirement((ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_SCROLL), min_scrolls=1),
+    ARTICLE_TITLE: FieldEvidenceRequirement((ACTION_UI_CONTROLS, ACTION_SCREENSHOT)),
     SCREENSHOT: FieldEvidenceRequirement((ACTION_SCREENSHOT,)),
     REMARK: FieldEvidenceRequirement(()),
     CHECK_RESULT: FieldEvidenceRequirement((ACTION_UI_CONTROLS,)),
 }
 
-APP_POLICIES: dict[str, AppCapturePolicy] = {
-    SOURCE_TENPAY: AppCapturePolicy(
-        extra_actions=(ACTION_OCR,),
-        requires_ocr=True,
+APP_METRIC_EVIDENCE_REQUIREMENTS: dict[tuple[str, str], FieldEvidenceRequirement] = {
+    (SOURCE_TENPAY, READ_COUNT): FieldEvidenceRequirement(
+        (ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_OCR, ACTION_TAP_RETRY),
+    ),
+    (SOURCE_TENPAY, COMMENT_COUNT): FieldEvidenceRequirement(
+        (ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_OCR),
+    ),
+    (SOURCE_TENPAY, LIKE_COUNT): FieldEvidenceRequirement(
+        (ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_OCR),
+    ),
+    (SOURCE_TENPAY, ARTICLE_TITLE): FieldEvidenceRequirement(
+        (ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_OCR),
+    ),
+    (SOURCE_TENPAY, "trade_details"): FieldEvidenceRequirement(
+        (ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_OCR, ACTION_SCROLL, ACTION_CLICK_DETAIL),
+        min_scrolls=2,
     ),
 }
 
@@ -104,30 +113,17 @@ def plan_capture_for_task(
 
 
 def plan_minimal_capture_actions(*, app_type: str, fields: tuple[str, ...]) -> MinimalCaptureActions:
-    """Merge field evidence needs into one smallest reusable capture action set."""
+    """Merge app+metric evidence needs into one smallest reusable capture action set."""
 
     actions = {ACTION_OPEN_LINK}
     max_scrolls = 0
     open_retries = 0
     for field_name in tuple(dict.fromkeys(fields)):
-        requirement = FIELD_EVIDENCE_REQUIREMENTS.get(
-            field_name,
-            FieldEvidenceRequirement((ACTION_UI_CONTROLS,)),
-        )
+        requirement = metric_evidence_requirement(app_type=app_type, metric_name=field_name)
         actions.update(requirement.actions)
         max_scrolls = max(max_scrolls, requirement.min_scrolls)
         open_retries = max(open_retries, requirement.open_retries)
-        if field_name in INTERACTIVE_DETAIL_FIELDS:
-            actions.add(ACTION_CLICK_DETAIL)
-            actions.add(ACTION_OCR)
         if field_name == READ_COUNT and Config.DOC_LINK_READS_ENABLE_OCR:
-            actions.add(ACTION_OCR)
-
-    policy = APP_POLICIES.get(app_type)
-    if policy:
-        actions.update(policy.extra_actions)
-        max_scrolls = max(max_scrolls, policy.min_scrolls)
-        if policy.requires_ocr:
             actions.add(ACTION_OCR)
 
     actions = _with_dependencies(actions)
@@ -140,6 +136,18 @@ def plan_minimal_capture_actions(*, app_type: str, fields: tuple[str, ...]) -> M
         max_scrolls=max_scrolls,
         open_retries=open_retries,
     )
+
+
+def metric_evidence_requirement(*, app_type: str, metric_name: str) -> FieldEvidenceRequirement:
+    app_metric = APP_METRIC_EVIDENCE_REQUIREMENTS.get((app_type, metric_name))
+    if app_metric:
+        return app_metric
+    generic = FIELD_EVIDENCE_REQUIREMENTS.get(metric_name)
+    if generic:
+        return generic
+    if metric_name in INTERACTIVE_DETAIL_FIELDS:
+        return FieldEvidenceRequirement((ACTION_UI_CONTROLS, ACTION_SCREENSHOT, ACTION_OCR, ACTION_CLICK_DETAIL))
+    return FieldEvidenceRequirement((ACTION_UI_CONTROLS,))
 
 
 def resolve_capture_plan_for_task(

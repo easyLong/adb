@@ -4,12 +4,11 @@
 
 这条链路以 MySQL 为主结果表，只更新数据库。腾讯文档只作为外部阅读数来源，不作为主结果载体。
 
-当前 KOL / 主页型任务只保留三个入口：
+当前 KOL / 主页型任务只保留两个任务入口：
 
 | Task | 作用 |
 | --- | --- |
 | `kol-daily-db-pipeline` | 串行执行每日主链路 |
-| `easy-viewer /kol-metrics` | 查看、筛选和导出 KOL 数据 |
 | `kol-tenpay-external-reads` | 单独补跑理财通外部阅读数；正常由主链路串起来 |
 
 ## 串行顺序
@@ -94,24 +93,6 @@ kol_daily_metrics.growth_count
 ```powershell
 .\scripts\kol-daily-db-pipeline.ps1 -ReportDate 2026-06-22 -DryRun
 ```
-
-## 查看和导出
-
-启动 KOL 数据页面：
-
-```powershell
-cd ..\easy-viewer
-.\scripts\start_viewer.ps1
-```
-
-打开：
-
-```text
-http://127.0.0.1:8898/kol-metrics
-```
-
-
-页面支持按日期、平台、标题/大 V 名称筛选，支持按 title 排序，也支持下载 Excel。
 
 ## 常驻运行
 

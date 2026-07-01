@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawlers.base import AppLinkProfile, CapturePlan, CrawlAdapterContext
 from apps.finance_crawler.crawlers.constants import SOURCE_TENPAY
+from apps.finance_crawler.mobile.parsers import parse_count_token
 from apps.finance_crawler.utils.logger import get_logger
 
 logger = get_logger("tenpay_crawler")
@@ -398,6 +401,87 @@ def _build_summary(account_name: str, comment_count: int, trade_details: list[di
     }
 
 
+def _parse_bottom_counts_from_ocr_jsonl(ocr_jsonl: str | None) -> dict[str, int]:
+    rows = _read_ocr_rows_jsonl(ocr_jsonl)
+    if not rows:
+        return {}
+
+    rows_by_page: dict[object, list[tuple[int, int]]] = {}
+    for row in rows:
+        text = str(row.get("text") or "").replace(",", "").strip()
+        if not re.fullmatch(r"\d+(?:\.\d+)?(?:[wWkK\u4e07\u5343])?", text):
+            continue
+        bounds = row.get("bounds") or {}
+        try:
+            top = int(bounds.get("top") or 0)
+            left = int(bounds.get("left") or 0)
+        except (TypeError, ValueError):
+            continue
+        if top < 2150:
+            continue
+        page_key = row.get("page_index", row.get("screenshot") or "__single__")
+        rows_by_page.setdefault(page_key, []).append((left, parse_count_token(text)))
+
+    for page_key in sorted(rows_by_page, key=lambda value: str(value)):
+        numeric = sorted(rows_by_page[page_key], key=lambda item: item[0])
+        if len(numeric) >= 2:
+            return {
+                "comment_count": numeric[0][1],
+                "like_count": numeric[1][1],
+            }
+    return {}
+
+
+def _read_ocr_rows_jsonl(ocr_jsonl: str | None) -> list[dict[str, Any]]:
+    if not ocr_jsonl:
+        return []
+    path = Path(str(ocr_jsonl))
+    if not path.exists():
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
+def _parse_article_title_from_ocr_jsonl(ocr_jsonl: str | None) -> str | None:
+    rows = _read_ocr_rows_jsonl(ocr_jsonl)
+    if not rows:
+        return None
+
+    first_page_rows = [row for row in rows if row.get("page_index", 0) == 0]
+    lines = _group_ocr_lines(first_page_rows or rows)
+    title_lines: list[str] = []
+    for line in lines:
+        try:
+            top = int(line.get("top") or 0)
+            left = min(int((row.get("bounds") or {}).get("left") or 0) for row in line.get("rows") or [])
+        except (TypeError, ValueError):
+            continue
+        text = str(line.get("text") or "").strip()
+        if not text:
+            continue
+        if top < 380:
+            continue
+        if top > 650:
+            break
+        if left > 140:
+            continue
+        if _is_content_noise(text) or _is_content_stop(text):
+            continue
+        title_lines.append(text)
+
+    if not title_lines:
+        return None
+    return "".join(title_lines).strip() or None
+
+
 class TenpayCrawlerAdapter:
     source_app = SOURCE_TENPAY
 
@@ -421,6 +505,36 @@ class TenpayCrawlerAdapter:
 
     def parse_counts(self, texts: list[str]) -> tuple[int, int, bool, bool] | None:
         return _parse_counts(texts)
+
+    def refine_capture_result(
+        self,
+        *,
+        result: dict[str, Any],
+        summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        requested = {str(item) for item in result.get("requested_fields") or () if str(item)}
+        if not requested.intersection({"article_title", "comment_count", "like_count"}):
+            return {}
+
+        updates: dict[str, Any] = {}
+        if "article_title" in requested:
+            article_title = _parse_article_title_from_ocr_jsonl(summary.get("ocr_jsonl"))
+            if article_title:
+                updates["article_title"] = article_title
+
+        if requested.intersection({"comment_count", "like_count"}):
+            bottom_counts = _parse_bottom_counts_from_ocr_jsonl(summary.get("ocr_jsonl"))
+            if "like_count" in requested and bottom_counts.get("like_count") is not None:
+                updates["like_count"] = bottom_counts["like_count"]
+                updates["like_found"] = True
+            if (
+                "comment_count" in requested
+                and bottom_counts.get("comment_count") is not None
+                and (not result.get("comment_found") or not result.get("comment_count"))
+            ):
+                updates["comment_count"] = bottom_counts["comment_count"]
+                updates["comment_found"] = True
+        return updates
 
     def result_fields(
         self,

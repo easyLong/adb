@@ -267,6 +267,22 @@ def _adapter_result_fields(
     return result_fields
 
 
+def _adapter_refine_capture_result(
+    app_adapter: AppCrawlerAdapter,
+    *,
+    result: dict[str, Any],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        refined = app_adapter.refine_capture_result(result=result, summary=summary)
+    except Exception as exc:
+        logger.warning("app adapter result refinement failed source=%s: %s", app_adapter.source_app, exc)
+        return {}
+    if not isinstance(refined, dict):
+        return {}
+    return refined
+
+
 def _adapter_capture_plan(app_adapter: AppCrawlerAdapter) -> CapturePlan:
     try:
         return app_adapter.capture_plan()
@@ -304,6 +320,12 @@ def _should_run_adapter_before_main_capture(field_capture_plan: FieldCapturePlan
     return ACTION_CLICK_DETAIL in field_capture_plan.actions
 
 
+def _requested_fields_for_capture(field_capture_plan: FieldCapturePlan | None) -> tuple[str, ...]:
+    if field_capture_plan is not None:
+        return field_capture_plan.fields
+    return ("account_name", "read_count", "comment_count", "like_count", "screenshot")
+
+
 def scrape_record_content(
     record_id: int,
     source_app: str | None = None,
@@ -328,6 +350,7 @@ def scrape_record_content(
         return result
 
     app_adapter = get_app_adapter(source_app)
+    requested_fields = _requested_fields_for_capture(capture_plan)
     runtime_capture_plan = _runtime_capture_plan(app_adapter, capture_plan)
     adapter_data = {}
     if _should_run_adapter_before_main_capture(capture_plan):
@@ -359,7 +382,39 @@ def scrape_record_content(
     content = _adapter_extract_content(app_adapter, texts) or extract_post_content(texts)
     account_name = _adapter_extract_account_name(app_adapter, texts) or extract_account_name(texts)
     article_title = extract_article_title(texts, content)
-    like_count, like_found = parse_like_count(texts)
+    if "like_count" in requested_fields:
+        like_count, like_found = parse_like_count(texts)
+    else:
+        like_count, like_found = None, False
+    app_refined_fields = _adapter_refine_capture_result(
+        app_adapter,
+        result={
+            "status": "success",
+            "account_name": account_name,
+            "article_title": article_title,
+            "content": content,
+            "read_count": read_count,
+            "comment_count": comment_count,
+            "like_count": like_count,
+            "read_found": summary["read_found"],
+            "comment_found": summary["comment_found"],
+            "like_found": like_found,
+            "requested_fields": requested_fields,
+        },
+        summary=summary,
+    )
+    if "read_count" in app_refined_fields:
+        read_count = int(app_refined_fields["read_count"] or 0)
+    if "comment_count" in app_refined_fields:
+        comment_count = int(app_refined_fields["comment_count"] or 0)
+    if "like_count" in app_refined_fields:
+        like_count = int(app_refined_fields["like_count"] or 0)
+    if "read_found" in app_refined_fields:
+        summary["read_found"] = bool(app_refined_fields["read_found"])
+    if "comment_found" in app_refined_fields:
+        summary["comment_found"] = bool(app_refined_fields["comment_found"])
+    if "like_found" in app_refined_fields:
+        like_found = bool(app_refined_fields["like_found"])
     app_result_fields = _adapter_result_fields(
         app_adapter,
         account_name=account_name,
@@ -406,6 +461,7 @@ def scrape_record_content(
                 "scroll_wait": runtime_capture_plan.scroll_wait,
             },
             **app_result_fields,
+            **app_refined_fields,
         }
     )
     result["app_metrics"] = {**readiness, **(result.get("app_metrics") or {})}

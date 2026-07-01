@@ -91,6 +91,15 @@ class AppCrawlerAdapter(Protocol):
         """Return read/comment counts, or None to use generic parsing."""
         ...
 
+    def refine_capture_result(
+        self,
+        *,
+        result: dict[str, Any],
+        summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return app-specific result updates from captured artifacts."""
+        ...
+
 
 class DefaultCrawlerAdapter:
     source_app = "default"
@@ -126,3 +135,11 @@ class DefaultCrawlerAdapter:
 
     def parse_counts(self, texts: list[str]) -> tuple[int, int, bool, bool] | None:
         return None
+
+    def refine_capture_result(
+        self,
+        *,
+        result: dict[str, Any],
+        summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {}

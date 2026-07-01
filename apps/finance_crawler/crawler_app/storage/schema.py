@@ -442,6 +442,32 @@ def ensure_crawler_app_tables(cursor) -> None:
     )
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS derived_records (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            source_submission_id BIGINT UNSIGNED NULL,
+            source_execution_id BIGINT UNSIGNED NULL,
+            source_task_type VARCHAR(64) NULL,
+            app_type VARCHAR(64) NOT NULL DEFAULT 'unknown',
+            record_type VARCHAR(64) NOT NULL,
+            relation_type VARCHAR(64) NULL,
+            unique_key VARCHAR(1000) NOT NULL,
+            dedupe_key CHAR(64) NOT NULL,
+            title VARCHAR(255) NULL,
+            url VARCHAR(1000) NULL,
+            payload_json LONGTEXT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_derived_record_dedupe (dedupe_key),
+            INDEX idx_derived_record_source (source_submission_id, source_execution_id),
+            INDEX idx_derived_record_type (app_type, record_type),
+            INDEX idx_derived_record_status (status),
+            INDEX idx_derived_record_url (url(191))
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS writeback_plans (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             submission_id BIGINT UNSIGNED NULL,

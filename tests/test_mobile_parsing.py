@@ -47,6 +47,7 @@ from apps.finance_crawler.workflows.profile_metrics import (
     _profile_home_needs_recapture,
     _resolve_profile_fans_count,
 )
+from apps.finance_crawler.crawlers import get_app_adapter
 from apps.finance_crawler.integrations.tencent_docs.client import DocInfo
 
 
@@ -672,6 +673,52 @@ class TenpayArticleParserTests(unittest.TestCase):
             extract_tenpay_bottom_counts_from_ocr(rows),
             {"comment_count": 339, "like_count": 134},
         )
+
+    def test_tenpay_adapter_refines_bottom_comment_and_like_counts(self) -> None:
+        output_dir = Path(self.id().replace(".", "_"))
+        try:
+            output_dir.mkdir(exist_ok=True)
+            ocr_jsonl = output_dir / "ocr_records.jsonl"
+            ocr_jsonl.write_text(
+                "\n".join(
+                    [
+                        '{"text":"28","bounds":{"left":679,"top":2264},"page_index":0}',
+                        '{"text":"133","bounds":{"left":814,"top":2265},"page_index":0}',
+                        '{"text":"28","bounds":{"left":679,"top":2264},"page_index":1}',
+                        '{"text":"133","bounds":{"left":814,"top":2264},"page_index":1}',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                get_app_adapter("tenpay").refine_capture_result(
+                    result={"requested_fields": ["comment_count", "like_count"]},
+                    summary={"ocr_jsonl": str(ocr_jsonl)},
+                ),
+                {"like_count": 133, "like_found": True, "comment_count": 28, "comment_found": True},
+            )
+
+            self.assertEqual(
+                get_app_adapter("tenpay").refine_capture_result(
+                    result={"requested_fields": ["like_count"], "comment_count": 28, "comment_found": True},
+                    summary={"ocr_jsonl": str(ocr_jsonl)},
+                ),
+                {"like_count": 133, "like_found": True},
+            )
+
+            self.assertEqual(
+                get_app_adapter("tenpay").refine_capture_result(
+                    result={"requested_fields": ["read_count"]},
+                    summary={"ocr_jsonl": str(ocr_jsonl)},
+                ),
+                {},
+            )
+        finally:
+            if output_dir.exists():
+                for path in output_dir.iterdir():
+                    path.unlink()
+                output_dir.rmdir()
 
 
 class RecoveryClassifierTests(unittest.TestCase):

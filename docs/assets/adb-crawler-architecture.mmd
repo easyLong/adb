@@ -1,5 +1,5 @@
 flowchart LR
-    %% Maintain this source first, then regenerate docs/assets/adb-crawler-architecture.png.
+    %% Maintain this Mermaid source together with docs/ARCHITECTURE.md.
 
     subgraph INPUT["业务入口"]
         I1["腾讯文档<br/>日期 sheet / 固定 sheet"]
@@ -29,7 +29,6 @@ flowchart LR
         P5["profile_metric_sources"]
         P6["ADB 主页采集<br/>fans / growth"]
         P7["profile_metric_runs"]
-        P8["easy-viewer /kol-metrics<br/>查看 / Excel 导出"]
     end
 
     subgraph REPORT["内部数据报告链路"]
@@ -80,7 +79,7 @@ flowchart LR
     D1 --> D2 --> D3 --> D4 --> D5 --> D6 --> D7 --> D8 --> D9 --> D10 --> D11
     P1 --> P2 --> P3
     P4 --> P2
-    P2 --> P5 --> P6 --> P7 --> P3 --> P8
+    P2 --> P5 --> P6 --> P7 --> P3
     R1 --> R2 --> R3 --> R4 --> R5 --> R6
 
     W1 --> D3

@@ -17,7 +17,6 @@
   -> kol_daily_metrics 数据库每日表
   -> 理财通外部阅读数同步
   -> ADB 主页粉丝数 / 增粉数采集
-  -> easy-viewer 查看和导出
 
 内部数据报告
   -> 读取线上日期 sheet 当前数据
@@ -106,33 +105,19 @@ KOL 数据库主链路：
 .\scripts\run.ps1 -Task wechat-demand-intake -WechatIntakeMode incremental
 ```
 
-KOL 数据查看页面：
-
-```powershell
-cd ..\easy-viewer
-.\scripts\start_viewer.ps1
-```
-
-打开：
-
-```text
-http://127.0.0.1:8898/kol-metrics
-```
-
-
 ## 文档入口
 
-- [docs/README.md](docs/README.md)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/PROJECT_FLOW.md](docs/PROJECT_FLOW.md)
-- [docs/SCRIPTS.md](docs/SCRIPTS.md)
-- [docs/KOL_DAILY_DB_PIPELINE.md](docs/KOL_DAILY_DB_PIPELINE.md)
-- [docs/KOL_TENPAY_EXTERNAL_READS.md](docs/KOL_TENPAY_EXTERNAL_READS.md)
-- [docs/RUNTIME_CONFIG.md](docs/RUNTIME_CONFIG.md)
-- [docs/OPS_PLATFORM_INTAKE.md](docs/OPS_PLATFORM_INTAKE.md)
-- [docs/WECHAT_CHAT_EXPORT.md](docs/WECHAT_CHAT_EXPORT.md)
-- [docs/ACTION_TEMPLATES.md](docs/ACTION_TEMPLATES.md)
-- [docs/CRAWLER_APP_V2.md](docs/CRAWLER_APP_V2.md)
+完整导航见 [docs/README.md](docs/README.md)。日常优先看：
+
+| 文档 | 用途 |
+| --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构总览和项目边界 |
+| [docs/PROJECT_FLOW.md](docs/PROJECT_FLOW.md) | 端到端业务流转 |
+| [docs/SCRIPTS.md](docs/SCRIPTS.md) | 脚本和任务索引 |
+| [docs/RUNTIME_CONFIG.md](docs/RUNTIME_CONFIG.md) | 运行时配置 |
+| [docs/KOL_DAILY_DB_PIPELINE.md](docs/KOL_DAILY_DB_PIPELINE.md) | KOL 每日数据库主链路 |
+| [docs/OPS_PLATFORM_INTAKE.md](docs/OPS_PLATFORM_INTAKE.md) | 微信群消息采集和需求识别 |
+| [docs/CRAWLER_APP_V2.md](docs/CRAWLER_APP_V2.md) | v2 文档任务设计 |
 
 ## 目录
 

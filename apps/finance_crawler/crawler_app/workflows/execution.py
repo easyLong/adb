@@ -106,6 +106,12 @@ def crawl_pending_tasks(handler: TaskHandler, *, limit: int | None = None) -> di
                 execution_id=execution_id,
                 result=result,
             )
+            _record_derived_records(
+                conn,
+                submission=submission,
+                execution_id=execution_id,
+                result=result,
+            )
             result_for_writeback = dict(result)
             result_for_writeback["final_submission_status"] = final_submission_status
             repository.create_writeback_plans(
@@ -214,6 +220,28 @@ def _record_field_capture_observations(
         observed_at=datetime.now(),
     )
     return repository.upsert_field_capture_observations(conn, observations)
+
+
+def _record_derived_records(
+    conn,
+    *,
+    submission: dict[str, Any],
+    execution_id: int,
+    result: dict[str, Any],
+) -> int:
+    records = result.get("derived_records")
+    if not isinstance(records, list):
+        return 0
+    normalized = [item for item in records if isinstance(item, dict)]
+    if not normalized:
+        return 0
+    return repository.upsert_derived_records(
+        conn,
+        normalized,
+        source_submission_id=int(submission["id"]),
+        source_execution_id=execution_id,
+        source_task_type=str(submission.get("task_type") or ""),
+    )
 
 
 def _capture_bundle_from_payload(payload: dict[str, Any], result: dict[str, Any]) -> CaptureBundle:

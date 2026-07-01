@@ -4,13 +4,18 @@
 
 ## 1. 模板选择原则
 
-动作模板不要只按任务名选，要按下面维度一起选：
+动作模板不要只按任务名选。默认动作规划的最小粒度是：
 
 ```text
-app_type + task_type + requested_fields
+app_type + metric
 ```
 
-字段组合相同，不代表动作相同。比如支付宝、蚂蚁财富、理财通都可能采集 `fans_count`，但页面结构、是否需要 OCR、是否需要跳转详情页都不同。
+`task_type` 只决定本次任务要采集哪些字段；真正的动作由每个字段在当前 App
+里的证据要求合并出来。字段组合相同，不代表动作相同。比如支付宝、蚂蚁财富、理财通都可能采集 `fans_count`，但页面结构、是否需要 OCR、是否需要跳转详情页都不同。
+
+显式配置表 `capture_action_profiles` 仍然可以按
+`app_type + task_type + requested_fields` 覆盖默认动作；没有配置时走代码里的
+`app_type + metric` 合并规则。
 
 ## 2. Profile/KOL 主页型任务
 
@@ -63,7 +68,28 @@ reset_app
 | `antfortune` | `detail` | `account_name,read_count,screenshot` | `antfortune + detail` | 打开链接；UI 控件读取账号和阅读数；上传截图到腾讯文档 | 账号、阅读数、截图、备注写回 |
 | `antfortune` | `read_count` | `read_count` | `antfortune + read_count` | 默认直接打开帖子；等待页面渲染；UI 控件读取阅读数；遇到“网络不给力/稍后再试”时 force-stop、打开首页预热、滑动一屏、再打开帖子 | 成功读取 `read_count`；可重试风控页记录恢复证据；最终失败写备注 |
 | `tenpay` | `read_count` | `read_count` | `tenpay + read_count` | 打开链接；UI + OCR 读取阅读数；必要时截图辅助解析 | 阅读数写回 |
+| `tenpay` | `detail` | `article_title,comment_count,like_count,screenshot` | `tenpay + metric set` | 打开链接；首屏截图；OCR；底部从左到右解析评论数和点赞数；标题从首屏正文顶部区域解析 | 一次首屏采集同时产出文章标题、评论数、点赞数、截图 |
 | `tenpay` | `detail` | `trade_details` | `tenpay + detail` | 打开链接；截图；OCR；滚动；点击详情区域 | 详情字段写入执行结果 |
+
+### Tenpay 帖子首屏指标已验证动作
+
+```text
+open_link
+  -> capture_ui_controls
+  -> screenshot
+  -> ocr
+  -> parse_title_from_first_screen
+  -> parse_bottom_comment_like_counts
+  -> split_shared_capture_into_field_results
+```
+
+关键经验：
+
+- `article_title`、`comment_count`、`like_count`、`screenshot` 可以共享同一次首屏采集。
+- 这组字段不需要滚动，也不需要点击交易详情。
+- 底部数字按横向位置解析：左侧是评论数，右侧是点赞数。
+- `like_count` 只有请求时才解析，避免无关任务把页面底部数字误写入结果。
+- `trade_details` 是另一类交互明细字段，仍然需要滚动和点击详情区域。
 
 ### Ant Fortune 阅读数已验证动作
 

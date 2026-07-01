@@ -128,6 +128,8 @@ Output fields:
 
 - `read_count`
 - `comment_count`
+- `like_count`
+- `article_title`
 - `screenshot`
 - `remark`
 - `check_result`
@@ -145,6 +147,8 @@ header so later writeback and correction can target the same resolved fields.
 - `task_submissions`: submitted tasks with stable dedupe keys.
 - `capture_action_profiles`: configurable mapping from app/task/field combo to
   ADB capture actions.
+- `derived_records`: optional records discovered while crawling, such as a
+  homepage link related to the current post.
 - `document_task_configs`: business configuration for what a given online
   document should do.
 - `task_executions`: execution attempts.
@@ -472,14 +476,16 @@ document. It does not decide whether a failed read-count crawl should write
 
 ## Capture Action Boundary
 
-Different tasks and apps can require different crawl actions. The v2 path keeps
-that decision out of the generic task runner:
+Different apps and metrics can require different crawl actions. The v2 path
+keeps that decision out of the generic task runner:
 
 - `mobile.action_plan.FieldCapturePlan` describes ADB actions such as
   `open_link`, `ui_controls`, `screenshot`, `ocr`, `tap_retry`, `scroll`, and
   `click_detail`.
-- `crawler_app.capture.planner.plan_capture_for_task(...)` builds the plan from
-  `task_type`, `app_type`, and required business fields.
+- `crawler_app.capture.planner.plan_capture_for_task(...)` builds the default
+  plan by merging the action requirements for each `app_type + metric`.
+- `task_type` chooses the business handler and the requested field set; it is
+  not the smallest action-planning unit.
 - Simple fields such as `read_count` can use UI controls plus screenshot, with
   OCR enabled by config or app policy.
 - Fields such as `comment_count` may require scrolling.
@@ -488,8 +494,20 @@ that decision out of the generic task runner:
 - Mobile crawlers execute the plan and return both crawl results and the plan
   snapshot for debugging.
 
-The database table `capture_action_profiles` stores the configurable profile.
-At execution time v2 resolves the profile with:
+The built-in default planner resolves evidence requirements with:
+
+```text
+app_type + metric -> required actions
+requested metrics -> merged action set -> one shared capture -> field results
+```
+
+For example, `tenpay + (article_title, comment_count, like_count, screenshot)`
+uses one first-screen capture with `open_link, ui_controls, screenshot, ocr`;
+it does not need the scroll action. The OCR snapshot is shared, then split into
+`article_title`, `comment_count`, `like_count`, and `screenshot` field results.
+
+The database table `capture_action_profiles` remains available as an explicit
+override. At execution time v2 resolves the configured profile with:
 
 ```text
 app_type + task_type + requested_fields

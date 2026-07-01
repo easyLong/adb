@@ -82,6 +82,7 @@ def run_single_link_detail(url: str | None = None) -> dict[str, Any] | None:
         "workflow": "single_link_detail",
         "read_count": int(result.get("read_count") or 0),
         "comment_count": int(result.get("comment_count") or 0),
+        "like_count": int(result.get("like_count") or 0),
         "duration": duration,
         "capture_pages": result.get("capture_pages"),
         "ocr_attempted": result.get("ocr_attempted"),
@@ -125,6 +126,7 @@ def run_single_link_detail(url: str | None = None) -> dict[str, Any] | None:
         "account_name": result.get("account_name"),
         "read_count": int(result.get("read_count") or 0),
         "comment_count": int(result.get("comment_count") or 0),
+        "like_count": int(result.get("like_count") or 0),
         "duration": duration,
         "error": result.get("error"),
     }
@@ -159,6 +161,7 @@ def _error_result(error: str) -> dict[str, Any]:
         "content": None,
         "read_count": 0,
         "comment_count": 0,
+        "like_count": 0,
         "screenshot_path": None,
         "error": error,
     }

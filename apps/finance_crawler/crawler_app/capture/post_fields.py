@@ -7,8 +7,10 @@ from typing import Any
 from apps.finance_crawler.crawler_app.capture.core import CaptureBundle, FieldExtractionResult
 from apps.finance_crawler.crawler_app.documents.fields import (
     ACCOUNT_NAME,
+    ARTICLE_TITLE,
     CHECK_RESULT,
     COMMENT_COUNT,
+    LIKE_COUNT,
     READ_COUNT,
     REMARK,
     SCREENSHOT,
@@ -17,8 +19,10 @@ from apps.finance_crawler.crawler_app.documents.fields import (
 
 POST_FIELD_EXTRACTORS = {
     ACCOUNT_NAME,
+    ARTICLE_TITLE,
     CHECK_RESULT,
     COMMENT_COUNT,
+    LIKE_COUNT,
     READ_COUNT,
     REMARK,
     SCREENSHOT,
@@ -91,6 +95,9 @@ def _extract_post_field(bundle: CaptureBundle, field_name: str) -> FieldExtracti
         if status in {"not_found", "deleted"}:
             return _result(bundle, field_name, "N", source="page_status", accepted=True)
         return _result(bundle, field_name, value, source="ui_controls", accepted=bool(value))
+    if field_name == ARTICLE_TITLE:
+        value = raw.get("article_title")
+        return _result(bundle, field_name, value, source="ui_ocr", accepted=bool(value))
     if field_name == READ_COUNT:
         value = raw.get("read_count")
         if status in {"not_found", "deleted"}:
@@ -98,6 +105,9 @@ def _extract_post_field(bundle: CaptureBundle, field_name: str) -> FieldExtracti
         return _result(bundle, field_name, value, source="ui_controls", accepted=value is not None)
     if field_name == COMMENT_COUNT:
         value = raw.get("comment_count")
+        return _result(bundle, field_name, value, source="ui_controls", accepted=value is not None)
+    if field_name == LIKE_COUNT:
+        value = raw.get("like_count")
         return _result(bundle, field_name, value, source="ui_controls", accepted=value is not None)
     if field_name == SCREENSHOT:
         value = raw.get("screenshot_path")

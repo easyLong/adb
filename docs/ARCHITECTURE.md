@@ -31,7 +31,7 @@ flowchart LR
     TENCENT --> INPUT
 ```
 
-完整可维护源图见 [adb-crawler-architecture.mmd](assets/adb-crawler-architecture.mmd)。结构变更时优先同步 Mermaid 源图，再重新生成 PNG。
+完整可维护源图见 [adb-crawler-architecture.mmd](assets/adb-crawler-architecture.mmd)。结构变更时同步 Mermaid 源图。
 
 ## 1. 项目边界
 
@@ -143,6 +143,8 @@ document_trigger_configs
 | `task_submissions` | 可重试的任务队列 |
 | `task_executions` | 每次 ADB 执行尝试 |
 | `writeback_plans` | 字段级待写回计划 |
+| `field_capture_observations` | 每个字段的提取证据、动作、页面状态和质量结果 |
+| `derived_records` | 采集过程中发现的新增关系记录，例如帖子关联主页 |
 | `capture_action_profiles` | App + 任务 + 字段组合对应的采集动作 |
 
 重要规则：
@@ -150,6 +152,10 @@ document_trigger_configs
 - 提交任务时按单个 sheet 内 URL 去重，只取第一行。
 - 写回时通过字段映射和 URL 重新定位，不只相信旧 `row_index`。
 - `remark` 用来暴露当前运行结果，成功、缺失、终态失败都应有可读原因。
+- 默认动作规划以 `app_type + metric` 为最小粒度；`task_type` 选择字段集合，
+  多个字段会合并成一次共享采集，再拆成字段级结果和写回计划。
+- `tenpay` 帖子首屏字段 `article_title`、`comment_count`、`like_count`、
+  `screenshot` 共享 `open_link + ui_controls + screenshot + ocr`，无需滚动。
 
 ## 6. profile/KOL 链路
 
@@ -182,12 +188,6 @@ result_table: kol_daily_metrics
 read_count_lookback: KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS
 ```
 
-结果查看：
-
-```powershell
-cd ..\easy-viewer
-.\scripts\start_viewer.ps1
-```
 - 前一日没有粉丝数时，增粉数按 0 处理。
 - 同一天最多取 3 条帖子参与阅读数识别和聚合。
 
@@ -269,6 +269,7 @@ worker 通过 `SCHEDULER_ROLES` 分角色运行，常见角色如下：
 | 触发器配置 | `document_trigger_configs`, `document_trigger_bindings` |
 | 文档标准化 | `documents`, `document_sheets`, `column_mappings`, `source_rows` |
 | 任务队列 | `task_submissions`, `task_executions`, `writeback_plans` |
+| 字段证据和派生关系 | `field_capture_observations`, `derived_records` |
 | KOL 数据 | `kol_base_profiles`, `kol_daily_metrics`, `profile_metric_sources`, `profile_metric_runs` |
 | 兼容和运行日志 | `crawl_task_submissions`, `crawl_task_executions`, `crawl_results`, `crawl_writebacks`, `task_log` |
 

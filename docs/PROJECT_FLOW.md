@@ -113,10 +113,23 @@ v2_writeback_worker
 | task_type | 说明 |
 | --- | --- |
 | `initial_check` | 初检，回填账号昵称；明确找不到页面写 `N` |
-| `detail` | 详情，回填账号昵称、阅读数、截图、评论数、备注 |
+| `detail` | 详情，回填账号昵称、文章标题、阅读数、评论数、点赞数、截图、备注 |
 | `read_count` | 只回填阅读数 |
 
-字段靠表头识别，列偏移不是问题；但表头必须能匹配业务字段。
+字段靠表头识别，列偏移不是问题；但表头必须能匹配业务字段。`detail`
+当前支持的常用写回字段包括 `account_name`、`article_title`、`read_count`、
+`comment_count`、`like_count`、`screenshot`、`remark`。
+
+动作选择规则：
+
+```text
+task_type -> 选择字段集合和业务 handler
+app_type + metric -> 对应证据动作
+多个 metric -> 合并动作集合 -> 共享一次采集 -> 分字段产出 writeback_plans
+```
+
+例如 `tenpay + (article_title, comment_count, like_count, screenshot)` 只需首屏
+`open_link + ui_controls + screenshot + ocr`，不会为了评论/点赞额外滚动。
 
 队列安全规则：
 
@@ -203,13 +216,6 @@ kol_daily_db_pipeline
 .\scripts\run.ps1 -Task kol-daily-db-pipeline -ReportDate 2026-06-22
 ```
 
-查看页面：
-
-```powershell
-cd ..\easy-viewer
-.\scripts\start_viewer.ps1
-```
-
 ## 6. 常驻运行
 
 启动：
@@ -267,6 +273,8 @@ document 链路：
   task_submissions
   task_executions
   writeback_plans
+  field_capture_observations
+  derived_records
 
 KOL 数据库主链路：
   kol_base_profiles

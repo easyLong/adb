@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict
 from datetime import date, datetime
@@ -90,6 +91,128 @@ def upsert_field_capture_observations(conn, observations: list[FieldCaptureObser
                 ),
             )
     return len(observations)
+
+
+def upsert_derived_records(
+    conn,
+    records: list[dict[str, Any]],
+    *,
+    source_submission_id: int | None = None,
+    source_execution_id: int | None = None,
+    source_task_type: str | None = None,
+) -> int:
+    if not records:
+        return 0
+    rows = []
+    for record in records:
+        normalized = _normalize_derived_record(
+            record,
+            source_submission_id=source_submission_id,
+            source_execution_id=source_execution_id,
+            source_task_type=source_task_type,
+        )
+        if normalized is None:
+            continue
+        rows.append(normalized)
+    if not rows:
+        return 0
+    with conn.cursor() as cursor:
+        cursor.executemany(
+            """
+            INSERT INTO derived_records (
+                source_submission_id, source_execution_id, source_task_type,
+                app_type, record_type, relation_type, unique_key, dedupe_key,
+                title, url, payload_json, status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                source_submission_id = COALESCE(VALUES(source_submission_id), source_submission_id),
+                source_execution_id = COALESCE(VALUES(source_execution_id), source_execution_id),
+                source_task_type = COALESCE(NULLIF(VALUES(source_task_type), ''), source_task_type),
+                relation_type = COALESCE(NULLIF(VALUES(relation_type), ''), relation_type),
+                title = COALESCE(NULLIF(VALUES(title), ''), title),
+                url = COALESCE(NULLIF(VALUES(url), ''), url),
+                payload_json = VALUES(payload_json),
+                status = CASE
+                    WHEN derived_records.status IN ('done', 'ignored') THEN derived_records.status
+                    ELSE VALUES(status)
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            rows,
+        )
+        return int(cursor.rowcount)
+
+
+def _normalize_derived_record(
+    record: dict[str, Any],
+    *,
+    source_submission_id: int | None,
+    source_execution_id: int | None,
+    source_task_type: str | None,
+) -> tuple[Any, ...] | None:
+    record_type = str(record.get("record_type") or "").strip()
+    unique_key = str(record.get("unique_key") or record.get("url") or "").strip()
+    if not record_type or not unique_key:
+        return None
+    app_type = str(record.get("app_type") or "unknown").strip() or "unknown"
+    dedupe_key = str(record.get("dedupe_key") or "").strip()
+    if not dedupe_key:
+        dedupe_key = _derived_record_dedupe_key(
+            app_type=app_type,
+            record_type=record_type,
+            unique_key=unique_key,
+        )
+    return (
+        _optional_int(record.get("source_submission_id"), source_submission_id),
+        _optional_int(record.get("source_execution_id"), source_execution_id),
+        str(record.get("source_task_type") or source_task_type or "").strip() or None,
+        app_type,
+        record_type,
+        str(record.get("relation_type") or "").strip() or None,
+        unique_key,
+        dedupe_key,
+        str(record.get("title") or record.get("name") or "").strip() or None,
+        str(record.get("url") or "").strip() or None,
+        json_dumps(record.get("payload") if isinstance(record.get("payload"), dict) else record),
+        str(record.get("status") or "pending").strip() or "pending",
+    )
+
+
+def _derived_record_dedupe_key(*, app_type: str, record_type: str, unique_key: str) -> str:
+    raw = "\n".join([app_type.strip().lower(), record_type.strip().lower(), unique_key.strip()])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _optional_int(value: Any, fallback: int | None) -> int | None:
+    if value is None or value == "":
+        return fallback
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def list_derived_records(conn, *, status: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM derived_records"
+    params: list[Any] = []
+    if status:
+        sql += " WHERE status = %s"
+        params.append(status)
+    sql += " ORDER BY id ASC"
+    if limit and limit > 0:
+        sql += " LIMIT %s"
+        params.append(limit)
+    with conn.cursor() as cursor:
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+    return [_decode_derived_record(row) for row in rows]
+
+
+def _decode_derived_record(row: dict[str, Any]) -> dict[str, Any]:
+    decoded = dict(row)
+    decoded["payload"] = json_loads(decoded.pop("payload_json", None))
+    return decoded
 
 
 def upsert_kol_base_profile(
