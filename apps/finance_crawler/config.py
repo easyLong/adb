@@ -78,6 +78,11 @@ class Config:
     CRAWLER_APP_DB_NAME = _env("MYSQL_APP_DATABASE", _env("CRAWLER_APP_DATABASE", DB_NAME))
     OPS_PLATFORM_DB_NAME = _env("MYSQL_OPS_DATABASE", _env("OPS_PLATFORM_DATABASE", "ops_platform"))
     DB_CONNECT_TIMEOUT = _env_int("MYSQL_CONNECT_TIMEOUT", 10)
+    DB_READ_TIMEOUT = _env_int("MYSQL_READ_TIMEOUT", 30)
+    DB_WRITE_TIMEOUT = _env_int("MYSQL_WRITE_TIMEOUT", 30)
+    DB_CONNECT_RETRIES = _env_int("MYSQL_CONNECT_RETRIES", 3)
+    DB_CONNECT_RETRY_DELAY = _env_float("MYSQL_CONNECT_RETRY_DELAY", 2.0)
+    DB_CONNECT_RETRY_MAX_DELAY = _env_float("MYSQL_CONNECT_RETRY_MAX_DELAY", 30.0)
 
     # OpenAI-compatible chat/vision endpoint used by model-assisted parsers.
     OPENAI_API_KEY = _env("OPENAI_API_KEY", "")

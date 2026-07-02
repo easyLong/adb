@@ -37,9 +37,29 @@ MYSQL_USER=root
 MYSQL_PASSWORD=...
 MYSQL_DATABASE=crawler_app
 MYSQL_APP_DATABASE=crawler_app
+MYSQL_OPS_DATABASE=ops_platform
+MYSQL_CONNECT_TIMEOUT=10
+MYSQL_READ_TIMEOUT=30
+MYSQL_WRITE_TIMEOUT=30
+MYSQL_CONNECT_RETRIES=3
+MYSQL_CONNECT_RETRY_DELAY=2
+MYSQL_CONNECT_RETRY_MAX_DELAY=30
 ```
 
 当前新版本默认库是 `crawler_app`。
+
+RDS 偶发网络抖动时，系统只在“建立连接”阶段自动重试，不会自动重放已经开始的
+SQL。这样可以避免非幂等 INSERT/UPDATE 被执行两次；业务任务失败后仍交给现有
+worker 队列、状态和下一轮调度恢复。
+
+| Key | 默认值 | 说明 |
+| --- | --- | --- |
+| `MYSQL_CONNECT_TIMEOUT` | `10` | 单次建立 TCP/MySQL 连接的超时时间，单位秒 |
+| `MYSQL_READ_TIMEOUT` | `30` | 单次读取 MySQL 响应的超时时间，单位秒 |
+| `MYSQL_WRITE_TIMEOUT` | `30` | 单次向 MySQL 写请求的超时时间，单位秒 |
+| `MYSQL_CONNECT_RETRIES` | `3` | 建连失败时最多尝试次数，包含第一次 |
+| `MYSQL_CONNECT_RETRY_DELAY` | `2` | 首次重试等待秒数，后续指数退避 |
+| `MYSQL_CONNECT_RETRY_MAX_DELAY` | `30` | 单次重试等待上限，单位秒 |
 
 ## 腾讯文档 OpenAPI
 

@@ -2,41 +2,65 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pymysql
 import pymysql.cursors
 
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.storage.device_pool_schema import ensure_device_pool_tables
 from apps.finance_crawler.storage.framework_db import ensure_framework_tables
+from apps.finance_crawler.storage.mysql_resilience import connect_with_retry
 from apps.finance_crawler.utils.logger import get_logger
 
 logger = get_logger("db")
 
 
 def _server_conn() -> pymysql.connections.Connection:
-    return pymysql.connect(
-        host=Config.DB_HOST,
-        port=Config.DB_PORT,
-        user=Config.DB_USER,
-        password=Config.DB_PASSWORD,
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=Config.DB_CONNECT_TIMEOUT,
-        autocommit=False,
+    return _connect_with_retry(
+        {
+            "host": Config.DB_HOST,
+            "port": Config.DB_PORT,
+            "user": Config.DB_USER,
+            "password": Config.DB_PASSWORD,
+            "charset": "utf8mb4",
+            "cursorclass": pymysql.cursors.DictCursor,
+            "connect_timeout": Config.DB_CONNECT_TIMEOUT,
+            "read_timeout": Config.DB_READ_TIMEOUT,
+            "write_timeout": Config.DB_WRITE_TIMEOUT,
+            "autocommit": False,
+        },
+        label="legacy_server",
     )
 
 
 def get_conn() -> pymysql.connections.Connection:
-    return pymysql.connect(
-        host=Config.DB_HOST,
-        port=Config.DB_PORT,
-        user=Config.DB_USER,
-        password=Config.DB_PASSWORD,
-        db=Config.DB_NAME,
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=Config.DB_CONNECT_TIMEOUT,
-        autocommit=False,
+    return _connect_with_retry(
+        {
+            "host": Config.DB_HOST,
+            "port": Config.DB_PORT,
+            "user": Config.DB_USER,
+            "password": Config.DB_PASSWORD,
+            "db": Config.DB_NAME,
+            "charset": "utf8mb4",
+            "cursorclass": pymysql.cursors.DictCursor,
+            "connect_timeout": Config.DB_CONNECT_TIMEOUT,
+            "read_timeout": Config.DB_READ_TIMEOUT,
+            "write_timeout": Config.DB_WRITE_TIMEOUT,
+            "autocommit": False,
+        },
+        label="legacy_database",
+    )
+
+
+def _connect_with_retry(kwargs: dict[str, Any], *, label: str) -> pymysql.connections.Connection:
+    return connect_with_retry(
+        pymysql.connect,
+        kwargs=kwargs,
+        label=label,
+        attempts=Config.DB_CONNECT_RETRIES,
+        retry_delay=Config.DB_CONNECT_RETRY_DELAY,
+        retry_max_delay=Config.DB_CONNECT_RETRY_MAX_DELAY,
     )
 
 

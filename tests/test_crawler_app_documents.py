@@ -178,6 +178,52 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertIs(crawler_profile_metrics.get_conn, crawler_app_db.get_conn)
         self.assertIs(legacy_profile_metrics.get_conn, crawler_app_db.get_conn)
 
+    def test_mysql_connect_retry_uses_backoff_for_transient_errors(self) -> None:
+        import pymysql
+
+        from apps.finance_crawler.storage.mysql_resilience import connect_with_retry
+
+        attempts = []
+
+        def fake_connect(**kwargs):
+            attempts.append(kwargs)
+            if len(attempts) < 3:
+                raise pymysql.err.OperationalError(2003, "timed out")
+            return "connected"
+
+        with patch("apps.finance_crawler.storage.mysql_resilience.time.sleep") as sleep:
+            result = connect_with_retry(
+                fake_connect,
+                kwargs={"host": "db.example", "port": 3306, "db": "crawler_app"},
+                label="test",
+                attempts=3,
+                retry_delay=0.1,
+                retry_max_delay=1.0,
+            )
+
+        self.assertEqual(result, "connected")
+        self.assertEqual(len(attempts), 3)
+        sleep.assert_any_call(0.1)
+        sleep.assert_any_call(0.2)
+
+    def test_legacy_mysql_connection_uses_timeout_and_retry_settings(self) -> None:
+        from apps.finance_crawler.storage import db as legacy_db
+
+        with (
+            patch.object(Config, "DB_CONNECT_TIMEOUT", 7),
+            patch.object(Config, "DB_READ_TIMEOUT", 31),
+            patch.object(Config, "DB_WRITE_TIMEOUT", 32),
+            patch.object(Config, "DB_CONNECT_RETRIES", 1),
+            patch("apps.finance_crawler.storage.db.pymysql.connect", return_value="conn") as connect,
+        ):
+            result = legacy_db.get_conn()
+
+        self.assertEqual(result, "conn")
+        kwargs = connect.call_args.kwargs
+        self.assertEqual(kwargs["connect_timeout"], 7)
+        self.assertEqual(kwargs["read_timeout"], 31)
+        self.assertEqual(kwargs["write_timeout"], 32)
+
     def test_ops_platform_intake_upsert_preserves_reviewed_status(self) -> None:
         from apps.finance_crawler.crawler_app.storage.ops_platform import (
             OpsDemandCandidate,
