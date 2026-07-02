@@ -366,6 +366,7 @@ def main() -> int:
             "report",
             "kol-tenpay-external-reads",
             "kol-daily-db-pipeline",
+            "capture-file-server",
             "article-sync",
             "article-crawl",
             "article-writeback",
@@ -399,6 +400,10 @@ def main() -> int:
             "v2-correction-plan",
             "v2-correction-writeback",
             "v2-correction-apply",
+            "kol-settlement-metrics-submit",
+            "kol-settlement-metrics-crawl",
+            "kol-settlement-metrics-writeback",
+            "kol-settlement-metrics",
         ],
         help="run one task and exit",
     )
@@ -407,6 +412,7 @@ def main() -> int:
     parser.add_argument("--excel-input-path", default="", help="set runtime Excel detail input path")
     parser.add_argument("--single-link", default="", help="set one-shot detail test link")
     parser.add_argument("--report-date", default="", help="report date in YYYY-MM-DD format; defaults to yesterday")
+    parser.add_argument("--limit", type=int, default=0, help="limit rows/tasks for one-shot runs")
     parser.add_argument("--document-config-key", default="", help="v2 document task config key")
     parser.add_argument("--document-task-type", default="", help="v2 document task type for config set")
     parser.add_argument("--document-fields", default="", help="comma-separated v2 business fields for config set")
@@ -1007,6 +1013,44 @@ def main() -> int:
                 operator_name=args.correction_operator,
             )
         )
+        return 0
+
+    if args.once in {
+        "kol-settlement-metrics-submit",
+        "kol-settlement-metrics-crawl",
+        "kol-settlement-metrics-writeback",
+        "kol-settlement-metrics",
+    }:
+        from apps.finance_crawler.crawler_app.storage.db import init_crawler_app_db
+        from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
+            crawl_kol_settlement_post_metric_tasks,
+            run_kol_settlement_post_metrics,
+            submit_kol_settlement_post_metric_tasks,
+            writeback_kol_settlement_post_metric_results,
+        )
+
+        init_db()
+        init_crawler_app_db()
+        updates = _config_updates_from_args(args, include_tencent_doc_url=False)
+        if updates:
+            set_runtime_config(updates)
+        load_runtime_config()
+        target_date = _parse_optional_date(args.report_date)
+        limit = args.limit if args.limit > 0 else None
+        if args.once.endswith("-submit"):
+            print(submit_kol_settlement_post_metric_tasks(target_date=target_date, limit=limit))
+        elif args.once.endswith("-crawl"):
+            print(crawl_kol_settlement_post_metric_tasks(limit=limit))
+        elif args.once.endswith("-writeback"):
+            print(writeback_kol_settlement_post_metric_results(limit=limit))
+        else:
+            print(run_kol_settlement_post_metrics(target_date=target_date, limit=limit))
+        return 0
+
+    if args.once == "capture-file-server":
+        from apps.finance_crawler.crawler_app.web.capture_files import run_capture_file_server
+
+        run_capture_file_server()
         return 0
 
     try:

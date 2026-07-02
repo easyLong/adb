@@ -5,4 +5,5 @@ ARTICLE_DETAIL = "article_detail"
 PROFILE_METRIC = "profile_metric"
 INITIAL_CHECK = "initial_check"
 DETAIL = "detail"
+KOL_SETTLEMENT_POST_METRICS = "kol_settlement_post_metrics"
 

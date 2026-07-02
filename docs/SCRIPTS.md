@@ -185,7 +185,24 @@ kol_daily_db_pipeline
 .\scripts\run.ps1 -Task config -ConfigSet KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS=5
 ```
 
-## 4. 其它业务命令
+## 4. KOL 结算表帖子指标
+
+这条链路从 `crawler_app.kol_business_settlements` 读取 `post_url`，采集文章标题、评论数、点赞数和截图，再写回同一张表的 `article_title`、`comment_count`、`like_count`、`screenshot_url` 字段。
+
+| Task | 作用 |
+| --- | --- |
+| `kol-settlement-metrics-submit` | 从结算表提交缺指标的帖子任务 |
+| `kol-settlement-metrics-crawl` | 采集已提交的结算帖子指标任务 |
+| `kol-settlement-metrics-writeback` | 将成功采集结果写回结算表 |
+| `kol-settlement-metrics` | submit、crawl、writeback 一体执行 |
+
+灰度跑一条：
+
+```powershell
+.\scripts\run.ps1 -Task kol-settlement-metrics -ReportDate 2026-07-02 -Limit 1
+```
+
+## 5. 其它业务命令
 
 | Task | 作用 |
 | --- | --- |
@@ -298,4 +315,29 @@ git status --short
 
 ```powershell
 .\scripts\submit_redsoil_detail_today.ps1 -Action install -Limit 0
+```
+
+## 6. 截图下载链接
+
+`kol-settlement-metrics` 会把 `screenshot_url` 写成
+`apps/finance_crawler/captures` 下截图文件的直接下载链接。
+
+启动本机下载服务：
+
+```powershell
+.\scripts\run.ps1 -Task capture-file-server
+```
+
+默认链接格式：
+
+```text
+http://127.0.0.1:8765/captures/...png
+```
+
+如果要让其它机器访问节点上的截图，配置节点可访问地址：
+
+```text
+CAPTURE_FILE_SERVER_HOST=0.0.0.0
+CAPTURE_FILE_SERVER_PORT=8765
+CAPTURE_PUBLIC_BASE_URL=http://<node-host>:8765
 ```

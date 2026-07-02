@@ -1,5 +1,7 @@
 import unittest
 from datetime import date, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import ANY, patch
 
 from apps.finance_crawler.config import Config
@@ -48,7 +50,7 @@ from apps.finance_crawler.crawler_app.strategies.post import (
 from apps.finance_crawler.crawler_app.strategies.read_count import read_count_writeback_values
 from apps.finance_crawler.crawler_app.tasks.handlers import get_task_handler
 from apps.finance_crawler.crawler_app.tasks.submission import build_task_submission, make_dedupe_key
-from apps.finance_crawler.crawler_app.tasks.types import DETAIL, INITIAL_CHECK, READ_COUNT
+from apps.finance_crawler.crawler_app.tasks.types import DETAIL, INITIAL_CHECK, KOL_SETTLEMENT_POST_METRICS, READ_COUNT
 from apps.finance_crawler.crawler_app.workflows.document_tasks import (
     build_sheet_selector,
     default_fields_for_task,
@@ -72,6 +74,7 @@ from apps.finance_crawler.crawler_app.workflows.execution import (
     _sleep_between_submissions,
     execution_summary,
 )
+from apps.finance_crawler.crawler_app.web.capture_files import capture_public_url
 from apps.finance_crawler.crawler_app.errors import (
     DEVICE_UNAVAILABLE,
     FIELD_NOT_DETECTED,
@@ -110,6 +113,23 @@ from apps.finance_crawler.workflows.profile_metrics import writeback_profile_met
 
 
 class CrawlerAppDocumentTests(unittest.TestCase):
+    def test_capture_public_url_converts_capture_path_to_download_url(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            capture_dir = Path(temp_dir) / "captures"
+            screenshot = capture_dir / "record_1" / "page_000.png"
+            screenshot.parent.mkdir(parents=True)
+            screenshot.write_bytes(b"png")
+
+            with patch.object(Config, "CAPTURE_DIR", capture_dir), patch.object(Config, "CAPTURE_PUBLIC_BASE_URL", "http://node:8765"):
+                self.assertEqual(
+                    capture_public_url(screenshot),
+                    "http://node:8765/captures/record_1/page_000.png",
+                )
+
+    def test_capture_public_url_keeps_non_capture_values_safe(self) -> None:
+        self.assertEqual(capture_public_url("https://example.com/shot.png"), "https://example.com/shot.png")
+        self.assertEqual(capture_public_url("C:/outside/shot.png", base_url="http://node:8765"), "C:/outside/shot.png")
+
     def test_schema_creates_capture_action_profiles(self) -> None:
         class FakeCursor:
             def __init__(self) -> None:
@@ -177,6 +197,70 @@ class CrawlerAppDocumentTests(unittest.TestCase):
 
         self.assertIs(crawler_profile_metrics.get_conn, crawler_app_db.get_conn)
         self.assertIs(legacy_profile_metrics.get_conn, crawler_app_db.get_conn)
+
+    def test_kol_settlement_submission_uses_date_url_business_key(self) -> None:
+        from apps.finance_crawler.crawler_app.documents.fields import ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT
+        from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
+            _submission_from_settlement_row,
+        )
+
+        row = {
+            "source_pk": 12,
+            "settlement_date": date(2026, 7, 2),
+            "post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=abc",
+        }
+        same_business_key_row = {**row, "source_pk": 99}
+
+        submission = _submission_from_settlement_row(row, max_attempts=2)
+        same_key_submission = _submission_from_settlement_row(same_business_key_row, max_attempts=2)
+
+        self.assertEqual(submission.task_type, KOL_SETTLEMENT_POST_METRICS)
+        self.assertEqual(submission.document_id, 0)
+        self.assertEqual(submission.sheet_id, "kol_business_settlements")
+        self.assertEqual(submission.row_index, 12)
+        self.assertEqual(submission.max_attempts, 2)
+        self.assertEqual(submission.source_locator["source_pk"], 12)
+        self.assertEqual(submission.source_locator["settlement_date"], "2026-07-02")
+        self.assertEqual(
+            submission.source_locator["requested_fields"],
+            [ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT],
+        )
+        self.assertEqual(submission.dedupe_key, same_key_submission.dedupe_key)
+
+    def test_kol_settlement_result_values_use_accepted_field_results(self) -> None:
+        from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
+            _result_values_for_settlement,
+        )
+
+        values = _result_values_for_settlement(
+            {
+                "result": {
+                    "field_results": [
+                        {"field_name": "article_title", "value": "标题", "accepted": True},
+                        {"field_name": "comment_count", "value": 28, "accepted": True},
+                        {"field_name": "like_count", "value": 133, "accepted": True},
+                        {"field_name": "screenshot", "value": "shot.png", "accepted": True},
+                        {"field_name": "remark", "value": "成功", "accepted": True},
+                    ]
+                }
+            }
+        )
+
+        self.assertEqual(
+            values,
+            {
+                "article_title": "标题",
+                "comment_count": 28,
+                "like_count": 133,
+                "screenshot_url": "shot.png",
+            },
+        )
+
+    def test_kol_settlement_handler_does_not_create_document_writeback_values(self) -> None:
+        handler = get_task_handler(KOL_SETTLEMENT_POST_METRICS)
+
+        self.assertEqual(handler.task_type, KOL_SETTLEMENT_POST_METRICS)
+        self.assertEqual(handler.writeback_values({"status": "success", "article_title": "标题"}), {})
 
     def test_mysql_connect_retry_uses_backoff_for_transient_errors(self) -> None:
         import pymysql

@@ -166,7 +166,62 @@ kol_daily_db_pipeline
 | `tenpay_profile_daily_metrics_v1` | 理财通 | App 重启清状态，UI/OCR 采集，三列计数器识别，粉丝详情页精确化，账号锚点校验 |
 | `unknown_profile_daily_metrics_v1` | 兜底 | 基础主页采集 |
 
-## 5. KOL 每日数据库主链路
+## 5. KOL 结算表帖子指标链路
+
+适合结算表业务：从 `crawler_app.kol_business_settlements` 读取帖子链接，采集后写回同一张表。
+
+```text
+kol_business_settlements
+  -> SELECT settlement_date, post_url
+  -> task_submissions(task_type=kol_settlement_post_metrics)
+  -> ADB 打开 post_url
+  -> app_type + metric 合并动作
+  -> task_executions / field_capture_observations
+  -> UPDATE kol_business_settlements
+```
+
+业务唯一键：
+
+```text
+settlement_date + post_url
+```
+
+提交任务时，`dedupe_key` 也按这个业务唯一键生成：
+
+```text
+kol_business_settlements + settlement_date + post_url + kol_settlement_post_metrics
+```
+
+因此每天重复跑 submit 时：
+
+- 已成功且指标齐全的行不会再次提交。
+- 同一天同一帖子不会生成重复任务。
+- 失败任务可以被下次 submit 重新激活，继续补跑。
+
+写回字段：
+
+| metric | 回写列 |
+| --- | --- |
+| `article_title` | `article_title` |
+| `comment_count` | `comment_count` |
+| `like_count` | `like_count` |
+| `screenshot` | `screenshot_url` |
+
+常用命令：
+
+```powershell
+.\scripts\run.ps1 -Task kol-settlement-metrics-submit -ReportDate 2026-07-02 -Limit 1
+.\scripts\run.ps1 -Task kol-settlement-metrics-crawl -Limit 1
+.\scripts\run.ps1 -Task kol-settlement-metrics-writeback -Limit 1
+```
+
+一体化执行：
+
+```powershell
+.\scripts\run.ps1 -Task kol-settlement-metrics -ReportDate 2026-07-02 -Limit 1
+```
+
+## 6. KOL 每日数据库主链路
 
 主结果表：
 
@@ -216,7 +271,7 @@ kol_daily_db_pipeline
 .\scripts\run.ps1 -Task kol-daily-db-pipeline -ReportDate 2026-06-22
 ```
 
-## 6. 常驻运行
+## 7. 常驻运行
 
 启动：
 
@@ -235,7 +290,7 @@ kol_daily_db_pipeline
 | `kol_daily_db_pipeline` | `KOL_DAILY_CRAWL_TIME`，默认 08:00 |
 | `heartbeat` | 30 分钟 |
 
-## 7. 排查顺序
+## 8. 排查顺序
 
 1. 看设备：
 
@@ -283,4 +338,29 @@ KOL 数据库主链路：
   profile_metric_runs
   profile_metric_sources
   profile_metric_runs
+```
+
+## 9. 截图下载链接
+
+KOL 结算表帖子指标链路会把 `screenshot_url` 写成可下载链接，链接对应
+`apps/finance_crawler/captures` 下的截图文件。
+
+启动下载服务：
+
+```powershell
+.\scripts\run.ps1 -Task capture-file-server
+```
+
+默认链接格式：
+
+```text
+http://127.0.0.1:8765/captures/...png
+```
+
+如果要让其它机器访问节点上的截图，配置节点可访问地址：
+
+```text
+CAPTURE_FILE_SERVER_HOST=0.0.0.0
+CAPTURE_FILE_SERVER_PORT=8765
+CAPTURE_PUBLIC_BASE_URL=http://<node-host>:8765
 ```

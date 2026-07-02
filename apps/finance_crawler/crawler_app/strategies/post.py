@@ -22,7 +22,7 @@ from apps.finance_crawler.crawler_app.documents.fields import (
     REMARK,
     SCREENSHOT,
 )
-from apps.finance_crawler.crawler_app.tasks.types import DETAIL, INITIAL_CHECK
+from apps.finance_crawler.crawler_app.tasks.types import DETAIL, INITIAL_CHECK, KOL_SETTLEMENT_POST_METRICS
 from apps.finance_crawler.mobile.crawler import (
     check_record_exists_and_account,
     is_transient_open_failure,
@@ -92,11 +92,32 @@ def initial_check_writeback_values(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def crawl_detail_task(submission: dict[str, Any]) -> dict[str, Any]:
+    return _crawl_post_metrics_task(
+        submission,
+        task_type=DETAIL,
+        default_fields=(ACCOUNT_NAME, READ_COUNT, COMMENT_COUNT, SCREENSHOT),
+    )
+
+
+def crawl_kol_settlement_post_metrics_task(submission: dict[str, Any]) -> dict[str, Any]:
+    return _crawl_post_metrics_task(
+        submission,
+        task_type=KOL_SETTLEMENT_POST_METRICS,
+        default_fields=(ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT),
+    )
+
+
+def _crawl_post_metrics_task(
+    submission: dict[str, Any],
+    *,
+    task_type: str,
+    default_fields: tuple[str, ...],
+) -> dict[str, Any]:
     app_type = str(submission.get("app_type") or "unknown")
-    fields = _requested_fields(submission, default=(ACCOUNT_NAME, READ_COUNT, COMMENT_COUNT, SCREENSHOT))
+    fields = _requested_fields(submission, default=default_fields)
     opened_url = resolve_short_url(str(submission["post_url"]))
     capture_plan = resolve_capture_plan_for_task(
-        task_type=DETAIL,
+        task_type=task_type,
         app_type=app_type,
         fields=fields,
         profile=submission.get("capture_action_profile"),
@@ -114,7 +135,7 @@ def crawl_detail_task(submission: dict[str, Any]) -> dict[str, Any]:
             "capture_plan": capture_plan.to_json_dict(),
         }
     )
-    return _with_post_field_results(result, task_type=DETAIL, app_type=app_type, fields=fields)
+    return _with_post_field_results(result, task_type=task_type, app_type=app_type, fields=fields)
 
 
 def _with_post_field_results(

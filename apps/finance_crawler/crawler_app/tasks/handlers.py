@@ -14,12 +14,13 @@ from apps.finance_crawler.crawler_app.strategies.read_count import (
 from apps.finance_crawler.crawler_app.strategies.post import (
     crawl_detail_task,
     crawl_initial_check_task,
+    crawl_kol_settlement_post_metrics_task,
     detail_metrics,
     detail_writeback_values,
     initial_check_metrics,
     initial_check_writeback_values,
 )
-from apps.finance_crawler.crawler_app.tasks.types import DETAIL, INITIAL_CHECK, READ_COUNT
+from apps.finance_crawler.crawler_app.tasks.types import DETAIL, INITIAL_CHECK, KOL_SETTLEMENT_POST_METRICS, READ_COUNT
 
 
 @dataclass(frozen=True)
@@ -59,10 +60,20 @@ DETAIL_HANDLER = TaskHandler(
     metrics=detail_metrics,
 )
 
+KOL_SETTLEMENT_POST_METRICS_HANDLER = TaskHandler(
+    task_type=KOL_SETTLEMENT_POST_METRICS,
+    worker_id="kol_settlement_post_metrics",
+    runtime=ADB_RUNTIME,
+    crawl=crawl_kol_settlement_post_metrics_task,
+    writeback_values=lambda result: {},
+    metrics=detail_metrics,
+)
+
 TASK_HANDLERS = {
     READ_COUNT: READ_COUNT_HANDLER,
     INITIAL_CHECK: INITIAL_CHECK_HANDLER,
     DETAIL: DETAIL_HANDLER,
+    KOL_SETTLEMENT_POST_METRICS: KOL_SETTLEMENT_POST_METRICS_HANDLER,
 }
 
 

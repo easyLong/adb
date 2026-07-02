@@ -1,7 +1,7 @@
 param(
     [string]$App = "finance_crawler",
 
-    [ValidateSet("scheduler", "supervisor", "workers-start", "workers-status", "workers-stop", "db", "crawler-app-db", "ops-platform-db", "wechat-groups-list", "wechat-groups-capture", "wechat-messages-parse", "wechat-demand-intake", "wechat-hourly-sync", "device-pool-status", "device-pool-refresh", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report", "kol-tenpay-external-reads", "kol-daily-db-pipeline", "article-sync", "article-crawl", "article-writeback", "article-details", "doc-link-reads", "doc-columns-check", "v2-read-count-submit", "v2-read-count-crawl", "v2-read-count-writeback", "v2-read-count", "v2-initial-check-submit", "v2-initial-check-crawl", "v2-initial-check-writeback", "v2-initial-check", "v2-detail-submit", "v2-detail-crawl", "v2-detail-writeback", "v2-detail", "v2-doc-config-set", "v2-doc-config-check", "v2-doc-config-list", "v2-doc-config-submit", "v2-doc-config-run", "v2-trigger-set", "v2-trigger-bind", "v2-trigger-list", "v2-trigger-submit", "v2-submit-worker-once", "v2-crawl-worker-once", "v2-writeback-worker-once", "v2-correction-plan", "v2-correction-writeback", "v2-correction-apply")]
+    [ValidateSet("scheduler", "supervisor", "workers-start", "workers-status", "workers-stop", "db", "crawler-app-db", "ops-platform-db", "wechat-groups-list", "wechat-groups-capture", "wechat-messages-parse", "wechat-demand-intake", "wechat-hourly-sync", "device-pool-status", "device-pool-refresh", "config", "fetch", "check", "detail", "excel-detail", "link-detail", "report", "kol-tenpay-external-reads", "kol-daily-db-pipeline", "capture-file-server", "kol-settlement-metrics-submit", "kol-settlement-metrics-crawl", "kol-settlement-metrics-writeback", "kol-settlement-metrics", "article-sync", "article-crawl", "article-writeback", "article-details", "doc-link-reads", "doc-columns-check", "v2-read-count-submit", "v2-read-count-crawl", "v2-read-count-writeback", "v2-read-count", "v2-initial-check-submit", "v2-initial-check-crawl", "v2-initial-check-writeback", "v2-initial-check", "v2-detail-submit", "v2-detail-crawl", "v2-detail-writeback", "v2-detail", "v2-doc-config-set", "v2-doc-config-check", "v2-doc-config-list", "v2-doc-config-submit", "v2-doc-config-run", "v2-trigger-set", "v2-trigger-bind", "v2-trigger-list", "v2-trigger-submit", "v2-submit-worker-once", "v2-crawl-worker-once", "v2-writeback-worker-once", "v2-correction-plan", "v2-correction-writeback", "v2-correction-apply")]
     [string]$Task = "scheduler",
 
     [string]$Python = "python",
@@ -10,6 +10,7 @@ param(
     [string]$ExcelInputPath = "",
     [string]$SingleLink = "",
     [string]$ReportDate = "",
+    [int]$Limit = 0,
     [string]$DocumentConfigKey = "",
     [string]$DocumentTaskType = "",
     [string]$DocumentFields = "",
@@ -61,7 +62,7 @@ function Load-ProjectEnv {
     }
 
     foreach ($line in Get-Content -LiteralPath $ResolvedPath) {
-        if ($line -match '^\s*(?:\$env:)?(\uFEFF?(?:MYSQL|OPENAI|WECHAT|SCHEDULER|DEVICE)_[A-Z0-9_]+)\s*=\s*(.*)\s*$') {
+        if ($line -match '^\s*(?:\$env:)?(\uFEFF?(?:MYSQL|OPENAI|WECHAT|SCHEDULER|DEVICE|CAPTURE)_[A-Z0-9_]+)\s*=\s*(.*)\s*$') {
             $name = $matches[1].TrimStart([char]0xFEFF)
             $value = $matches[2].Trim().Trim('"').Trim("'")
             [Environment]::SetEnvironmentVariable($name, $value, "Process")
@@ -261,6 +262,9 @@ if ($Task -eq "scheduler") {
     }
     if ($ReportDate) {
         $OnceArgs += @("--report-date", $ReportDate)
+    }
+    if ($Limit) {
+        $OnceArgs += @("--limit", $Limit)
     }
     if ($DocumentConfigKey) {
         $OnceArgs += @("--document-config-key", $DocumentConfigKey)

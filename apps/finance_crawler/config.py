@@ -27,7 +27,7 @@ def _load_project_dotenv() -> None:
             continue
         key, value = line.split("=", 1)
         key = key.strip().lstrip("\ufeff")
-        if not key.startswith(("MYSQL_", "OPENAI_", "WECHAT_", "SCHEDULER_", "DEVICE_")):
+        if not key.startswith(("MYSQL_", "OPENAI_", "WECHAT_", "SCHEDULER_", "DEVICE_", "CAPTURE_")):
             continue
         if key in os.environ:
             continue
@@ -292,6 +292,12 @@ class Config:
     SCREENSHOT_DIR = BASE_DIR / "screenshots"
     LOG_DIR = BASE_DIR / "logs"
     CAPTURE_DIR = BASE_DIR / "captures"
+    CAPTURE_FILE_SERVER_HOST = _env("CAPTURE_FILE_SERVER_HOST", "127.0.0.1")
+    CAPTURE_FILE_SERVER_PORT = _env_int("CAPTURE_FILE_SERVER_PORT", 8765)
+    CAPTURE_PUBLIC_BASE_URL = _env(
+        "CAPTURE_PUBLIC_BASE_URL",
+        f"http://127.0.0.1:{CAPTURE_FILE_SERVER_PORT}",
+    ).rstrip("/")
     REPORT_DIR = BASE_DIR / "reports"
     EXPORT_DIR = BASE_DIR / "exports"
     CACHE_FILE = BASE_DIR / _env("APP_SCHEME_CACHE_FILE", ".app_scheme_cache.json")
