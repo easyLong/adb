@@ -43,7 +43,7 @@ from apps.finance_crawler.mobile.capture_engine import (
 from apps.finance_crawler.mobile.capture_records import read_capture_records as _read_capture_records
 from apps.finance_crawler.mobile.device_session import device as session_device
 from apps.finance_crawler.mobile.device_session import reset_device_session
-from apps.finance_crawler.mobile.parsers import extract_profile_fans_count, parse_count_token
+from apps.finance_crawler.mobile.parsers import extract_account_name, extract_profile_fans_count, parse_count_token
 from apps.finance_crawler.storage.device_pool import release_device_lease, start_device_lease
 from apps.finance_crawler.storage.db import log_task
 from apps.finance_crawler.crawler_app.storage.profile_metrics import (
@@ -677,6 +677,8 @@ def _resolve_profile_fans_count(
         "exact_used": bool(extraction.evidence.get("exact_used")),
         "account_verified": bool(extraction.evidence.get("account_verified")),
         "nickname_mismatch": bool(extraction.evidence.get("nickname_mismatch")),
+        "expected_account_name": extraction.evidence.get("expected_account_name"),
+        "detected_account_name": extraction.evidence.get("detected_account_name"),
         "quality_warning": extraction.evidence.get("quality_warning"),
         "action_template": action_template.key,
         "actions": list(action_template.actions),
@@ -814,11 +816,14 @@ class ProfileFansCountExtractor:
         has_home_context = page_state.name == "profile_home"
         has_exact_evidence = page_state.name == "fans_detail"
         account_verified = _has_expected_profile_anchor(records, snapshot.expected_account_name)
+        detected_account_name = _detect_profile_account_name(records)
         homepage_ocr_records: list[dict[str, Any]] = []
         evidence: dict[str, Any] = {
             "exact_required": exact_required,
             "exact_used": False,
             "account_verified": account_verified,
+            "expected_account_name": snapshot.expected_account_name,
+            "detected_account_name": detected_account_name,
             "home_fans_count": None,
         }
 
@@ -1118,6 +1123,11 @@ def _has_expected_profile_anchor(records: list[dict[str, Any]], expected_account
         if expected and expected in text:
             return True
     return False
+
+
+def _detect_profile_account_name(records: list[dict[str, Any]]) -> str:
+    texts = [str(item.get("text") or "").strip() for item in records if str(item.get("text") or "").strip()]
+    return extract_account_name(texts)
 
 
 def _has_exact_fans_evidence(records: list[dict[str, Any]]) -> bool:

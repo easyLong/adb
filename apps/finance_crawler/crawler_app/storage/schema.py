@@ -117,6 +117,7 @@ def ensure_crawler_app_tables(cursor) -> None:
             source_doc_url TEXT NULL,
             source_row_index INT NULL,
             source_payload_json LONGTEXT NULL,
+            remark TEXT NULL,
             target_doc_url TEXT NULL,
             target_sheet_id VARCHAR(128) NULL,
             target_row_index INT NULL,
@@ -136,6 +137,7 @@ def ensure_crawler_app_tables(cursor) -> None:
     _drop_column_if_exists(cursor, "kol_daily_metrics", "homepage_url")
     _drop_column_if_exists(cursor, "kol_daily_metrics", "group_name")
     _drop_column_if_exists(cursor, "kol_daily_metrics", "kol_type")
+    _add_column_if_missing(cursor, "kol_daily_metrics", "remark", "TEXT NULL AFTER source_payload_json")
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS profile_action_profiles (

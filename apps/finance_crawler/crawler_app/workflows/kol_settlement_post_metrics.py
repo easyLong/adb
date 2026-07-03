@@ -9,7 +9,7 @@ import time
 from datetime import date
 from typing import Any
 
-from apps.finance_crawler.crawler_app.documents.fields import ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT
+from apps.finance_crawler.crawler_app.documents.fields import ACCOUNT_NAME, ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT
 from apps.finance_crawler.crawler_app.storage.db import get_conn
 from apps.finance_crawler.crawler_app.tasks.handlers import get_task_handler
 from apps.finance_crawler.crawler_app.tasks.submission import TaskSubmission, submit_task_submissions
@@ -23,8 +23,9 @@ SOURCE_TABLE = "kol_business_settlements"
 SOURCE_ID_FIELD = "id"
 SOURCE_DATE_FIELD = "settlement_date"
 SOURCE_URL_FIELD = "post_url"
-REQUESTED_FIELDS = (ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT)
+REQUESTED_FIELDS = (ACCOUNT_NAME, ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT)
 RESULT_FIELD_MAP = {
+    ACCOUNT_NAME: "ip_name",
     ARTICLE_TITLE: "article_title",
     COMMENT_COUNT: "comment_count",
     LIKE_COUNT: "like_count",
@@ -128,7 +129,8 @@ def _list_pending_settlement_rows(conn, *, target_date: date | None, limit: int 
           AND TRIM({_identifier(SOURCE_URL_FIELD)}) <> ''
           AND {_identifier(SOURCE_DATE_FIELD)} IS NOT NULL
           AND (
-                article_title IS NULL OR article_title = ''
+                ip_name IS NULL OR ip_name = ''
+             OR article_title IS NULL OR article_title = ''
              OR comment_count IS NULL
              OR like_count IS NULL
              OR screenshot_url IS NULL OR screenshot_url = ''
@@ -228,6 +230,9 @@ def _result_values_for_settlement(row: dict[str, Any]) -> dict[str, Any]:
     result = row.get("result") or {}
     field_values = _accepted_field_values(result.get("field_results"))
     values: dict[str, Any] = {}
+    account_name = field_values.get(ACCOUNT_NAME) or result.get(ACCOUNT_NAME)
+    if account_name:
+        values["ip_name"] = account_name
     if field_values.get(ARTICLE_TITLE):
         values["article_title"] = field_values[ARTICLE_TITLE]
     if COMMENT_COUNT in field_values:

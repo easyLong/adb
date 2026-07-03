@@ -298,6 +298,28 @@ class ProfileMetricParserTests(unittest.TestCase):
         self.assertEqual(result["field_results"][0]["field_name"], "fans_count")
         self.assertTrue(result["field_results"][0]["accepted"])
 
+    def test_home_fans_result_exposes_detected_account_name_for_daily_remark(self) -> None:
+        records = [
+            {"text": "\u5934\u50cf", "bounds": {"left": 30, "top": 300, "right": 90, "bottom": 360}},
+            {"text": "\u65b0\u540d", "bounds": {"left": 100, "top": 300, "right": 220, "bottom": 360}},
+            {"text": "14", "bounds": {"left": 174, "top": 736, "right": 222, "bottom": 793}},
+            {"text": "\u7c89\u4e1d", "bounds": {"left": 165, "top": 790, "right": 233, "bottom": 832}},
+        ]
+
+        result = _resolve_profile_fans_count(
+            records,
+            screenshot_path=None,
+            output_dir=Path("."),
+            app_type="tenpay",
+            expected_account_name="\u65e7\u540d",
+        )
+
+        self.assertEqual(result["fans_count"], 14)
+        self.assertTrue(result["nickname_mismatch"])
+        self.assertEqual(result["expected_account_name"], "\u65e7\u540d")
+        self.assertEqual(result["detected_account_name"], "\u65b0\u540d")
+        self.assertEqual(result["field_results"][0]["evidence"]["detected_account_name"], "\u65b0\u540d")
+
     def test_profile_login_page_is_rejected_with_state(self) -> None:
         records = [
             {"text": "\u6253\u5f00\u652f\u4ed8\u5b9d\u767b\u5f55"},

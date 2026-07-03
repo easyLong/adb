@@ -341,3 +341,10 @@ CAPTURE_FILE_SERVER_HOST=0.0.0.0
 CAPTURE_FILE_SERVER_PORT=8765
 CAPTURE_PUBLIC_BASE_URL=http://<node-host>:8765
 ```
+
+## 7. KOL 结算表 IP 名称
+
+`kol-settlement-metrics` 会复用帖子页面采集到的 `account_name`，并回写到
+`kol_business_settlements.ip_name`。
+
+这和文章标题、评论数、点赞数、截图共享同一次首屏 ADB 采集，不需要额外滚动或二次打开页面。

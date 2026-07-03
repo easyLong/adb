@@ -198,8 +198,28 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertIs(crawler_profile_metrics.get_conn, crawler_app_db.get_conn)
         self.assertIs(legacy_profile_metrics.get_conn, crawler_app_db.get_conn)
 
+    def test_kol_daily_profile_remark_reports_name_mismatch(self) -> None:
+        from apps.finance_crawler.crawler_app.storage.profile_metrics import _kol_daily_profile_remark
+
+        self.assertEqual(
+            _kol_daily_profile_remark(
+                nickname_mismatch=True,
+                expected_account_name="旧名",
+                detected_account_name="新名",
+            ),
+            "账号名称不一致：配置「旧名」，页面「新名」",
+        )
+        self.assertEqual(
+            _kol_daily_profile_remark(
+                nickname_mismatch=False,
+                expected_account_name="旧名",
+                detected_account_name="新名",
+            ),
+            "",
+        )
+
     def test_kol_settlement_submission_uses_date_url_business_key(self) -> None:
-        from apps.finance_crawler.crawler_app.documents.fields import ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT
+        from apps.finance_crawler.crawler_app.documents.fields import ACCOUNT_NAME, ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT
         from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
             _submission_from_settlement_row,
         )
@@ -223,8 +243,9 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertEqual(submission.source_locator["settlement_date"], "2026-07-02")
         self.assertEqual(
             submission.source_locator["requested_fields"],
-            [ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT],
+            [ACCOUNT_NAME, ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT],
         )
+        self.assertEqual(submission.source_locator["result_field_map"][ACCOUNT_NAME], "ip_name")
         self.assertEqual(submission.dedupe_key, same_key_submission.dedupe_key)
 
     def test_kol_settlement_result_values_use_accepted_field_results(self) -> None:
@@ -236,6 +257,7 @@ class CrawlerAppDocumentTests(unittest.TestCase):
             {
                 "result": {
                     "field_results": [
+                        {"field_name": "account_name", "value": "IP名称", "accepted": True},
                         {"field_name": "article_title", "value": "标题", "accepted": True},
                         {"field_name": "comment_count", "value": 28, "accepted": True},
                         {"field_name": "like_count", "value": 133, "accepted": True},
@@ -250,11 +272,30 @@ class CrawlerAppDocumentTests(unittest.TestCase):
             values,
             {
                 "article_title": "标题",
+                "ip_name": "IP名称",
                 "comment_count": 28,
                 "like_count": 133,
                 "screenshot_url": "shot.png",
             },
         )
+
+    def test_kol_settlement_result_values_use_legacy_top_level_account_name(self) -> None:
+        from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
+            _result_values_for_settlement,
+        )
+
+        values = _result_values_for_settlement(
+            {
+                "result": {
+                    "account_name": "legacy-ip",
+                    "field_results": [
+                        {"field_name": "article_title", "value": "title", "accepted": True},
+                    ],
+                }
+            }
+        )
+
+        self.assertEqual(values["ip_name"], "legacy-ip")
 
     def test_kol_settlement_handler_does_not_create_document_writeback_values(self) -> None:
         handler = get_task_handler(KOL_SETTLEMENT_POST_METRICS)

@@ -687,6 +687,13 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
     fans_payload = metric_payload.get("fans") if isinstance(metric_payload.get("fans"), dict) else {}
     quality_warning = str(fans_payload.get("quality_warning") or "").strip()
     nickname_mismatch = bool(fans_payload.get("nickname_mismatch"))
+    expected_account_name = str(fans_payload.get("expected_account_name") or kol_name).strip()
+    detected_account_name = str(fans_payload.get("detected_account_name") or "").strip()
+    remark = _kol_daily_profile_remark(
+        nickname_mismatch=nickname_mismatch,
+        expected_account_name=expected_account_name,
+        detected_account_name=detected_account_name,
+    )
     source_payload = {
         "workflow": "profile_metrics",
         "metric_id": metric_id,
@@ -697,6 +704,8 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
         "status": status,
         "error": error,
         "nickname_mismatch": nickname_mismatch,
+        "expected_account_name": expected_account_name,
+        "detected_account_name": detected_account_name,
         "quality_warning": quality_warning,
     }
     cursor.execute(
@@ -705,7 +714,7 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
             metric_date, kol_name, platform,
             fans_count, growth_count, read_count,
             fans_source, growth_source, read_source,
-            source_doc_url, source_row_index, source_payload_json,
+            source_doc_url, source_row_index, source_payload_json, remark,
             target_doc_url, target_sheet_id, target_row_index,
             writeback_status, writeback_error
         )
@@ -713,7 +722,7 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
             %s, %s, %s,
             %s, %s, %s,
             %s, %s, %s,
-            %s, %s, %s,
+            %s, %s, %s, %s,
             %s, %s, %s,
             %s, %s
         )
@@ -727,6 +736,7 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
             source_doc_url = COALESCE(NULLIF(VALUES(source_doc_url), ''), source_doc_url),
             source_row_index = COALESCE(VALUES(source_row_index), source_row_index),
             source_payload_json = COALESCE(NULLIF(VALUES(source_payload_json), '{}'), source_payload_json),
+            remark = VALUES(remark),
             target_doc_url = COALESCE(NULLIF(VALUES(target_doc_url), ''), target_doc_url),
             target_sheet_id = COALESCE(NULLIF(VALUES(target_sheet_id), ''), target_sheet_id),
             target_row_index = COALESCE(VALUES(target_row_index), target_row_index),
@@ -746,6 +756,7 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
             str(source.get("doc_url") or ""),
             int(locator["row_index"]) if locator.get("row_index") else None,
             _json_dumps(source_payload),
+            remark,
             str(source.get("doc_url") or ""),
             str(locator.get("sheet_id") or ""),
             int(locator["row_index"]) if locator.get("row_index") else None,
@@ -753,6 +764,23 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
             error,
         ),
     )
+
+
+def _kol_daily_profile_remark(
+    *,
+    nickname_mismatch: bool,
+    expected_account_name: str,
+    detected_account_name: str,
+) -> str:
+    if not nickname_mismatch:
+        return ""
+    if detected_account_name:
+        if expected_account_name:
+            return f"账号名称不一致：配置「{expected_account_name}」，页面「{detected_account_name}」"
+        return f"账号名称不一致：页面识别为「{detected_account_name}」"
+    if expected_account_name:
+        return f"账号名称不一致：配置「{expected_account_name}」，页面未识别到同名账号"
+    return "账号名称不一致"
 
 
 def _upsert_profile_metric_observations_tx(

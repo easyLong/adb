@@ -113,3 +113,23 @@ KOL_DAILY_CRAWL_TIME
 ```text
 KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS
 ```
+
+## 账号名称一致性备注
+
+主页 ADB 采集粉丝数时，会同时用页面 UI/OCR 文本识别账号名称，并和
+`kol_base_profiles.kol_name` / `profile_targets.account_name` 中的配置名称做校验。
+
+如果页面名称和配置名称不一致，不覆盖基础资料，只在每日主结果表写备注：
+
+```text
+kol_daily_metrics.remark = 账号名称不一致：配置「旧名」，页面「新名」
+```
+
+详细证据同时保存在：
+
+```text
+profile_metric_runs.metrics_json.fans.detected_account_name
+profile_metric_runs.metrics_json.fans.expected_account_name
+profile_metric_runs.metrics_json.fans.nickname_mismatch
+kol_daily_metrics.source_payload_json
+```

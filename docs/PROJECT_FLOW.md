@@ -202,6 +202,7 @@ kol_business_settlements + settlement_date + post_url + kol_settlement_post_metr
 
 | metric | 回写列 |
 | --- | --- |
+| `account_name` | `ip_name` |
 | `article_title` | `article_title` |
 | `comment_count` | `comment_count` |
 | `like_count` | `like_count` |
