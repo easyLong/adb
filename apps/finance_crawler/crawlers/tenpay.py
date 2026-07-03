@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import re
 import time
 from pathlib import Path
 from typing import Any
+
+import requests
 
 from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawlers.base import AppLinkProfile, CapturePlan, CrawlAdapterContext
@@ -42,12 +46,12 @@ def _is_tenpay_post_texts(texts: list[str]) -> bool:
 
 
 def _is_usable_account_text(text: str) -> bool:
-    cleaned = text.strip()
+    cleaned = _clean_account_candidate(text)
     if not cleaned or len(cleaned) > 30:
         return False
-    if cleaned in {"腾讯理财通", "已关注", "关注", "评论", "阅读", "点赞", "头像"}:
+    if cleaned in {"腾讯理财通", "已关注", "关注", "评论", "阅读", "点赞", "头像", "理财", "基金"}:
         return False
-    if any(word in cleaned for word in ("理财", "基金", "阅读", "评论", "点赞", "关注")):
+    if any(word in cleaned for word in ("阅读", "评论", "点赞", "关注")):
         return False
     if re.fullmatch(r"\d{1,2}:\d{2}", cleaned):
         return False
@@ -58,15 +62,26 @@ def _is_usable_account_text(text: str) -> bool:
     return True
 
 
+def _clean_account_candidate(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+    cleaned = re.sub(r"\s*[（(][^）)]*实盘[^）)]*[）)]\s*", "", cleaned).strip()
+    cleaned = re.sub(r"的实盘$", "", cleaned).strip()
+    if re.fullmatch(r"[（(][^）)]*[）)]", cleaned):
+        return ""
+    if "实盘" in cleaned:
+        return ""
+    return cleaned
+
+
 def _extract_account_name(texts: list[str]) -> str | None:
     ignored = {"腾讯理财通", "已关注", "关注"}
     for index, text in enumerate(texts[:30]):
         if "腾讯理财通" not in text:
             continue
         for candidate in texts[index + 1 : index + 8]:
-            cleaned = candidate.strip()
+            cleaned = _clean_account_candidate(candidate)
             if cleaned and cleaned not in ignored and _is_usable_account_text(cleaned):
-                return cleaned
+                return cleaned.strip()
     return None
 
 
@@ -433,9 +448,13 @@ def _parse_bottom_counts_from_ocr_jsonl(ocr_jsonl: str | None) -> dict[str, int]
 
 
 def _read_ocr_rows_jsonl(ocr_jsonl: str | None) -> list[dict[str, Any]]:
-    if not ocr_jsonl:
+    return _read_jsonl_rows(ocr_jsonl)
+
+
+def _read_jsonl_rows(path_text: str | None) -> list[dict[str, Any]]:
+    if not path_text:
         return []
-    path = Path(str(ocr_jsonl))
+    path = Path(str(path_text))
     if not path.exists():
         return []
 
@@ -448,6 +467,216 @@ def _read_ocr_rows_jsonl(ocr_jsonl: str | None) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             continue
     return rows
+
+
+def _normalize_account_name(value: str | None) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip())
+
+
+def _same_account_name(left: str | None, right: str | None) -> bool:
+    normalized_left = _normalize_account_name(left)
+    normalized_right = _normalize_account_name(right)
+    return bool(normalized_left and normalized_left == normalized_right)
+
+
+def _ui_texts_from_jsonl(ui_jsonl: str | None) -> list[str]:
+    rows = _read_jsonl_rows(ui_jsonl)
+    texts: list[str] = []
+    for row in rows:
+        if row.get("package") == "com.android.systemui":
+            continue
+        for key in ("text", "content_desc"):
+            value = str(row.get(key) or "").strip()
+            if value:
+                texts.append(value)
+    return texts
+
+
+def _ocr_texts_from_jsonl(ocr_jsonl: str | None) -> list[str]:
+    return [str(row.get("text") or "").strip() for row in _read_ocr_rows_jsonl(ocr_jsonl) if str(row.get("text") or "").strip()]
+
+
+def _account_candidate(source: str, texts: list[str]) -> dict[str, Any]:
+    value = _extract_account_name(texts)
+    return {
+        "source": source,
+        "value": value or "",
+        "text_count": len(texts),
+        "sample_texts": texts[:16],
+    }
+
+
+def _resolve_account_name_from_sources(
+    *,
+    current_account_name: str | None,
+    ui_jsonl: str | None,
+    ocr_jsonl: str | None,
+    screenshot_path: str | None,
+) -> dict[str, Any]:
+    ui_candidate = _account_candidate("ui_controls", _ui_texts_from_jsonl(ui_jsonl))
+    ocr_candidate = _account_candidate("ocr", _ocr_texts_from_jsonl(ocr_jsonl))
+    ui_name = str(ui_candidate.get("value") or "").strip()
+    ocr_name = str(ocr_candidate.get("value") or "").strip()
+    evidence = {
+        "ui": ui_candidate,
+        "ocr": ocr_candidate,
+    }
+
+    chosen = ""
+    source = ""
+    resolution = ""
+    if ui_name and ocr_name:
+        if _same_account_name(ui_name, ocr_name):
+            chosen = ui_name
+            source = "ui_controls"
+            resolution = "ui_ocr_agree"
+        else:
+            model_result = _resolve_account_name_with_model(
+                ui_candidate=ui_candidate,
+                ocr_candidate=ocr_candidate,
+                screenshot_path=screenshot_path,
+            )
+            if model_result.get("account_name"):
+                chosen = str(model_result["account_name"]).strip()
+                source = "model"
+                resolution = "ui_ocr_conflict_model"
+                evidence["model"] = model_result
+            else:
+                chosen = ui_name
+                source = "ui_controls"
+                resolution = "ui_ocr_conflict_model_unavailable"
+                evidence["model"] = model_result
+    elif ui_name:
+        chosen = ui_name
+        source = "ui_controls"
+        resolution = "ui_only"
+    elif ocr_name:
+        chosen = ocr_name
+        source = "ocr"
+        resolution = "ocr_only"
+    elif current_account_name:
+        chosen = str(current_account_name).strip()
+        source = "merged_text"
+        resolution = "merged_text_fallback"
+
+    if not chosen:
+        return {}
+    return {
+        "account_name": chosen,
+        "account_name_source": source,
+        "account_name_resolution": resolution,
+        "account_name_candidates": evidence,
+    }
+
+
+def _resolve_account_name_with_model(
+    *,
+    ui_candidate: dict[str, Any],
+    ocr_candidate: dict[str, Any],
+    screenshot_path: str | None,
+) -> dict[str, Any]:
+    if not Config.OPENAI_API_KEY or not Config.OPENAI_BASE_URL or not Config.OPENAI_MODEL:
+        return {"status": "skipped", "reason": "model_not_configured"}
+    try:
+        payload = _account_name_model_payload(
+            ui_candidate=ui_candidate,
+            ocr_candidate=ocr_candidate,
+            screenshot_path=screenshot_path,
+        )
+        content = _post_openai_chat_completion(payload)
+        parsed = _parse_model_json(content)
+        account_name = str(parsed.get("account_name") or "").strip() if isinstance(parsed, dict) else ""
+        if account_name and _is_usable_account_text(account_name):
+            return {
+                "status": "success",
+                "account_name": account_name,
+                "confidence": parsed.get("confidence"),
+                "reason": parsed.get("reason"),
+            }
+        return {"status": "empty", "reason": "model returned no usable account_name", "raw": parsed}
+    except Exception as exc:
+        logger.warning("Tenpay account name model resolution failed: %s", exc)
+        return {"status": "error", "reason": str(exc)}
+
+
+def _account_name_model_payload(
+    *,
+    ui_candidate: dict[str, Any],
+    ocr_candidate: dict[str, Any],
+    screenshot_path: str | None,
+) -> dict[str, Any]:
+    user_text = (
+        "Identify the author account name on this Tencent Wealth/Tenpay post detail screen. "
+        "Prefer the actual post author, not the app title, follow button, topic, article title, "
+        "or portfolio labels such as 实盘. Return JSON only: "
+        "{\"account_name\": string, \"confidence\": number, \"reason\": string}.\n"
+        f"ui_candidate: {json.dumps(ui_candidate, ensure_ascii=False)}\n"
+        f"ocr_candidate: {json.dumps(ocr_candidate, ensure_ascii=False)}"
+    )
+    content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+    if screenshot_path:
+        path = Path(str(screenshot_path))
+        if path.exists():
+            content.append({"type": "image_url", "image_url": {"url": _image_to_data_url(path)}})
+    return {
+        "model": Config.OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a precise mobile UI information extraction assistant."},
+            {"role": "user", "content": content},
+        ],
+        "temperature": 0,
+        "max_tokens": min(Config.OPENAI_MAX_TOKENS, 600),
+        "response_format": {"type": "json_object"},
+    }
+
+
+def _post_openai_chat_completion(payload: dict[str, Any]) -> str:
+    url = _openai_chat_completions_url()
+    headers = {
+        "Authorization": f"Bearer {Config.OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    response = requests.post(url, headers=headers, json=payload, timeout=Config.OPENAI_TIMEOUT_SECONDS)
+    if response.status_code >= 400 and "response_format" in payload:
+        retry_payload = dict(payload)
+        retry_payload.pop("response_format", None)
+        response = requests.post(url, headers=headers, json=retry_payload, timeout=Config.OPENAI_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    data = response.json()
+    choices = data.get("choices") or []
+    if not choices:
+        raise ValueError("empty model choices")
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "\n".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+    if not str(content or "").strip():
+        raise ValueError("empty model content")
+    return str(content)
+
+
+def _openai_chat_completions_url() -> str:
+    base_url = Config.OPENAI_BASE_URL.rstrip("/")
+    if base_url.endswith("/chat/completions"):
+        return base_url
+    if not base_url.endswith("/v1"):
+        base_url = f"{base_url}/v1"
+    return f"{base_url}/chat/completions"
+
+
+def _image_to_data_url(path: Path) -> str:
+    mime_type = mimetypes.guess_type(str(path))[0] or "image/png"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _parse_model_json(content: str) -> dict[str, Any]:
+    text = str(content or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    data = json.loads(text)
+    return data if isinstance(data, dict) else {}
 
 
 def _parse_article_title_from_ocr_jsonl(ocr_jsonl: str | None) -> str | None:
@@ -513,10 +742,21 @@ class TenpayCrawlerAdapter:
         summary: dict[str, Any],
     ) -> dict[str, Any]:
         requested = {str(item) for item in result.get("requested_fields") or () if str(item)}
-        if not requested.intersection({"article_title", "comment_count", "like_count"}):
+        if not requested.intersection({"account_name", "article_title", "comment_count", "like_count"}):
             return {}
 
         updates: dict[str, Any] = {}
+        if "account_name" in requested:
+            account_update = _resolve_account_name_from_sources(
+                current_account_name=str(result.get("account_name") or ""),
+                ui_jsonl=summary.get("ui_jsonl"),
+                ocr_jsonl=summary.get("ocr_jsonl"),
+                screenshot_path=str(Path(str(summary.get("output_dir") or "")) / "page_000.png")
+                if summary.get("output_dir")
+                else None,
+            )
+            updates.update(account_update)
+
         if "article_title" in requested:
             article_title = _parse_article_title_from_ocr_jsonl(summary.get("ocr_jsonl"))
             if article_title:

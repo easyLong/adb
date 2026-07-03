@@ -742,6 +742,156 @@ class TenpayArticleParserTests(unittest.TestCase):
                     path.unlink()
                 output_dir.rmdir()
 
+    def test_tenpay_account_name_allows_business_word_in_author_name(self) -> None:
+        account = get_app_adapter("tenpay").extract_account_name(
+            [
+                "腾讯理财通",
+                "会理财会生活",
+                "(百万实盘)",
+                "关注",
+                "老登登场、小登退场，市场在",
+            ]
+        )
+
+        self.assertEqual(account, "会理财会生活")
+
+    def test_tenpay_account_name_skips_portfolio_label_before_author(self) -> None:
+        account = get_app_adapter("tenpay").extract_account_name(
+            [
+                "腾讯理财通",
+                "(百万实盘)",
+                "D老师写字的地方",
+                "关注",
+                "260626:主线缩圈",
+            ]
+        )
+
+        self.assertEqual(account, "D老师写字的地方")
+
+    def test_tenpay_account_name_uses_ocr_when_ui_has_no_author(self) -> None:
+        output_dir = Path(self.id().replace(".", "_"))
+        try:
+            output_dir.mkdir(exist_ok=True)
+            ui_jsonl = output_dir / "ui_records.jsonl"
+            ocr_jsonl = output_dir / "ocr_records.jsonl"
+            ui_jsonl.write_text(
+                '{"text":"腾讯理财通","content_desc":"","package":"com.tencent.fortuneplat"}\n',
+                encoding="utf-8",
+            )
+            ocr_jsonl.write_text(
+                "\n".join(
+                    [
+                        '{"text":"腾讯理财通","bounds":{"left":419,"top":145},"page_index":0}',
+                        '{"text":"会理财会生活","bounds":{"left":188,"top":300},"page_index":0}',
+                        '{"text":"(百万实盘)","bounds":{"left":449,"top":300},"page_index":0}',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            updates = get_app_adapter("tenpay").refine_capture_result(
+                result={"requested_fields": ["account_name"], "account_name": "(百万实盘)"},
+                summary={"ui_jsonl": str(ui_jsonl), "ocr_jsonl": str(ocr_jsonl), "output_dir": str(output_dir)},
+            )
+
+            self.assertEqual(updates["account_name"], "会理财会生活")
+            self.assertEqual(updates["account_name_source"], "ocr")
+            self.assertEqual(updates["account_name_resolution"], "ocr_only")
+        finally:
+            if output_dir.exists():
+                for path in output_dir.iterdir():
+                    path.unlink()
+                output_dir.rmdir()
+
+    def test_tenpay_account_name_prefers_ui_when_conflict_model_unconfigured(self) -> None:
+        output_dir = Path(self.id().replace(".", "_"))
+        try:
+            output_dir.mkdir(exist_ok=True)
+            ui_jsonl = output_dir / "ui_records.jsonl"
+            ocr_jsonl = output_dir / "ocr_records.jsonl"
+            ui_jsonl.write_text(
+                "\n".join(
+                    [
+                        '{"text":"腾讯理财通","content_desc":"","package":"com.tencent.fortuneplat"}',
+                        '{"text":"UI作者","content_desc":"","package":"com.tencent.fortuneplat"}',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            ocr_jsonl.write_text(
+                "\n".join(
+                    [
+                        '{"text":"腾讯理财通","bounds":{"left":419,"top":145},"page_index":0}',
+                        '{"text":"OCR作者","bounds":{"left":188,"top":300},"page_index":0}',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("apps.finance_crawler.crawlers.tenpay.Config.OPENAI_API_KEY", ""):
+                updates = get_app_adapter("tenpay").refine_capture_result(
+                    result={"requested_fields": ["account_name"], "account_name": "old"},
+                    summary={"ui_jsonl": str(ui_jsonl), "ocr_jsonl": str(ocr_jsonl), "output_dir": str(output_dir)},
+                )
+
+            self.assertEqual(updates["account_name"], "UI作者")
+            self.assertEqual(updates["account_name_source"], "ui_controls")
+            self.assertEqual(updates["account_name_resolution"], "ui_ocr_conflict_model_unavailable")
+        finally:
+            if output_dir.exists():
+                for path in output_dir.iterdir():
+                    path.unlink()
+                output_dir.rmdir()
+
+    def test_tenpay_account_name_uses_model_when_ui_and_ocr_conflict(self) -> None:
+        output_dir = Path(self.id().replace(".", "_"))
+        try:
+            output_dir.mkdir(exist_ok=True)
+            ui_jsonl = output_dir / "ui_records.jsonl"
+            ocr_jsonl = output_dir / "ocr_records.jsonl"
+            ui_jsonl.write_text(
+                "\n".join(
+                    [
+                        '{"text":"腾讯理财通","content_desc":"","package":"com.tencent.fortuneplat"}',
+                        '{"text":"UI作者","content_desc":"","package":"com.tencent.fortuneplat"}',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            ocr_jsonl.write_text(
+                "\n".join(
+                    [
+                        '{"text":"腾讯理财通","bounds":{"left":419,"top":145},"page_index":0}',
+                        '{"text":"OCR作者","bounds":{"left":188,"top":300},"page_index":0}',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch("apps.finance_crawler.crawlers.tenpay.Config.OPENAI_API_KEY", "key"),
+                patch("apps.finance_crawler.crawlers.tenpay.Config.OPENAI_BASE_URL", "https://example.test/v1"),
+                patch("apps.finance_crawler.crawlers.tenpay.Config.OPENAI_MODEL", "model"),
+                patch(
+                    "apps.finance_crawler.crawlers.tenpay._post_openai_chat_completion",
+                    return_value='{"account_name":"模型作者","confidence":0.9,"reason":"visible author row"}',
+                ) as post_model,
+            ):
+                updates = get_app_adapter("tenpay").refine_capture_result(
+                    result={"requested_fields": ["account_name"], "account_name": "old"},
+                    summary={"ui_jsonl": str(ui_jsonl), "ocr_jsonl": str(ocr_jsonl), "output_dir": str(output_dir)},
+                )
+
+            self.assertEqual(updates["account_name"], "模型作者")
+            self.assertEqual(updates["account_name_source"], "model")
+            self.assertEqual(updates["account_name_resolution"], "ui_ocr_conflict_model")
+            post_model.assert_called_once()
+        finally:
+            if output_dir.exists():
+                for path in output_dir.iterdir():
+                    path.unlink()
+                output_dir.rmdir()
+
 
 class RecoveryClassifierTests(unittest.TestCase):
     def test_page_status_ready_wait_recaptures_unknown_state(self) -> None:

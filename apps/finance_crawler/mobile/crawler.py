@@ -409,6 +409,8 @@ def scrape_record_content(
         comment_count = int(app_refined_fields["comment_count"] or 0)
     if "like_count" in app_refined_fields:
         like_count = int(app_refined_fields["like_count"] or 0)
+    if "account_name" in app_refined_fields and app_refined_fields["account_name"]:
+        account_name = str(app_refined_fields["account_name"])
     if "read_found" in app_refined_fields:
         summary["read_found"] = bool(app_refined_fields["read_found"])
     if "comment_found" in app_refined_fields:
