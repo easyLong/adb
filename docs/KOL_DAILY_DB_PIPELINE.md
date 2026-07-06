@@ -65,6 +65,8 @@ kol_daily_metrics.fans_count
 kol_daily_metrics.growth_count
 ```
 
+`growth_count` 由今日粉丝数减去上一个中国工作日粉丝数得到；如果上一个中国工作日没有成功粉丝数，则写 `0`。
+
 不写回目标腾讯文档。
 
 ## 手动运行
@@ -99,7 +101,7 @@ kol_daily_metrics.growth_count
 启动常驻 worker 后，`profile` 调度角色会注册：
 
 ```text
-kol_daily_db_pipeline daily at KOL_DAILY_CRAWL_TIME
+kol_daily_db_pipeline at KOL_DAILY_CRAWL_TIME on China workdays
 ```
 
 默认时间来自：
@@ -107,6 +109,15 @@ kol_daily_db_pipeline daily at KOL_DAILY_CRAWL_TIME
 ```text
 KOL_DAILY_CRAWL_TIME
 ```
+
+自动定时默认只在中国法定工作日执行：
+
+```text
+KOL_DAILY_CRAWL_WORKDAY_ONLY=true
+KOL_DAILY_CRAWL_CALENDAR_PATH=config/china-workdays.json
+```
+
+手动运行不受工作日限制，仍可用 `-ReportDate` 补跑任意日期。
 
 阅读数回看天数来自：
 

@@ -27,6 +27,7 @@ from apps.finance_crawler.services.runtime_config import (
     set_runtime_config,
 )
 from apps.finance_crawler.storage.db import init_db, log_task
+from apps.finance_crawler.utils.china_workdays import is_china_workday
 from apps.finance_crawler.utils.logger import get_logger
 from apps.finance_crawler.workflows.article_details import (
     crawl_pending_article_details,
@@ -116,6 +117,22 @@ def _reload_runtime_config_for_task(task_name: str) -> None:
 
 def _kol_daily_db_pipeline_scheduler_enabled() -> bool:
     return bool(Config.KOL_DAILY_CRAWL_TIME)
+
+
+def _is_china_workday(target: date) -> bool:
+    return is_china_workday(
+        target,
+        calendar_path=Config.KOL_DAILY_CRAWL_CALENDAR_PATH,
+        project_dir=Config.PROJECT_DIR,
+    )
+
+
+def run_scheduled_kol_daily_db_pipeline_job() -> dict[str, Any] | None:
+    today = date.today()
+    if Config.KOL_DAILY_CRAWL_WORKDAY_ONLY and not _is_china_workday(today):
+        logger.info("skip KOL daily DB pipeline on non-China-workday: %s", today.isoformat())
+        return {"status": "skipped", "reason": "non_china_workday", "date": today.isoformat()}
+    return run_kol_daily_db_pipeline_job(today)
 
 
 def _configured_scheduler_roles() -> set[str]:
@@ -248,11 +265,12 @@ def _register_jobs() -> None:
 
     if _scheduler_role_enabled("profile", "kol_pipeline") and _kol_daily_db_pipeline_scheduler_enabled():
         schedule.every().day.at(Config.KOL_DAILY_CRAWL_TIME).do(
-            safe_run, run_kol_daily_db_pipeline_job, "kol_daily_db_pipeline"
+            safe_run, run_scheduled_kol_daily_db_pipeline_job, "kol_daily_db_pipeline"
         )
         logger.info(
-            "registered KOL daily DB pipeline at %s",
+            "registered KOL daily DB pipeline at %s; workday_only=%s",
             Config.KOL_DAILY_CRAWL_TIME,
+            Config.KOL_DAILY_CRAWL_WORKDAY_ONLY,
         )
 
     if _scheduler_role_enabled("wechat") and Config.WECHAT_SCHEDULER_ENABLED:

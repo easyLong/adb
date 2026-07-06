@@ -191,8 +191,10 @@ DEVICE_LOCK_WAIT_SECONDS
 
 | Key | 默认 | 说明 |
 | --- | --- | --- |
-| `KOL_DAILY_CRAWL_TIME` | `08:00` | 每天触发 KOL 数据库主链路 |
+| `KOL_DAILY_CRAWL_TIME` | `08:00` | 定时触发 KOL 数据库主链路 |
 | `KOL_DAILY_CRAWL_LIMIT` | `0` | 单次主页采集限制；`0` 表示不限制 |
+| `KOL_DAILY_CRAWL_WORKDAY_ONLY` | `true` | 自动定时只在中国法定工作日执行；手动补跑不受影响 |
+| `KOL_DAILY_CRAWL_CALENDAR_PATH` | `config/china-workdays.json` | 中国法定节假日和调休工作日日历 |
 | `KOL_TENPAY_EXTERNAL_READS_LOOKBACK_DAYS` | `5` | 每次主链路同步最近几个已结束日期的理财通阅读数，默认 T-1 到 T-5 |
 
 `KOL_DAILY_CRAWL_TIME` 触发的是数据库主链路：

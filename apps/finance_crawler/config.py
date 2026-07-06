@@ -27,7 +27,7 @@ def _load_project_dotenv() -> None:
             continue
         key, value = line.split("=", 1)
         key = key.strip().lstrip("\ufeff")
-        if not key.startswith(("MYSQL_", "OPENAI_", "WECHAT_", "SCHEDULER_", "DEVICE_", "CAPTURE_")):
+        if not key.startswith(("MYSQL_", "OPENAI_", "WECHAT_", "SCHEDULER_", "DEVICE_", "CAPTURE_", "KOL_")):
             continue
         if key in os.environ:
             continue
@@ -165,6 +165,8 @@ class Config:
     KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE = _env_int("KOL_DAILY_SNAPSHOT_WRITEBACK_FONT_SIZE", 10)
     KOL_DAILY_CRAWL_TIME = _env("KOL_DAILY_CRAWL_TIME", "08:00")
     KOL_DAILY_CRAWL_LIMIT = _env_int("KOL_DAILY_CRAWL_LIMIT", 0)
+    KOL_DAILY_CRAWL_WORKDAY_ONLY = _env_bool("KOL_DAILY_CRAWL_WORKDAY_ONLY", True)
+    KOL_DAILY_CRAWL_CALENDAR_PATH = _env("KOL_DAILY_CRAWL_CALENDAR_PATH", str(_PROJECT_DIR / "config" / "china-workdays.json"))
     KOL_TENPAY_EXTERNAL_READS_SOURCE_DOC_URLS = _env("KOL_TENPAY_EXTERNAL_READS_SOURCE_DOC_URLS", "")
     KOL_TENPAY_EXTERNAL_READS_TARGET_DOC_URL = _env(
         "KOL_TENPAY_EXTERNAL_READS_TARGET_DOC_URL",

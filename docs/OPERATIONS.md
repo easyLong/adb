@@ -63,7 +63,7 @@ KOL_DAILY_CRAWL_TIME kol-daily-db-pipeline
 - 日期列不要带时分秒，应为 `YYYY-MM-DD`。
 - E 列是粉丝数。
 - F 列是增粉数。
-- 前一天没有数据时，F 列写 `0`。
+- 上一个中国工作日没有数据时，F 列写 `0`。
 
 ## 4. 主页帖子阅读数
 

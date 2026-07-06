@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 
+from apps.finance_crawler.config import Config
 from apps.finance_crawler.crawler_app.capture.observations import build_profile_metric_observations
 from apps.finance_crawler.crawler_app.storage.db import get_conn
+from apps.finance_crawler.utils.china_workdays import previous_china_workday
 
 PROFILE_DAILY_METRICS_TASK_TYPE = "profile_daily_metrics"
 PROFILE_DAILY_METRICS_FIELDS = ("fans_count", "growth_count", "read_count")
@@ -289,7 +291,11 @@ def record_profile_metric(
 
 
 def _calculate_growth_count_tx(cursor, target_id: int, metric_date: date, fans_count: int) -> int:
-    previous_date = metric_date - timedelta(days=1)
+    previous_date = previous_china_workday(
+        metric_date,
+        calendar_path=Config.KOL_DAILY_CRAWL_CALENDAR_PATH,
+        project_dir=Config.PROJECT_DIR,
+    )
     cursor.execute(
         """
         SELECT fans_count
@@ -751,7 +757,7 @@ def _upsert_kol_daily_metric_from_profile_run_tx(
             growth_count,
             read_count,
             "profile_metrics" if fans_count is not None else "",
-            "previous_day_fans_count" if growth_count is not None else "",
+            "previous_workday_fans_count" if growth_count is not None else "",
             "profile_post_reads" if read_count is not None else "",
             str(source.get("doc_url") or ""),
             int(locator["row_index"]) if locator.get("row_index") else None,
