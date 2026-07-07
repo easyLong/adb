@@ -183,20 +183,27 @@ kol_business_settlements
 业务唯一键：
 
 ```text
-settlement_date + post_url
+settlement_date + normalized_post_url
 ```
 
 提交任务时，`dedupe_key` 也按这个业务唯一键生成：
 
 ```text
-kol_business_settlements + settlement_date + post_url + kol_settlement_post_metrics
+kol_business_settlements + settlement_date + normalized_post_url + kol_settlement_post_metrics
 ```
 
 因此每天重复跑 submit 时：
 
 - 已成功且指标齐全的行不会再次提交。
-- 同一天同一帖子不会生成重复任务。
+- 同一天同一帖子不会生成重复任务；`sharefm`、`lctsessionkey` 等分享参数不同但 `subject_id` 相同，也按同一帖子处理。
 - 失败任务可以被下次 submit 重新激活，继续补跑。
+- 同一帖子对应多条结算记录时，writeback 会把同一份采集结果补写到所有缺失或占位的结算行。
+
+以下值视为缺失，会触发 submit 或允许 writeback 覆盖：
+
+```text
+机器识别、识别失败、N、NULL、-、--
+```
 
 写回字段：
 

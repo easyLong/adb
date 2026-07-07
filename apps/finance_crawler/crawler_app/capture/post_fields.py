@@ -105,10 +105,12 @@ def _extract_post_field(bundle: CaptureBundle, field_name: str) -> FieldExtracti
         return _result(bundle, field_name, value, source="ui_controls", accepted=value is not None)
     if field_name == COMMENT_COUNT:
         value = raw.get("comment_count")
-        return _result(bundle, field_name, value, source="ui_controls", accepted=value is not None)
+        accepted = value is not None and raw.get("comment_found", True) is not False
+        return _result(bundle, field_name, value, source="ui_controls", accepted=accepted)
     if field_name == LIKE_COUNT:
         value = raw.get("like_count")
-        return _result(bundle, field_name, value, source="ui_controls", accepted=value is not None)
+        accepted = value is not None and raw.get("like_found", True) is not False
+        return _result(bundle, field_name, value, source="ui_controls", accepted=accepted)
     if field_name == SCREENSHOT:
         value = raw.get("screenshot_path")
         return _result(bundle, field_name, value, source="screenshot", accepted=bool(value))

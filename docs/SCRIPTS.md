@@ -189,6 +189,8 @@ kol_daily_db_pipeline
 
 这条链路从 `crawler_app.kol_business_settlements` 读取 `post_url`，采集文章标题、评论数、点赞数和截图，再写回同一张表的 `article_title`、`comment_count`、`like_count`、`screenshot_url` 字段。
 
+同一天同一帖子 URL 只采集一次；如果多条结算记录使用同一个帖子，writeback 会把采集结果补写到所有缺失或占位的结算行。`机器识别`、`识别失败`、`N`、`NULL`、`-`、`--` 会被视为缺失值。
+
 | Task | 作用 |
 | --- | --- |
 | `kol-settlement-metrics-submit` | 从结算表提交缺指标的帖子任务 |

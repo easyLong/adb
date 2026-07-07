@@ -8,6 +8,7 @@ import re
 import time
 from datetime import date
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 from apps.finance_crawler.crawler_app.documents.fields import ACCOUNT_NAME, ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT
 from apps.finance_crawler.crawler_app.storage.db import get_conn
@@ -31,6 +32,9 @@ RESULT_FIELD_MAP = {
     LIKE_COUNT: "like_count",
     SCREENSHOT: "screenshot_url",
 }
+PLACEHOLDER_VALUES = {"机器识别", "识别失败", "N", "n", "NULL", "null", "None", "-", "--"}
+TEXT_RESULT_FIELDS = ("ip_name", "article_title", "screenshot_url")
+NUMERIC_RESULT_FIELDS = ("comment_count", "like_count")
 
 
 def submit_kol_settlement_post_metric_tasks(
@@ -128,31 +132,31 @@ def _list_pending_settlement_rows(conn, *, target_date: date | None, limit: int 
         WHERE {_identifier(SOURCE_URL_FIELD)} IS NOT NULL
           AND TRIM({_identifier(SOURCE_URL_FIELD)}) <> ''
           AND {_identifier(SOURCE_DATE_FIELD)} IS NOT NULL
-          AND (
-                ip_name IS NULL OR ip_name = ''
-             OR article_title IS NULL OR article_title = ''
-             OR comment_count IS NULL
-             OR like_count IS NULL
-             OR screenshot_url IS NULL OR screenshot_url = ''
-          )
+          AND ({_missing_metrics_sql()})
     """
-    params: list[Any] = []
+    params: list[Any] = _missing_metrics_sql_params()
     if target_date:
         sql += f" AND {_identifier(SOURCE_DATE_FIELD)} = %s"
         params.append(target_date)
     sql += f" ORDER BY {_identifier(SOURCE_DATE_FIELD)} DESC, {_identifier(SOURCE_ID_FIELD)} ASC"
-    if limit and limit > 0:
-        sql += " LIMIT %s"
-        params.append(limit)
     with conn.cursor() as cursor:
         cursor.execute(sql, params)
-        return list(cursor.fetchall())
+        rows = list(cursor.fetchall())
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        settlement_date = _date_text(row.get("settlement_date"))
+        normalized_post_url = _normalized_post_url(str(row.get("post_url") or ""))
+        key = (settlement_date, normalized_post_url)
+        deduped.setdefault(key, row)
+    output = list(deduped.values())
+    return output[:limit] if limit and limit > 0 else output
 
 
 def _submission_from_settlement_row(row: dict[str, Any], *, max_attempts: int) -> TaskSubmission:
     source_pk = int(row["source_pk"])
     settlement_date = _date_text(row.get("settlement_date"))
     post_url = str(row.get("post_url") or "").strip()
+    normalized_post_url = _normalized_post_url(post_url)
     source_locator = {
         "source_type": "db_table",
         "source_table": SOURCE_TABLE,
@@ -161,6 +165,7 @@ def _submission_from_settlement_row(row: dict[str, Any], *, max_attempts: int) -
         "settlement_date": settlement_date,
         "url_field": SOURCE_URL_FIELD,
         "post_url": post_url,
+        "normalized_post_url": normalized_post_url,
         "unique_fields": [SOURCE_DATE_FIELD, SOURCE_URL_FIELD],
         "requested_fields": list(REQUESTED_FIELDS),
         "result_field_map": RESULT_FIELD_MAP,
@@ -175,7 +180,7 @@ def _submission_from_settlement_row(row: dict[str, Any], *, max_attempts: int) -
         account_name="",
         post_time="",
         source_locator=source_locator,
-        dedupe_key=_dedupe_key(settlement_date=settlement_date, post_url=post_url),
+        dedupe_key=_dedupe_key(settlement_date=settlement_date, post_url=normalized_post_url),
         source_row_id=None,
         priority=0,
         max_attempts=max_attempts,
@@ -211,19 +216,40 @@ def _list_successful_settlement_executions(conn, *, limit: int | None) -> list[d
         WHERE s.task_type = %s
           AND s.status = 'success'
           AND e.status = 'success'
-        ORDER BY s.id ASC
+        ORDER BY e.finished_at DESC, e.id DESC, s.id DESC
     """
     params: list[Any] = [KOL_SETTLEMENT_POST_METRICS]
-    if limit and limit > 0:
-        sql += " LIMIT %s"
-        params.append(limit)
     with conn.cursor() as cursor:
         cursor.execute(sql, params)
         rows = list(cursor.fetchall())
     for row in rows:
         row["source_locator"] = _json_loads(row.get("source_locator_json"))
         row["result"] = _json_loads(row.get("result_json"))
-    return rows
+    return _latest_successful_settlement_rows(rows, limit=limit)
+
+
+def _latest_successful_settlement_rows(rows: list[dict[str, Any]], *, limit: int | None) -> list[dict[str, Any]]:
+    latest_rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str] | tuple[str, int]] = set()
+    for row in rows:
+        key = _successful_execution_business_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        latest_rows.append(row)
+        if limit and limit > 0 and len(latest_rows) >= limit:
+            break
+    return latest_rows
+
+
+def _successful_execution_business_key(row: dict[str, Any]) -> tuple[str, str] | tuple[str, int]:
+    locator = row.get("source_locator") or {}
+    settlement_date = _date_text(locator.get("settlement_date"))
+    post_url = str(locator.get("post_url") or row.get("post_url") or "")
+    normalized_post_url = str(locator.get("normalized_post_url") or _normalized_post_url(post_url))
+    if settlement_date and normalized_post_url:
+        return (settlement_date, normalized_post_url)
+    return ("submission", int(row.get("submission_id") or 0))
 
 
 def _result_values_for_settlement(row: dict[str, Any]) -> dict[str, Any]:
@@ -235,9 +261,9 @@ def _result_values_for_settlement(row: dict[str, Any]) -> dict[str, Any]:
         values["ip_name"] = account_name
     if field_values.get(ARTICLE_TITLE):
         values["article_title"] = field_values[ARTICLE_TITLE]
-    if COMMENT_COUNT in field_values:
+    if COMMENT_COUNT in field_values and result.get("comment_found", True) is not False:
         values["comment_count"] = field_values[COMMENT_COUNT]
-    if LIKE_COUNT in field_values:
+    if LIKE_COUNT in field_values and result.get("like_found", True) is not False:
         values["like_count"] = field_values[LIKE_COUNT]
     if field_values.get(SCREENSHOT):
         values["screenshot_url"] = capture_public_url(field_values[SCREENSHOT])
@@ -259,26 +285,114 @@ def _accepted_field_values(payload: Any) -> dict[str, Any]:
 
 def _update_settlement_row(conn, row: dict[str, Any], values: dict[str, Any]) -> int:
     locator = row.get("source_locator") or {}
-    source_pk = int(locator["source_pk"])
     settlement_date = locator["settlement_date"]
     post_url = str(locator["post_url"])
-    assignments = ", ".join(f"{_identifier(column)} = %s" for column in values)
-    params = [
-        *values.values(),
-        source_pk,
-        settlement_date,
-        post_url,
-    ]
+    normalized_post_url = str(locator.get("normalized_post_url") or _normalized_post_url(post_url))
+    rows = _list_settlement_rows_by_normalized_url(
+        conn,
+        settlement_date=settlement_date,
+        normalized_post_url=normalized_post_url,
+    )
+    updated = 0
+    for item in rows:
+        row_values = _values_to_write_for_settlement_row(item, values)
+        if not row_values:
+            continue
+        assignments = ", ".join(f"{_identifier(column)} = %s" for column in row_values)
+        params = [*row_values.values(), int(item["source_pk"])]
+        sql = f"""
+            UPDATE {_identifier(SOURCE_TABLE)}
+            SET {assignments}
+            WHERE {_identifier(SOURCE_ID_FIELD)} = %s
+        """
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            updated += int(cursor.rowcount)
+    return updated
+
+
+def _list_settlement_rows_by_normalized_url(
+    conn,
+    *,
+    settlement_date: Any,
+    normalized_post_url: str,
+) -> list[dict[str, Any]]:
     sql = f"""
-        UPDATE {_identifier(SOURCE_TABLE)}
-        SET {assignments}
-        WHERE {_identifier(SOURCE_ID_FIELD)} = %s
-          AND {_identifier(SOURCE_DATE_FIELD)} = %s
-          AND {_identifier(SOURCE_URL_FIELD)} = %s
+        SELECT
+            {_identifier(SOURCE_ID_FIELD)} AS source_pk,
+            {_identifier(SOURCE_URL_FIELD)} AS post_url,
+            ip_name,
+            article_title,
+            comment_count,
+            like_count,
+            screenshot_url
+        FROM {_identifier(SOURCE_TABLE)}
+        WHERE {_identifier(SOURCE_DATE_FIELD)} = %s
+          AND {_identifier(SOURCE_URL_FIELD)} IS NOT NULL
+          AND TRIM({_identifier(SOURCE_URL_FIELD)}) <> ''
+        ORDER BY {_identifier(SOURCE_ID_FIELD)} ASC
     """
     with conn.cursor() as cursor:
-        cursor.execute(sql, params)
-        return int(cursor.rowcount)
+        cursor.execute(sql, (settlement_date,))
+        rows = list(cursor.fetchall())
+    return [
+        row
+        for row in rows
+        if _normalized_post_url(str(row.get("post_url") or "")) == normalized_post_url
+    ]
+
+
+def _values_to_write_for_settlement_row(row: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for column, value in values.items():
+        if column not in RESULT_FIELD_MAP.values():
+            continue
+        if _is_missing_metric_value(column, row.get(column)):
+            output[column] = value
+    return output
+
+
+def _missing_metrics_sql() -> str:
+    parts = [_missing_text_sql(column) for column in TEXT_RESULT_FIELDS]
+    parts.extend(f"{_identifier(column)} IS NULL" for column in NUMERIC_RESULT_FIELDS)
+    return "\n             OR ".join(parts)
+
+
+def _missing_metrics_sql_params() -> list[Any]:
+    params: list[Any] = []
+    for _ in TEXT_RESULT_FIELDS:
+        params.extend(sorted(PLACEHOLDER_VALUES))
+    return params
+
+
+def _missing_text_sql(column: str) -> str:
+    placeholders = ", ".join(["%s"] * len(PLACEHOLDER_VALUES))
+    identifier = _identifier(column)
+    return f"{identifier} IS NULL OR TRIM({identifier}) = '' OR TRIM({identifier}) IN ({placeholders})"
+
+
+def _is_missing_metric_value(column: str, value: Any) -> bool:
+    if column in NUMERIC_RESULT_FIELDS:
+        return value is None
+    text = str(value or "").strip()
+    return not text or text in PLACEHOLDER_VALUES
+
+
+def _normalized_post_url(post_url: str) -> str:
+    raw = str(post_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    subject_id = str(query.get("subject_id") or "").strip()
+    if subject_id:
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?subject_id={subject_id}"
+    return raw
 
 
 def _identifier(value: str) -> str:

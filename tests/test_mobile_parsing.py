@@ -696,6 +696,18 @@ class TenpayArticleParserTests(unittest.TestCase):
             {"comment_count": 339, "like_count": 134},
         )
 
+    def test_tenpay_adapter_does_not_treat_single_bottom_number_as_comment(self) -> None:
+        parsed = get_app_adapter("tenpay").parse_counts(
+            [
+                "\u817e\u8baf\u7406\u8d22\u901a",
+                "\u53d1\u8868\u89c2\u70b9..",
+                "13",
+                "\u5206\u4eab",
+            ]
+        )
+
+        self.assertIsNone(parsed)
+
     def test_tenpay_adapter_refines_bottom_comment_and_like_counts(self) -> None:
         output_dir = Path(self.id().replace(".", "_"))
         try:

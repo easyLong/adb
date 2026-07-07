@@ -140,7 +140,7 @@ def _parse_counts(texts: list[str]) -> tuple[int, int, bool, bool] | None:
             for candidate in texts[index + 1 : index + 6]
             if re.fullmatch(r"\d+", candidate.strip())
         ]
-        if numeric_tail:
+        if len(numeric_tail) >= 2:
             return 0, int(numeric_tail[0]), False, True
     return None
 

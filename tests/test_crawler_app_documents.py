@@ -227,9 +227,13 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         row = {
             "source_pk": 12,
             "settlement_date": date(2026, 7, 2),
-            "post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=abc",
+            "post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=abc&sharefm=app",
         }
-        same_business_key_row = {**row, "source_pk": 99}
+        same_business_key_row = {
+            **row,
+            "source_pk": 99,
+            "post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=abc&lctfrom=share",
+        }
 
         submission = _submission_from_settlement_row(row, max_attempts=2)
         same_key_submission = _submission_from_settlement_row(same_business_key_row, max_attempts=2)
@@ -242,11 +246,58 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertEqual(submission.source_locator["source_pk"], 12)
         self.assertEqual(submission.source_locator["settlement_date"], "2026-07-02")
         self.assertEqual(
+            submission.source_locator["normalized_post_url"],
+            "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=abc",
+        )
+        self.assertEqual(
             submission.source_locator["requested_fields"],
             [ACCOUNT_NAME, ARTICLE_TITLE, COMMENT_COUNT, LIKE_COUNT, SCREENSHOT],
         )
         self.assertEqual(submission.source_locator["result_field_map"][ACCOUNT_NAME], "ip_name")
         self.assertEqual(submission.dedupe_key, same_key_submission.dedupe_key)
+
+    def test_kol_settlement_writeback_only_fills_missing_or_placeholder_values(self) -> None:
+        from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
+            _values_to_write_for_settlement_row,
+        )
+
+        values = {
+            "ip_name": "金辉观点",
+            "article_title": "真实标题",
+            "comment_count": 38,
+            "like_count": 167,
+            "screenshot_url": "http://127.0.0.1:8765/captures/a.png",
+        }
+
+        self.assertEqual(
+            _values_to_write_for_settlement_row(
+                {
+                    "ip_name": "金辉观点",
+                    "article_title": "机器识别",
+                    "comment_count": 38,
+                    "like_count": 167,
+                    "screenshot_url": "机器识别",
+                },
+                values,
+            ),
+            {
+                "article_title": "真实标题",
+                "screenshot_url": "http://127.0.0.1:8765/captures/a.png",
+            },
+        )
+        self.assertEqual(
+            _values_to_write_for_settlement_row(
+                {
+                    "ip_name": "金辉观点",
+                    "article_title": "已有标题",
+                    "comment_count": 38,
+                    "like_count": 167,
+                    "screenshot_url": "http://127.0.0.1:8765/captures/old.png",
+                },
+                values,
+            ),
+            {},
+        )
 
     def test_kol_settlement_result_values_use_accepted_field_results(self) -> None:
         from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
@@ -278,6 +329,63 @@ class CrawlerAppDocumentTests(unittest.TestCase):
                 "screenshot_url": "shot.png",
             },
         )
+
+    def test_kol_settlement_result_values_skip_explicit_not_found_counts(self) -> None:
+        from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
+            _result_values_for_settlement,
+        )
+
+        values = _result_values_for_settlement(
+            {
+                "result": {
+                    "comment_found": False,
+                    "like_found": False,
+                    "field_results": [
+                        {"field_name": "comment_count", "value": 0, "accepted": True},
+                        {"field_name": "like_count", "value": 0, "accepted": True},
+                    ],
+                }
+            }
+        )
+
+        self.assertEqual(values, {})
+
+    def test_kol_settlement_successful_rows_keep_latest_business_key(self) -> None:
+        from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
+            _latest_successful_settlement_rows,
+        )
+
+        newer = {
+            "submission_id": 1240822,
+            "source_locator": {
+                "settlement_date": "2026-07-01",
+                "post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=abc&sharefm=app",
+                "normalized_post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=abc",
+            },
+            "result": {"like_count": 52},
+        }
+        older = {
+            "submission_id": 1154830,
+            "source_locator": {
+                "settlement_date": "2026-07-01",
+                "post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=abc&lctfrom=share",
+                "normalized_post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=abc",
+            },
+            "result": {"like_count": 0},
+        }
+        other_post = {
+            "submission_id": 1240823,
+            "source_locator": {
+                "settlement_date": "2026-07-01",
+                "post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=def",
+                "normalized_post_url": "https://www.tencentwm.com/h5/v6/pages/discussion/main/detail/index?subject_id=def",
+            },
+            "result": {"like_count": 7},
+        }
+
+        rows = _latest_successful_settlement_rows([newer, older, other_post], limit=None)
+
+        self.assertEqual([row["submission_id"] for row in rows], [1240822, 1240823])
 
     def test_kol_settlement_result_values_use_legacy_top_level_account_name(self) -> None:
         from apps.finance_crawler.crawler_app.workflows.kol_settlement_post_metrics import (
@@ -649,6 +757,29 @@ class CrawlerAppDocumentTests(unittest.TestCase):
         self.assertEqual(results[LIKE_COUNT].value, 133)
         self.assertEqual(results[SCREENSHOT].value, "shot.png")
         self.assertTrue(all(item.accepted for item in results.values()))
+
+    def test_post_count_fields_reject_explicit_not_found_zero_values(self) -> None:
+        bundle = build_post_capture_bundle(
+            task_type=DETAIL,
+            app_type=SOURCE_TENPAY,
+            requested_fields=(COMMENT_COUNT, LIKE_COUNT),
+            result={
+                "status": "success",
+                "opened_url": "https://example.com/post",
+                "comment_count": 0,
+                "comment_found": False,
+                "like_count": 0,
+                "like_found": False,
+                "capture_plan": {
+                    "actions": ["open_link", "ui_controls", "screenshot", "ocr"],
+                },
+            },
+        )
+
+        results = {item.field_name: item for item in extract_post_field_results(bundle)}
+
+        self.assertFalse(results[COMMENT_COUNT].accepted)
+        self.assertFalse(results[LIKE_COUNT].accepted)
 
     def test_writeback_values_can_be_generated_from_field_results(self) -> None:
         result = {
