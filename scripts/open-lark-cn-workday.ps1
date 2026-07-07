@@ -1,5 +1,6 @@
 param(
     [string]$PackageName = "com.ss.android.lark",
+    [string]$DeviceSerial = "APH0219701010623",
     [string]$AdbPath = "",
     [string]$CalendarPath = "",
     [string]$LogPath = ""
@@ -61,11 +62,11 @@ if (-not (Test-ChinaWorkday -Date $today)) {
 
 & $AdbPath start-server | Out-Null
 $devices = & $AdbPath devices
-if (-not ($devices -match "`tdevice")) {
-    Write-RunLog "skip: no adb device online"
+if (-not ($devices -match ("(?m)^" + [regex]::Escape($DeviceSerial) + "\s+device\b"))) {
+    Write-RunLog "skip: target adb device not online serial=$DeviceSerial"
     exit 2
 }
 
-& $AdbPath shell input keyevent KEYCODE_WAKEUP | Out-Null
-& $AdbPath shell monkey -p $PackageName -c android.intent.category.LAUNCHER 1 | Out-Null
-Write-RunLog "opened package=$PackageName date=$($today.ToString('yyyy-MM-dd'))"
+& $AdbPath -s $DeviceSerial shell input keyevent KEYCODE_WAKEUP | Out-Null
+& $AdbPath -s $DeviceSerial shell monkey -p $PackageName -c android.intent.category.LAUNCHER 1 | Out-Null
+Write-RunLog "opened package=$PackageName serial=$DeviceSerial date=$($today.ToString('yyyy-MM-dd'))"

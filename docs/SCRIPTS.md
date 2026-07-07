@@ -202,6 +202,33 @@ kol_daily_db_pipeline
 .\scripts\run.ps1 -Task kol-settlement-metrics -ReportDate 2026-07-02 -Limit 1
 ```
 
+每天 23:00 自动跑一体流程：
+
+```powershell
+.\scripts\kol-settlement-metrics-schedule.ps1 -Action install
+```
+
+这个脚本通过 `$PSScriptRoot` 推导项目根目录，计划任务的 `WorkingDirectory`
+不需要在命令里写死机器绝对路径。
+
+查看计划任务状态：
+
+```powershell
+.\scripts\kol-settlement-metrics-schedule.ps1 -Action status
+```
+
+立即跑一次：
+
+```powershell
+.\scripts\kol-settlement-metrics-schedule.ps1 -Action run
+```
+
+删除计划任务：
+
+```powershell
+.\scripts\kol-settlement-metrics-schedule.ps1 -Action uninstall
+```
+
 ## 5. 其它业务命令
 
 | Task | 作用 |
